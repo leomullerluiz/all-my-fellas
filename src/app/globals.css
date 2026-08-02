@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/*
+ * Dark-first palette. The pipeline dashboard is a monitoring surface people
+ * leave open for long agent runs, so dark is the default and light is opt-in.
+ */
+:root {
+  --background: #0b0d12;
+  --surface: #12151d;
+  --surface-raised: #171b25;
+  --border: #262b38;
+  --foreground: #e6e9ef;
+  --muted: #99a1b3;
+  --accent: #6e8bff;
+  --accent-foreground: #ffffff;
+  --success: #46c98b;
+  --warning: #e5b454;
+  --danger: #f0685f;
+  --info: #63b3ed;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --background: #f6f7f9;
+    --surface: #ffffff;
+    --surface-raised: #ffffff;
+    --border: #e0e3ea;
+    --foreground: #171a21;
+    --muted: #626b7d;
+    --accent: #3f5fd8;
+    --accent-foreground: #ffffff;
+    --success: #1f8f5f;
+    --warning: #a97612;
+    --danger: #c93b32;
+    --info: #2b6cb0;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Pulsing dot on cards whose agent is currently running. */
+@keyframes pipeline-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+.animate-pipeline-pulse {
+  animation: pipeline-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pipeline-pulse {
+    animation: none;
+  }
+}
+
+/* Readable rendering for the raw Markdown artifact viewer. */
+.artifact-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}

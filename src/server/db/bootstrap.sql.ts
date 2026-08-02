@@ -1,0 +1,119 @@
+/**
+ * Idempotent DDL applied on every process start.
+ *
+ * Two processes (web + worker) share one SQLite file and there is no migration
+ * runner in the hot path, so the schema is created with `IF NOT EXISTS`
+ * statements that are safe to run concurrently. `drizzle-kit push` remains
+ * available for schema evolution during development.
+ */
+export const BOOTSTRAP_SQL = `
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS repos (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'github',
+  url TEXT NOT NULL,
+  default_branch TEXT NOT NULL DEFAULT 'main',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE RESTRICT,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  current_stage TEXT NOT NULL DEFAULT 'CREATED',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  difficulty TEXT,
+  criticality TEXT,
+  branch_name TEXT,
+  pr_url TEXT,
+  workspace_path TEXT,
+  failure_reason TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks(status);
+CREATE INDEX IF NOT EXISTS tasks_stage_idx ON tasks(current_stage);
+
+CREATE TABLE IF NOT EXISTS stage_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending',
+  started_at INTEGER,
+  finished_at INTEGER,
+  max_turns INTEGER,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS stage_runs_task_idx ON stage_runs(task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS stage_runs_task_stage_attempt_idx
+  ON stage_runs(task_id, stage, attempt);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  stage_run_id TEXT NOT NULL REFERENCES stage_runs(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  content_md TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS artifacts_task_type_idx ON artifacts(task_id, type);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  stage_run_id TEXT NOT NULL REFERENCES stage_runs(id) ON DELETE CASCADE,
+  session_id TEXT,
+  transcript_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS agent_runs_stage_run_idx ON agent_runs(stage_run_id);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  stage_run_id TEXT,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS events_task_seq_idx ON events(task_id, seq);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  gate TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  comment TEXT,
+  decided_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS approvals_task_idx ON approvals(task_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  run_after INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS jobs_status_run_after_idx ON jobs(status, run_after);
+`;

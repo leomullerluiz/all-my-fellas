@@ -1,0 +1,49 @@
+# Self-hosted deployment for the VPS phase.
+#
+# The web and worker run as two services sharing one bind-mounted volume, which
+# is what lets them see the same SQLite file and the same task workspaces.
+# Serverless is not an option here: agent sessions run for minutes and the
+# dashboard holds an SSE connection open.
+
+services:
+  web:
+    build:
+      context: .
+      target: runtime
+    command: ["node_modules/.bin/next", "start"]
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: file:/app/data/pipeline.db
+      WORKSPACES_DIR: /app/workspaces
+    env_file:
+      - .env
+    volumes:
+      - pipeline-data:/app/data
+      - pipeline-workspaces:/app/workspaces
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    command: ["node", "dist/worker/index.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: file:/app/data/pipeline.db
+      WORKSPACES_DIR: /app/workspaces
+    env_file:
+      - .env
+    volumes:
+      - pipeline-data:/app/data
+      - pipeline-workspaces:/app/workspaces
+    depends_on:
+      - web
+    # Give the worker time to finish the stage it is running before it is killed.
+    stop_grace_period: 5m
+    restart: unless-stopped
+
+volumes:
+  pipeline-data:
+  pipeline-workspaces:

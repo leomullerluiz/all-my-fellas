@@ -19,6 +19,13 @@
 
 # production
 /build
+/dist
+
+# pipeline runtime state
+/workspaces/*
+!/workspaces/.gitkeep
+/data/*
+!/data/.gitkeep
 
 # misc
 .DS_Store
@@ -31,7 +38,7 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
-.env*
+.env
 
 # vercel
 .vercel

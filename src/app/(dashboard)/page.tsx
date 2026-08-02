@@ -1,0 +1,98 @@
+import Link from "next/link";
+
+import { AutoRefresh } from "@/components/auto-refresh";
+import { TaskBoard, type BoardTask } from "@/components/task-board";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { formatCost } from "@/lib/utils";
+import { hasGithubToken, resolveProviderAuth } from "@/server/config/env";
+import { listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
+
+// The board reflects worker state that changes between requests, so it must be
+// rendered per request rather than prerendered at build time.
+export const dynamic = "force-dynamic";
+
+function SetupNotice() {
+  const auth = resolveProviderAuth();
+  const problems: string[] = [];
+
+  if (auth.mode === "missing") {
+    problems.push(
+      "No Claude credential found. Set CLAUDE_CODE_OAUTH_TOKEN (subscription) or ANTHROPIC_API_KEY in .env.",
+    );
+  }
+  if (!hasGithubToken()) {
+    problems.push("GITHUB_TOKEN is not set. Cloning and pull request creation will fail.");
+  }
+
+  if (problems.length === 0) return null;
+
+  return (
+    <div className="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3">
+      <p className="text-sm font-medium text-warning">Setup incomplete</p>
+      <ul className="mt-1 list-inside list-disc text-xs text-warning/90">
+        {problems.map((problem) => (
+          <li key={problem}>{problem}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default async function DashboardPage() {
+  const repos = listRepos();
+  const tasks: BoardTask[] = listTasks().map((task) => ({
+    ...task,
+    costUsd: totalCostForTask(task.id),
+  }));
+
+  const active = tasks.filter((task) =>
+    ["queued", "running", "awaiting_gate"].includes(task.status),
+  ).length;
+  const waiting = tasks.filter((task) => task.status === "awaiting_gate").length;
+  const spend = tasks.reduce((sum, task) => sum + task.costUsd, 0);
+
+  return (
+    <>
+      <AutoRefresh />
+
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">Pipeline</h1>
+          <p className="mt-1 text-xs text-muted">
+            {active} active · {waiting} waiting for approval · {formatCost(spend)} spent in total
+          </p>
+        </div>
+        <Link href="/tasks/new">
+          <Button>New task</Button>
+        </Link>
+      </div>
+
+      <SetupNotice />
+
+      {repos.length === 0 ? (
+        <EmptyState
+          title="Connect a repository first"
+          description="The pipeline reads real code to estimate the work and delivers the result as a pull request, so it needs a GitHub repository to work against."
+          action={
+            <Link href="/repos">
+              <Button variant="secondary">Add a repository</Button>
+            </Link>
+          }
+        />
+      ) : tasks.length === 0 ? (
+        <EmptyState
+          title="No tasks yet"
+          description="Describe a feature and the pipeline will refine it, plan it, build it, review it, and open a pull request."
+          action={
+            <Link href="/tasks/new">
+              <Button>Create the first task</Button>
+            </Link>
+          }
+        />
+      ) : (
+        <TaskBoard tasks={tasks} />
+      )}
+    </>
+  );
+}
