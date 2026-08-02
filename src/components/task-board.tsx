@@ -22,10 +22,12 @@ function TaskCard({ task }: { task: BoardTask }) {
   return (
     <Link
       href={`/tasks/${task.id}`}
-      className="block rounded-md border border-border bg-surface-raised p-3 transition-colors hover:border-accent/60"
+      className="block rounded-md border border-border bg-surface-raised p-2.5 transition-colors hover:border-accent/60"
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium leading-snug">{task.title}</p>
+        {/* `min-w-0` + `break-words` so a long unbroken title cannot widen the
+            grid column and reintroduce horizontal overflow. */}
+        <p className="min-w-0 break-words text-sm font-medium leading-snug">{task.title}</p>
         {isRunning ? (
           <span
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-accent animate-pipeline-pulse"
@@ -62,6 +64,12 @@ function TaskCard({ task }: { task: BoardTask }) {
  *
  * Terminal states other than COMPLETED are collected into a trailing column so
  * the board does not grow a column per failure mode.
+ *
+ * The twelve columns are laid out as a wrapping grid rather than a horizontally
+ * scrolling row: at twelve across even a wide monitor leaves each column too
+ * narrow to read, so the columns wrap into whole rows instead. The counts are
+ * chosen to divide twelve evenly (2 / 3 / 4 / 6), which keeps every row full
+ * and preserves the left-to-right, top-to-bottom pipeline order.
  */
 export function TaskBoard({ tasks }: { tasks: BoardTask[] }) {
   const byStage = new Map<Stage, BoardTask[]>();
@@ -87,29 +95,42 @@ export function TaskBoard({ tasks }: { tasks: BoardTask[] }) {
   ];
 
   return (
-    <div className="overflow-x-auto pb-2">
-      <div className="flex min-w-max gap-3">
-        {columns.map((column) => (
-          <section
-            key={column.key}
-            className="flex w-64 shrink-0 flex-col rounded-lg border border-border bg-surface"
-          >
-            <header className="flex items-center justify-between border-b border-border px-3 py-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-                {column.label}
-              </h2>
-              <span className="text-[11px] text-muted">{column.items.length}</span>
-            </header>
+    // `items-start` keeps each column as tall as its own cards. Stretching them
+    // to match the tallest column in the row would leave large empty boxes,
+    // which is the opposite of fitting the board on one screen.
+    <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+      {columns.map((column) => (
+        <section
+          key={column.key}
+          className="flex min-w-0 flex-col rounded-lg border border-border bg-surface"
+        >
+          <header className="flex items-baseline justify-between gap-1 border-b border-border px-2.5 py-2">
+            <h2
+              className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted"
+              title={column.label}
+            >
+              {column.label}
+            </h2>
+            <span className="shrink-0 text-[11px] tabular-nums text-muted">
+              {column.items.length}
+            </span>
+          </header>
+
+          {column.items.length === 0 ? (
+            // An empty column collapses to the header plus a thin strip: with a
+            // linear pipeline most columns are empty at any moment, and giving
+            // each one a full-height placeholder is what pushes the board off
+            // the screen.
+            <div className="px-2.5 py-2 text-[11px] text-muted/50">—</div>
+          ) : (
             <div className="flex flex-col gap-2 p-2">
-              {column.items.length === 0 ? (
-                <p className="px-1 py-3 text-[11px] text-muted/70">Empty</p>
-              ) : (
-                column.items.map((task) => <TaskCard key={task.id} task={task} />)
-              )}
+              {column.items.map((task) => (
+                <TaskCard key={task.id} task={task} />
+              ))}
             </div>
-          </section>
-        ))}
-      </div>
+          )}
+        </section>
+      ))}
     </div>
   );
 }
