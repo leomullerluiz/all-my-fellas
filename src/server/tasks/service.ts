@@ -105,6 +105,7 @@ export function createTask(input: {
   title: string;
   description: string;
   priority: Priority;
+  requireHumanCodeReview?: boolean;
 }): TaskRow {
   const id = newId("task");
   const task = db
@@ -115,6 +116,7 @@ export function createTask(input: {
       title: input.title,
       description: input.description,
       priority: input.priority,
+      requireHumanCodeReview: input.requireHumanCodeReview ?? false,
       status: "queued",
       currentStage: "CREATED",
     })
@@ -152,12 +154,19 @@ export function activeTasks(): Array<{ id: string; title: string; status: string
     .all();
 }
 
-/** Fields a user may change while a task has not started yet. */
+/**
+ * Fields a user may change while a task has not started yet.
+ *
+ * `requireHumanCodeReview` is here rather than on a started task because
+ * flipping it mid-flight would either skip a gate the task already passed or
+ * insert one it already went by.
+ */
 export type EditableTaskFields = {
   repoId: string;
   title: string;
   description: string;
   priority: Priority;
+  requireHumanCodeReview: boolean;
 };
 
 export function updateTaskFields(id: string, fields: EditableTaskFields): TaskRow | null {

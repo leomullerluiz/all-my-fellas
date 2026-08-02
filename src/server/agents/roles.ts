@@ -80,6 +80,20 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     needsWorkspace: true,
     canWrite: true,
   },
+  CODE_REVIEW: {
+    stage: "CODE_REVIEW",
+    name: "Code Reviewer",
+    promptFile: "code-reviewer.md",
+    // Read-only. The reviewer needs `git diff`/`log`/`show`, all already on the
+    // Bash allowlist, and deliberately does not run the test suite: that is
+    // QA's job and doubling it would double the slowest part of the pipeline.
+    allowedTools: ["Read", "Grep", "Glob", "Bash"],
+    permissionMode: "default",
+    consumes: ["stories", "techplan", "dev_report"],
+    produces: "code_review_report",
+    needsWorkspace: true,
+    canWrite: false,
+  },
   QA: {
     stage: "QA",
     name: "QA Engineer",

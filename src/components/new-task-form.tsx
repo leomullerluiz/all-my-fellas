@@ -15,6 +15,7 @@ export type TaskFormValues = {
   title: string;
   description: string;
   priority: Priority;
+  requireHumanCodeReview: boolean;
 };
 
 export type TaskFormProps = {
@@ -48,6 +49,9 @@ export function NewTaskForm({
   const [title, setTitle] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [priority, setPriority] = useState<Priority>(initial?.priority ?? "medium");
+  const [requireHumanCodeReview, setRequireHumanCodeReview] = useState(
+    initial?.requireHumanCodeReview ?? false,
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
@@ -65,7 +69,14 @@ export function NewTaskForm({
     setSubmitError(null);
     setSubmitting(start ? "start" : "queue");
 
-    const body = { repoId, title, description, priority, ...(isEdit ? {} : { start }) };
+    const body = {
+      repoId,
+      title,
+      description,
+      priority,
+      requireHumanCodeReview,
+      ...(isEdit ? {} : { start }),
+    };
     const response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
       method: isEdit ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
@@ -177,6 +188,25 @@ export function NewTaskForm({
                 ))}
               </Select>
             </Field>
+
+            {/* A process choice, so it sits with priority rather than with the
+                description, which is the request itself. */}
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={requireHumanCodeReview}
+                onChange={(event) => setRequireHumanCodeReview(event.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-foreground">
+                  Require human code review before delivery
+                </span>
+                <span className="mt-0.5 block text-muted">
+                  After QA passes, the task waits for you to read the diff and approve it.
+                </span>
+              </span>
+            </label>
 
             {submitError ? <p className="text-xs text-danger">{submitError}</p> : null}
 

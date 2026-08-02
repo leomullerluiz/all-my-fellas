@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  InvalidGateDecisionError,
   InvalidTransitionError,
   type PipelineContext,
   nextTransition,
@@ -8,8 +9,9 @@ import {
 
 const base: PipelineContext = {
   developmentAttempts: 0,
-  qaMaxCycles: 2,
+  reworkMaxCycles: 2,
   planGateRequired: true,
+  humanCodeReviewRequired: false,
 };
 
 describe("nextTransition", () => {
@@ -55,6 +57,138 @@ describe("nextTransition", () => {
     ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 1 });
   });
 
+  it("sends development to code review, not straight to QA", () => {
+    expect(
+      nextTransition("DEVELOPMENT", { kind: "stage_succeeded", stage: "DEVELOPMENT" }, base),
+    ).toEqual({ type: "run", stage: "CODE_REVIEW", attempt: 1 });
+  });
+});
+
+describe("code review", () => {
+  it("sends an approved review to QA", () => {
+    expect(
+      nextTransition(
+        "CODE_REVIEW",
+        { kind: "stage_succeeded", stage: "CODE_REVIEW", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "QA", attempt: 1 });
+  });
+
+  it("sends a rejected review back to development", () => {
+    expect(
+      nextTransition(
+        "CODE_REVIEW",
+        { kind: "stage_succeeded", stage: "CODE_REVIEW", reviewVerdict: "changes_requested" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("treats a missing verdict as changes requested", () => {
+    expect(
+      nextTransition(
+        "CODE_REVIEW",
+        { kind: "stage_succeeded", stage: "CODE_REVIEW" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toMatchObject({ type: "run", stage: "DEVELOPMENT" });
+  });
+});
+
+describe("QA", () => {
+  it("goes to homologation when no human review was requested", () => {
+    expect(
+      nextTransition(
+        "QA",
+        { kind: "stage_succeeded", stage: "QA", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "PO_HOMOLOGATION", attempt: 1 });
+  });
+
+  it("parks on the human code review gate when the task opted in", () => {
+    expect(
+      nextTransition(
+        "QA",
+        { kind: "stage_succeeded", stage: "QA", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1, humanCodeReviewRequired: true },
+      ),
+    ).toEqual({ type: "await_gate", gate: "HUMAN_CODE_REVIEW" });
+  });
+
+  it("sends a rejection back to development", () => {
+    expect(
+      nextTransition(
+        "QA",
+        { kind: "stage_succeeded", stage: "QA", reviewVerdict: "changes_requested" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("treats a missing verdict as changes requested", () => {
+    expect(
+      nextTransition(
+        "QA",
+        { kind: "stage_succeeded", stage: "QA" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toMatchObject({ type: "run", stage: "DEVELOPMENT" });
+  });
+});
+
+describe("the shared rework budget", () => {
+  // Every reviewer draws on the same allowance, so the outcome must not depend
+  // on which one rejected.
+  const rejections = [
+    {
+      name: "code review",
+      signal: {
+        kind: "stage_succeeded",
+        stage: "CODE_REVIEW",
+        reviewVerdict: "changes_requested",
+      },
+      from: "CODE_REVIEW",
+    },
+    {
+      name: "QA",
+      signal: { kind: "stage_succeeded", stage: "QA", reviewVerdict: "changes_requested" },
+      from: "QA",
+    },
+    {
+      name: "a human reviewer",
+      signal: {
+        kind: "gate_decided",
+        gate: "HUMAN_CODE_REVIEW",
+        decision: "request_changes",
+        comment: "fix it",
+      },
+      from: "HUMAN_CODE_REVIEW",
+    },
+  ] as const;
+
+  for (const { name, signal, from } of rejections) {
+    it(`allows exactly reworkMaxCycles reworks when ${name} rejects`, () => {
+      expect(
+        nextTransition(from, signal, { ...base, developmentAttempts: 2 }),
+      ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 3 });
+    });
+
+    it(`fails once the budget is exhausted and ${name} rejects`, () => {
+      const transition = nextTransition(from, signal, {
+        ...base,
+        developmentAttempts: 3,
+      });
+      expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
+      // The reason must name the cause; "failed" alone is baffling right after
+      // a reviewer explicitly asked for changes.
+      expect((transition as { reason: string }).reason).toContain("rework budget");
+    });
+  }
+});
+
+describe("gates", () => {
   it("moves an approved plan into development", () => {
     expect(
       nextTransition(
@@ -65,14 +199,62 @@ describe("nextTransition", () => {
     ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 1 });
   });
 
-  it("rejects the task when a gate is rejected", () => {
+  it("sends an approved human code review to homologation, not to delivery", () => {
+    // Regression: the previous ternary treated every non-PLAN_GATE approval as
+    // "go to delivery", which would have skipped homologation and the
+    // stakeholder gate entirely.
     expect(
       nextTransition(
-        "PLAN_GATE",
-        { kind: "gate_decided", gate: "PLAN_GATE", decision: "reject", comment: "wrong module" },
+        "HUMAN_CODE_REVIEW",
+        { kind: "gate_decided", gate: "HUMAN_CODE_REVIEW", decision: "approve" },
         base,
       ),
-    ).toEqual({ type: "terminal", stage: "REJECTED", reason: "wrong module" });
+    ).toEqual({ type: "run", stage: "PO_HOMOLOGATION", attempt: 1 });
+  });
+
+  it("still delivers after the stakeholder approves", () => {
+    expect(
+      nextTransition(
+        "STAKEHOLDER_GATE",
+        { kind: "gate_decided", gate: "STAKEHOLDER_GATE", decision: "approve" },
+        base,
+      ),
+    ).toEqual({ type: "run", stage: "DELIVERY", attempt: 1 });
+  });
+
+  it("sends a human request_changes back to development", () => {
+    expect(
+      nextTransition(
+        "HUMAN_CODE_REVIEW",
+        {
+          kind: "gate_decided",
+          gate: "HUMAN_CODE_REVIEW",
+          decision: "request_changes",
+          comment: "extract the helper",
+        },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("rejects the task when any gate is rejected", () => {
+    for (const gate of ["PLAN_GATE", "HUMAN_CODE_REVIEW", "STAKEHOLDER_GATE"] as const) {
+      expect(
+        nextTransition(gate, { kind: "gate_decided", gate, decision: "reject", comment: "no" }, base),
+      ).toEqual({ type: "terminal", stage: "REJECTED", reason: "no" });
+    }
+  });
+
+  it("refuses request_changes on gates that do not review code", () => {
+    for (const gate of ["PLAN_GATE", "STAKEHOLDER_GATE"] as const) {
+      expect(() =>
+        nextTransition(
+          gate,
+          { kind: "gate_decided", gate, decision: "request_changes", comment: "x" },
+          base,
+        ),
+      ).toThrow(InvalidGateDecisionError);
+    }
   });
 
   it("refuses a gate decision for a gate the task is not on", () => {
@@ -84,57 +266,9 @@ describe("nextTransition", () => {
       ),
     ).toThrow(InvalidTransitionError);
   });
+});
 
-  it("sends approved QA to homologation", () => {
-    expect(
-      nextTransition(
-        "QA",
-        { kind: "stage_succeeded", stage: "QA", qaVerdict: "approved" },
-        { ...base, developmentAttempts: 1 },
-      ),
-    ).toEqual({ type: "run", stage: "PO_HOMOLOGATION", attempt: 1 });
-  });
-
-  it("sends rejected QA back to development with the next attempt number", () => {
-    expect(
-      nextTransition(
-        "QA",
-        { kind: "stage_succeeded", stage: "QA", qaVerdict: "changes_requested" },
-        { ...base, developmentAttempts: 1 },
-      ),
-    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
-  });
-
-  it("treats a missing QA verdict as changes requested", () => {
-    expect(
-      nextTransition(
-        "QA",
-        { kind: "stage_succeeded", stage: "QA" },
-        { ...base, developmentAttempts: 1 },
-      ),
-    ).toMatchObject({ type: "run", stage: "DEVELOPMENT" });
-  });
-
-  it("fails the task once the QA rework budget is exhausted", () => {
-    // qaMaxCycles = 2 allows the first pass plus two reworks: attempts 1..3.
-    const transition = nextTransition(
-      "QA",
-      { kind: "stage_succeeded", stage: "QA", qaVerdict: "changes_requested" },
-      { ...base, developmentAttempts: 3 },
-    );
-    expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
-  });
-
-  it("allows exactly qaMaxCycles reworks before failing", () => {
-    expect(
-      nextTransition(
-        "QA",
-        { kind: "stage_succeeded", stage: "QA", qaVerdict: "changes_requested" },
-        { ...base, developmentAttempts: 2 },
-      ),
-    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 3 });
-  });
-
+describe("the tail of the pipeline", () => {
   it("parks on the stakeholder gate after homologation", () => {
     expect(
       nextTransition(
@@ -145,15 +279,7 @@ describe("nextTransition", () => {
     ).toEqual({ type: "await_gate", gate: "STAKEHOLDER_GATE" });
   });
 
-  it("delivers after the stakeholder approves and completes afterwards", () => {
-    expect(
-      nextTransition(
-        "STAKEHOLDER_GATE",
-        { kind: "gate_decided", gate: "STAKEHOLDER_GATE", decision: "approve" },
-        base,
-      ),
-    ).toEqual({ type: "run", stage: "DELIVERY", attempt: 1 });
-
+  it("completes after delivery", () => {
     expect(
       nextTransition("DELIVERY", { kind: "stage_succeeded", stage: "DELIVERY" }, base),
     ).toEqual({ type: "terminal", stage: "COMPLETED" });

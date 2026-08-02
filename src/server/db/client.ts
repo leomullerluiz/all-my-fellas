@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 
 import { resolveDatabaseFile } from "../config/env";
 import { BOOTSTRAP_SQL } from "./bootstrap.sql";
+import { runMigrations } from "./migrations";
 import * as schema from "./schema";
 
 /**
@@ -26,6 +27,8 @@ function createDatabase() {
   // another process that is opening the same file at the same moment.
   sqlite.pragma("busy_timeout = 5000");
   sqlite.exec(BOOTSTRAP_SQL);
+  // The bootstrap creates missing tables; migrations evolve existing ones.
+  runMigrations(sqlite);
 
   return drizzle(sqlite, { schema });
 }

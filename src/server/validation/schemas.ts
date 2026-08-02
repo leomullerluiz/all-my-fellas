@@ -17,6 +17,8 @@ export const taskFieldsSchema = z.object({
     .min(20, "Describe the feature in at least 20 characters.")
     .max(20_000),
   priority: z.enum(PRIORITIES).default("medium"),
+  /** Park at HUMAN_CODE_REVIEW before delivery. Not changeable after start. */
+  requireHumanCodeReview: z.boolean().default(false),
 });
 
 export const createTaskSchema = taskFieldsSchema.extend({
@@ -36,10 +38,20 @@ export const listTasksQuerySchema = z.object({
   status: z.enum(TASK_STATUSES).optional(),
 });
 
-export const gateDecisionSchema = z.object({
-  decision: z.enum(GATE_DECISIONS),
-  comment: z.string().trim().max(4_000).optional(),
-});
+export const gateDecisionSchema = z
+  .object({
+    decision: z.enum(GATE_DECISIONS),
+    comment: z.string().trim().max(4_000).optional(),
+  })
+  .refine(
+    (value) => value.decision !== "request_changes" || (value.comment ?? "") !== "",
+    {
+      // Without it the Developer has nothing to act on and a full rework cycle
+      // is spent re-submitting the same code.
+      message: "Requesting changes needs a comment saying what to change.",
+      path: ["comment"],
+    },
+  );
 export type GateDecisionInput = z.infer<typeof gateDecisionSchema>;
 
 export const gateParamSchema = z.enum(GATES);

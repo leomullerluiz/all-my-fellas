@@ -1,0 +1,84 @@
+import type { Database } from "better-sqlite3";
+
+/**
+ * Schema migrations beyond the initial bootstrap.
+ *
+ * `bootstrap.sql.ts` uses `CREATE TABLE IF NOT EXISTS`, which creates a fresh
+ * database but silently does nothing to an existing one. Anything that changes
+ * an existing table has to live here instead.
+ *
+ * Versioning uses SQLite's built-in `PRAGMA user_version`, which needs no extra
+ * table and cannot drift from the file it describes. Migration `n` in the array
+ * takes the database from `user_version = n` to `n + 1`.
+ *
+ * Rules for adding one:
+ * - Append only. Never edit or reorder an existing entry — a database that has
+ *   already run it will not run it again.
+ * - Keep each migration idempotent where cheap (see `addColumn`), so a database
+ *   left half-migrated by a crash can be re-run safely.
+ */
+
+type Migration = {
+  /** Short description, surfaced in the startup log. */
+  readonly name: string;
+  readonly up: (sqlite: Database) => void;
+};
+
+/** Adds a column only when it is missing, so re-running is harmless. */
+function addColumn(
+  sqlite: Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const columns = sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (columns.some((entry) => entry.name === column)) return;
+  sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+const MIGRATIONS: readonly Migration[] = [
+  {
+    name: "task opt-in for the human code review gate",
+    up: (sqlite) => {
+      addColumn(
+        sqlite,
+        "tasks",
+        "require_human_code_review",
+        "INTEGER NOT NULL DEFAULT 0",
+      );
+    },
+  },
+];
+
+export type MigrationResult = { from: number; to: number; applied: string[] };
+
+/**
+ * Brings the database up to the current schema version.
+ *
+ * Each migration runs in its own transaction together with the version bump, so
+ * a failure leaves the database at the last fully applied version rather than
+ * half-way through one.
+ */
+export function runMigrations(sqlite: Database): MigrationResult {
+  const [{ user_version: startingVersion }] = sqlite.pragma("user_version") as Array<{
+    user_version: number;
+  }>;
+
+  const applied: string[] = [];
+
+  for (let version = startingVersion; version < MIGRATIONS.length; version += 1) {
+    const migration = MIGRATIONS[version];
+    const run = sqlite.transaction(() => {
+      migration.up(sqlite);
+      // `PRAGMA user_version` does not accept a bound parameter.
+      sqlite.pragma(`user_version = ${version + 1}`);
+    });
+    run();
+    applied.push(migration.name);
+  }
+
+  return { from: startingVersion, to: MIGRATIONS.length, applied };
+}
+
+/** Current schema version this build expects. Exported for diagnostics. */
+export const SCHEMA_VERSION = MIGRATIONS.length;

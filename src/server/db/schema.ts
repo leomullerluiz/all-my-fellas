@@ -47,6 +47,10 @@ export const tasks = sqliteTable(
     difficulty: text("difficulty").$type<Difficulty>(),
     /** Estimated by the Architect: low / medium / high. */
     criticality: text("criticality").$type<Criticality>(),
+    /** Opt-in, chosen at creation: park at HUMAN_CODE_REVIEW before delivery. */
+    requireHumanCodeReview: integer("require_human_code_review", { mode: "boolean" })
+      .notNull()
+      .default(false),
     branchName: text("branch_name"),
     prUrl: text("pr_url"),
     workspacePath: text("workspace_path"),

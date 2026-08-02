@@ -12,16 +12,25 @@ import {
   listApprovals,
   listStageRuns,
   recordApproval,
+  saveArtifact,
   setTaskStage,
   updateTaskFields,
 } from "../tasks/service";
+import type { TaskRow } from "../db/schema";
 import {
+  InvalidGateDecisionError,
   type PipelineContext,
   type PipelineSignal,
   type Transition,
   nextTransition,
 } from "./state-machine";
-import { type Gate, type GateDecision, type Stage, isAgentStage } from "./stages";
+import {
+  GATE_ALLOWED_DECISIONS,
+  type Gate,
+  type GateDecision,
+  type Stage,
+  isAgentStage,
+} from "./stages";
 
 /**
  * Applies pipeline transitions.
@@ -40,15 +49,16 @@ export class TaskNotFoundError extends Error {
 }
 
 /** Builds the state-machine context from persisted task state and settings. */
-function contextFor(taskId: string, criticality: string | null): PipelineContext {
+function contextFor(task: TaskRow): PipelineContext {
   const settings = getSettings();
   const planGateRequired = !(
-    settings.autoApprovePlanForLowCriticality && criticality === "low"
+    settings.autoApprovePlanForLowCriticality && task.criticality === "low"
   );
   return {
-    developmentAttempts: countStageRuns(taskId, "DEVELOPMENT"),
-    qaMaxCycles: settings.qaMaxCycles,
+    developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
+    reworkMaxCycles: settings.reworkMaxCycles,
     planGateRequired,
+    humanCodeReviewRequired: task.requireHumanCodeReview,
   };
 }
 
@@ -115,11 +125,7 @@ export function advanceTask(taskId: string, signal: PipelineSignal): Transition 
   const task = getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
 
-  const transition = nextTransition(
-    task.currentStage,
-    signal,
-    contextFor(taskId, task.criticality),
-  );
+  const transition = nextTransition(task.currentStage, signal, contextFor(task));
   applyTransition(taskId, transition);
   return transition;
 }
@@ -255,27 +261,55 @@ export function decideGate(input: {
   decision: GateDecision;
   comment?: string;
 }): Transition {
-  const task = getTask(input.taskId);
-  if (!task) throw new TaskNotFoundError(input.taskId);
-  if (task.currentStage !== input.gate) {
-    throw new GateError(
-      `Task is at ${task.currentStage}, not waiting on ${input.gate}.`,
-    );
-  }
+  return db.transaction(() => {
+    const task = getTask(input.taskId);
+    if (!task) throw new TaskNotFoundError(input.taskId);
+    if (task.currentStage !== input.gate) {
+      throw new GateError(
+        `Task is at ${task.currentStage}, not waiting on ${input.gate}.`,
+      );
+    }
+    if (!GATE_ALLOWED_DECISIONS[input.gate].includes(input.decision)) {
+      throw new InvalidGateDecisionError(input.gate, input.decision);
+    }
 
-  recordApproval(input);
-  appendEvent(input.taskId, null, {
-    type: "gate_decided",
-    gate: input.gate,
-    decision: input.decision,
-    comment: input.comment,
-  });
+    recordApproval(input);
+    appendEvent(input.taskId, null, {
+      type: "gate_decided",
+      gate: input.gate,
+      decision: input.decision,
+      comment: input.comment,
+    });
 
-  return advanceTask(input.taskId, {
-    kind: "gate_decided",
-    gate: input.gate,
-    decision: input.decision,
-    comment: input.comment,
+    // A comment the Developer never sees is worse than useless — the same code
+    // would come back. Persist it as a real artifact so it flows through the
+    // existing input machinery in `gatherInputs`.
+    if (input.decision === "request_changes") {
+      const comment = input.comment?.trim();
+      if (!comment) {
+        throw new GateError("Requesting changes needs a comment saying what to change.");
+      }
+      // `artifacts.stage_run_id` is NOT NULL and making it nullable would mean
+      // rebuilding the table in SQLite. The run the reviewer was looking at is
+      // the honest owner anyway, so the artifact hangs off that.
+      const reviewedRun = listStageRuns(input.taskId).at(-1);
+      if (!reviewedRun) {
+        throw new GateError("The task has no stage run to attach the review to.");
+      }
+      saveArtifact({
+        taskId: input.taskId,
+        stageRunId: reviewedRun.id,
+        type: "human_review",
+        contentMd: `## Requested Changes\n\n${comment}\n`,
+      });
+    }
+
+    return advanceTask(input.taskId, {
+      kind: "gate_decided",
+      gate: input.gate,
+      decision: input.decision,
+      comment: input.comment,
+    });
   });
 }
 

@@ -57,7 +57,7 @@ function banner(): void {
   }
   log(
     "info",
-    `Limits: ${settings.maxParallelTasks} parallel task(s), ${settings.qaMaxCycles} QA cycle(s).`,
+    `Limits: ${settings.maxParallelTasks} parallel task(s), ${settings.reworkMaxCycles} rework cycle(s).`,
   );
 }
 

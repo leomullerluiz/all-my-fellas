@@ -34,6 +34,7 @@ export default async function EditTaskPage(props: { params: Promise<{ id: string
         title: task.title,
         description: task.description,
         priority: task.priority,
+        requireHumanCodeReview: task.requireHumanCodeReview,
       }}
     />
   );

@@ -7,7 +7,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/field";
-import type { Gate, TaskStatus } from "@/server/pipeline/stages";
+import { GATE_ALLOWED_DECISIONS, type Gate, type TaskStatus } from "@/server/pipeline/stages";
 
 /** Human gate approval plus the retry / cancel controls. */
 
@@ -18,6 +18,12 @@ const GATE_COPY: Record<Gate, { title: string; description: string; approve: str
       "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer.",
     approve: "Approve plan",
   },
+  HUMAN_CODE_REVIEW: {
+    title: "Review the code",
+    description:
+      "Code review and QA have passed. Read the diff before this ships. Requesting changes sends the work back to the Developer with your comment.",
+    approve: "Approve code",
+  },
   STAKEHOLDER_GATE: {
     title: "Approve delivery",
     description:
@@ -26,26 +32,47 @@ const GATE_COPY: Record<Gate, { title: string; description: string; approve: str
   },
 };
 
-export function GatePanel({ taskId, gate }: { taskId: string; gate: Gate }) {
+type Decision = "approve" | "request_changes" | "reject";
+
+export function GatePanel({
+  taskId,
+  gate,
+  diffSummary,
+}: {
+  taskId: string;
+  gate: Gate;
+  /** e.g. "14 files changed, +320 −87" — shown so the size is visible up front. */
+  diffSummary?: string | null;
+}) {
   const router = useRouter();
   const [comment, setComment] = useState("");
-  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [busy, setBusy] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const copy = GATE_COPY[gate];
+  const allowed = GATE_ALLOWED_DECISIONS[gate];
+  const canRequestChanges = allowed.includes("request_changes");
 
-  async function decide(decision: "approve" | "reject") {
+  async function decide(decision: Decision) {
+    const trimmed = comment.trim();
+    // Enforced server-side too; catching it here saves a round trip and keeps
+    // the reviewer's text in the box.
+    if (decision === "request_changes" && trimmed === "") {
+      setError("Say what needs to change — the Developer only sees this comment.");
+      return;
+    }
+
     setBusy(decision);
     setError(null);
 
     const response = await fetch(`/api/tasks/${taskId}/gates/${gate}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, comment: comment.trim() || undefined }),
+      body: JSON.stringify({ decision, comment: trimmed || undefined }),
     });
 
     if (!response.ok) {
-      const payload = (await response.json()) as { error?: string };
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
       setError(payload.error ?? "Could not record the decision.");
       setBusy(null);
       return;
@@ -63,18 +90,44 @@ export function GatePanel({ taskId, gate }: { taskId: string; gate: Gate }) {
       </CardHeader>
       <CardBody className="flex flex-col gap-3">
         <p className="text-xs text-muted">{copy.description}</p>
+
+        {gate === "HUMAN_CODE_REVIEW" ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href={`/tasks/${taskId}/review`}
+              className="text-xs font-medium text-accent underline-offset-2 hover:underline"
+            >
+              Open the diff viewer →
+            </Link>
+            {diffSummary ? <span className="text-xs text-muted">{diffSummary}</span> : null}
+          </div>
+        ) : null}
+
         <Textarea
           value={comment}
           onChange={(event) => setComment(event.target.value)}
           rows={3}
-          placeholder="Optional comment, recorded with the decision"
+          placeholder={
+            canRequestChanges
+              ? "Required when requesting changes — this is all the Developer sees"
+              : "Optional comment, recorded with the decision"
+          }
           aria-label="Decision comment"
         />
         {error ? <p className="text-xs text-danger">{error}</p> : null}
+
         <div className="flex flex-wrap gap-2">
           <Button variant="success" disabled={busy !== null} onClick={() => decide("approve")}>
             {busy === "approve" ? "Recording…" : copy.approve}
           </Button>
+          {canRequestChanges ? (
+            <Button
+              disabled={busy !== null}
+              onClick={() => decide("request_changes")}
+            >
+              {busy === "request_changes" ? "Recording…" : "Request changes"}
+            </Button>
+          ) : null}
           <Button variant="danger" disabled={busy !== null} onClick={() => decide("reject")}>
             {busy === "reject" ? "Recording…" : "Reject"}
           </Button>

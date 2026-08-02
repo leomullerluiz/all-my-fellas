@@ -26,14 +26,14 @@ import {
 } from "../tasks/service";
 import {
   extractPlanEstimate,
-  extractQaVerdict,
+  extractReviewVerdict,
   validateArtifact,
 } from "./artifacts";
 import { advanceTask } from "./orchestrator";
 import { type ArtifactInput, truncateForPrompt } from "./prompt";
 import { runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, isAgentStage } from "./stages";
-import type { QaVerdict } from "./state-machine";
+import type { ReviewVerdict } from "./state-machine";
 
 /**
  * Stage execution as the worker performs it: prepare the workspace, run the
@@ -72,11 +72,14 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
     inputs.push({ type, content: artifact.contentMd });
   }
 
-  // On a rework cycle the Developer additionally receives the QA report — and
-  // only the report, never QA's transcript.
+  // On a rework cycle the Developer additionally receives the reviewers'
+  // reports — and only the reports, never their transcripts. Human feedback
+  // comes last so it reads as the final word.
   if (stage === "DEVELOPMENT" && attempt > 1) {
-    const qaReport = latestArtifact(taskId, "qa_report");
-    if (qaReport) inputs.push({ type: "qa_report", content: qaReport.contentMd });
+    for (const type of ["code_review_report", "qa_report", "human_review"] as const) {
+      const artifact = latestArtifact(taskId, type);
+      if (artifact) inputs.push({ type, content: artifact.contentMd });
+    }
   }
 
   return inputs;
@@ -135,9 +138,10 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
 
   const supplements: Array<{ label: string; body: string; fenced?: boolean }> = [];
 
-  if (workspacePath && (run.stage === "QA" || run.stage === "PO_HOMOLOGATION")) {
+  const wantsFullDiff = run.stage === "QA" || run.stage === "CODE_REVIEW";
+  if (workspacePath && (wantsFullDiff || run.stage === "PO_HOMOLOGATION")) {
     const base = task.repo.defaultBranch;
-    if (run.stage === "QA") {
+    if (wantsFullDiff) {
       const diff = await diffAgainstBase(workspacePath, base);
       supplements.push({
         label: `Branch diff against origin/${base}`,
@@ -222,7 +226,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     artifactType: role.produces,
   });
 
-  let qaVerdict: QaVerdict | undefined;
+  let reviewVerdict: ReviewVerdict | undefined;
 
   if (run.stage === "ARCHITECTURE") {
     const estimate = extractPlanEstimate(content);
@@ -254,12 +258,12 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     }
   }
 
-  if (run.stage === "QA") {
-    qaVerdict = extractQaVerdict(content);
+  if (run.stage === "QA" || run.stage === "CODE_REVIEW") {
+    reviewVerdict = extractReviewVerdict(content);
     appendEvent(task.id, stageRunId, {
       type: "log",
-      level: qaVerdict === "approved" ? "info" : "warn",
-      message: `QA verdict: ${qaVerdict}.`,
+      level: reviewVerdict === "approved" ? "info" : "warn",
+      message: `${role.name} verdict: ${reviewVerdict}.`,
     });
   }
 
@@ -271,7 +275,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     costUsd: result.costUsd,
   });
 
-  advanceTask(task.id, { kind: "stage_succeeded", stage: run.stage, qaVerdict });
+  advanceTask(task.id, { kind: "stage_succeeded", stage: run.stage, reviewVerdict });
 }
 
 /** Builds the pull request body from the stories and the developer report. */

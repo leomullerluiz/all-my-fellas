@@ -134,24 +134,45 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
             </Field>
 
             <Field
-              label="QA rework cycles"
-              htmlFor="qaMaxCycles"
-              hint="How many times QA may send the work back to the Developer before the task fails."
+              label="Rework cycles"
+              htmlFor="reworkMaxCycles"
+              hint="How many times code review, QA or your own review may send work back to the Developer before the task fails. The budget is shared between all three."
             >
               <Input
-                id="qaMaxCycles"
+                id="reworkMaxCycles"
                 type="number"
                 min={0}
                 max={10}
-                value={settings.qaMaxCycles}
+                value={settings.reworkMaxCycles}
                 onChange={(event) =>
                   setSettings((current) => ({
                     ...current,
-                    qaMaxCycles: Number(event.target.value),
+                    reworkMaxCycles: Number(event.target.value),
                   }))
                 }
               />
             </Field>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted">Human code review</span>
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={settings.humanCodeReviewDefault}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      humanCodeReviewDefault: event.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  Tick <strong>Require human code review</strong> by default on new tasks.
+                  It stays a per-task choice either way.
+                </span>
+              </label>
+            </div>
 
             <Field
               label="Workspace retention (days)"

@@ -18,9 +18,15 @@ export type AppSettings = {
   /** Model id per agent stage. */
   models: Record<AgentStage, string>;
   maxParallelTasks: number;
-  qaMaxCycles: number;
+  /**
+   * Maximum rework cycles, shared by every reviewer that can send work back to
+   * the Developer: code review, QA and a human `request_changes`.
+   */
+  reworkMaxCycles: number;
   /** Skip the human plan gate when the Architect rates criticality as low. */
   autoApprovePlanForLowCriticality: boolean;
+  /** Pre-selected value of "require human code review" on the new-task form. */
+  humanCodeReviewDefault: boolean;
   /** Per-stage turn ceiling; caps the cost of a runaway agent. */
   maxTurns: Record<AgentStage, number>;
   workspaceRetentionDays: number;
@@ -35,17 +41,24 @@ export function defaultSettings(): AppSettings {
       PO_REFINEMENT: models.default,
       ARCHITECTURE: models.default,
       DEVELOPMENT: models.default,
+      CODE_REVIEW: models.default,
       QA: models.default,
       PO_HOMOLOGATION: models.light,
     },
     maxParallelTasks: limits.maxParallelTasks,
-    qaMaxCycles: limits.qaMaxCycles,
+    reworkMaxCycles: limits.reworkMaxCycles,
     autoApprovePlanForLowCriticality: false,
+    // The pipeline already has two mandatory human gates; a third by default
+    // would triple the interaction cost of every task.
+    humanCodeReviewDefault: false,
     maxTurns: {
       STAKEHOLDER_REFINEMENT: 6,
       PO_REFINEMENT: 12,
       ARCHITECTURE: 30,
       DEVELOPMENT: 80,
+      // Reading a diff should not need more; a reviewer that hits the ceiling
+      // is exploring the repository instead of reviewing the change.
+      CODE_REVIEW: 40,
       QA: 40,
       PO_HOMOLOGATION: 10,
     },

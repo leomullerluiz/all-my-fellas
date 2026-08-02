@@ -120,13 +120,18 @@ CREATED
            └─► ARCHITECTURE   agent · techplan.md
                 └─► PLAN_GATE            human · approve / reject
                      └─► DEVELOPMENT     agent · commits + dev-report.md
-                          └─► QA         agent · qa-report.md
-                               ├─ changes_requested → DEVELOPMENT (max N cycles)
-                               └─► PO_HOMOLOGATION  agent · homolog-report.md
-                                    └─► STAKEHOLDER_GATE   human
-                                         └─► DELIVERY      worker · push + PR
-                                              └─► COMPLETED
+                          └─► CODE_REVIEW  agent · code-review-report.md
+                               ├─ changes_requested → DEVELOPMENT
+                               └─► QA       agent · qa-report.md
+                                    ├─ changes_requested → DEVELOPMENT
+                                    └─► HUMAN_CODE_REVIEW   human · optional
+                                         ├─ request_changes → DEVELOPMENT
+                                         └─► PO_HOMOLOGATION  agent
+                                              └─► STAKEHOLDER_GATE   human
+                                                   └─► DELIVERY  worker · push + PR
+                                                        └─► COMPLETED
 
+Rework from any reviewer shares one budget (REWORK_MAX_CYCLES).
 Other terminals: REJECTED (gate), FAILED (technical), CANCELLED (user)
 ```
 
@@ -135,9 +140,21 @@ Other terminals: REJECTED (gate), FAILED (technical), CANCELLED (user)
 | Stakeholder | raw request | `brief.md` | none |
 | Product Owner | `brief.md` + repo | `stories.md` | Read, Grep, Glob |
 | Architect | `brief.md`, `stories.md` + repo | `techplan.md` | + Bash (read-only) |
-| Developer | `stories.md`, `techplan.md` (+ `qa-report.md` on rework) | commits, `dev-report.md` | + Edit, Write |
+| Developer | `stories.md`, `techplan.md` (+ reviewer reports on rework) | commits, `dev-report.md` | + Edit, Write |
+| Code Reviewer | `stories.md`, `techplan.md`, `dev-report.md`, branch diff | `code-review-report.md` | Read, Grep, Glob, Bash |
 | QA | `stories.md`, `dev-report.md`, branch diff | `qa-report.md` | Read, Grep, Glob, Bash |
 | Homologation | `stories.md`, `qa-report.md`, diff summary | `homolog-report.md` | Read |
+
+**Code review runs before QA.** Reviewing a diff is cheap; QA runs the test
+suite, the linter and the build. Catching a defect before paying for that is
+worth the ordering, and a rejection costs one agent run to detect instead of
+two. QA's prompt is correspondingly narrow — it verifies acceptance criteria and
+does not re-review code quality.
+
+**Human code review is opt-in per task**, chosen at creation. When enabled the
+task parks after QA until you read the diff at `/tasks/{id}/review` and decide.
+*Request changes* sends the work back to the Developer, and your comment is
+persisted as `human-review.md` so it actually reaches their prompt.
 
 Every artifact must contain a fixed set of `##` sections, validated by the worker
 before the pipeline advances. A malformed artifact fails the stage rather than
@@ -199,6 +216,7 @@ which is what makes two writer processes on one file safe.
 | `DELETE /api/tasks/:id` | Delete a task that has not started |
 | `GET /api/tasks/:id` | Detail: stage, runs, artifacts, approvals, cost |
 | `GET /api/tasks/:id/stream` | **SSE** — live event tail, resumable via `Last-Event-ID` |
+| `GET /api/tasks/:id/diff` | Changed-file index, or one file's patch with `?file=` |
 | `POST /api/tasks/:id/gates/:gate` | Record a human decision |
 | `POST /api/tasks/:id/retry` | Re-run the failed stage |
 | `POST /api/tasks/:id/cancel` | Cancel |
@@ -219,7 +237,7 @@ worker re-reads them at the start of every job.
 | `DATABASE_URL` | `file:./data/pipeline.db` | SQLite file |
 | `WORKSPACES_DIR` | `./workspaces` | Where task clones live |
 | `MAX_PARALLEL_TASKS` | `1` | Keep at 1 on a subscription |
-| `QA_MAX_CYCLES` | `2` | QA → Developer rework budget |
+| `REWORK_MAX_CYCLES` | `2` | Shared rework budget (old `QA_MAX_CYCLES` still read) |
 | `MODEL_LIGHT` / `MODEL_DEFAULT` / `MODEL_HEAVY` | `claude-haiku-4-5` / `claude-sonnet-5` / `claude-opus-5` | Model tiers |
 | `WORKSPACE_RETENTION_DAYS` | `7` | How long a finished clone is kept |
 

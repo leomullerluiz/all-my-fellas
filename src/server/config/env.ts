@@ -94,14 +94,17 @@ export function resolveModels(): ModelTierConfig {
 
 export type RuntimeLimits = {
   maxParallelTasks: number;
-  qaMaxCycles: number;
+  reworkMaxCycles: number;
   workspaceRetentionDays: number;
 };
 
 export function resolveLimits(): RuntimeLimits {
   return {
     maxParallelTasks: Math.max(1, int("MAX_PARALLEL_TASKS", 1)),
-    qaMaxCycles: Math.max(0, int("QA_MAX_CYCLES", 2)),
+    // Renamed from QA_MAX_CYCLES now that code review and the human gate share
+    // the same budget. The old name is still honoured so existing `.env` files
+    // keep working.
+    reworkMaxCycles: Math.max(0, int("REWORK_MAX_CYCLES", int("QA_MAX_CYCLES", 2))),
     workspaceRetentionDays: Math.max(0, int("WORKSPACE_RETENTION_DAYS", 7)),
   };
 }

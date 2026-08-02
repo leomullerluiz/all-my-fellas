@@ -8,6 +8,7 @@ import { GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
+import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
 import { capacity } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import {
@@ -35,6 +36,20 @@ export default async function TaskDetailPage(props: {
   const slots = capacity();
   const notStarted = task.currentStage === "CREATED";
   const live = ["running", "awaiting_gate"].includes(task.status);
+
+  // Only read the workspace when a diff can actually exist; on the gate the
+  // summary tells the reviewer how big the review is before they open it.
+  let diffSummary: string | null = null;
+  if (task.workspacePath && task.currentStage === "HUMAN_CODE_REVIEW") {
+    try {
+      diffSummary = summarizeDiff(
+        await readDiffIndex(task.workspacePath, task.repo.defaultBranch),
+      );
+    } catch {
+      // A missing or broken workspace must not take the whole page down.
+      diffSummary = null;
+    }
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -70,6 +85,17 @@ export default async function TaskDetailPage(props: {
           {task.branchName ? (
             <span className="font-mono text-[11px]">{task.branchName}</span>
           ) : null}
+          {task.requireHumanCodeReview ? (
+            <Badge tone="warning">human code review</Badge>
+          ) : null}
+          {task.workspacePath ? (
+            <Link
+              href={`/tasks/${task.id}/review`}
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              View diff
+            </Link>
+          ) : null}
           {task.prUrl ? (
             <Link
               href={task.prUrl}
@@ -90,7 +116,7 @@ export default async function TaskDetailPage(props: {
       </header>
 
       {isGate(task.currentStage) ? (
-        <GatePanel taskId={task.id} gate={task.currentStage} />
+        <GatePanel taskId={task.id} gate={task.currentStage} diffSummary={diffSummary} />
       ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
