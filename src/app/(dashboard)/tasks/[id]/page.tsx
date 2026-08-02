@@ -8,6 +8,7 @@ import { GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
+import { capacity } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import {
   getTaskWithRepo,
@@ -31,7 +32,9 @@ export default async function TaskDetailPage(props: {
   const artifacts = listLatestArtifacts(id);
   const approvals = listApprovals(id);
   const cost = totalCostForTask(id);
-  const live = ["queued", "running", "awaiting_gate"].includes(task.status);
+  const slots = capacity();
+  const notStarted = task.currentStage === "CREATED";
+  const live = ["running", "awaiting_gate"].includes(task.status);
 
   return (
     <div className="flex flex-col gap-5">
@@ -45,7 +48,13 @@ export default async function TaskDetailPage(props: {
             </div>
             <p className="mt-1 font-mono text-[11px] text-muted">{task.id}</p>
           </div>
-          <TaskControls taskId={task.id} status={task.status} />
+          <TaskControls
+            taskId={task.id}
+            taskTitle={task.title}
+            status={task.status}
+            notStarted={notStarted}
+            capacity={slots}
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -160,7 +169,24 @@ export default async function TaskDetailPage(props: {
         </div>
 
         <div className="flex flex-col gap-5">
-          <LiveLog taskId={task.id} live={live} />
+          {/* A not-started task has nothing to stream, and an EventSource that
+              polls every 700 ms for hours is pure waste — spec §10. */}
+          {notStarted ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Not started</CardTitle>
+              </CardHeader>
+              <CardBody>
+                <p className="text-xs text-muted">
+                  This task is waiting in the queue. Nothing runs and nothing is spent until
+                  you start it. You can still edit the description — that is what the
+                  Stakeholder agent will receive.
+                </p>
+              </CardBody>
+            </Card>
+          ) : (
+            <LiveLog taskId={task.id} live={live} />
+          )}
           <ArtifactTabs artifacts={artifacts} />
         </div>
       </div>

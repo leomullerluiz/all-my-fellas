@@ -30,6 +30,12 @@ beforeAll(async () => {
   service = await import("@/server/tasks/service");
   queue = await import("@/server/jobs/queue");
 
+  // These tests exercise pipeline transitions, not admission control, and they
+  // leave earlier tasks in flight. Admission control is covered on its own in
+  // `admission.test.ts`.
+  const settings = await import("@/server/settings/store");
+  settings.updateSettings({ maxParallelTasks: 99 });
+
   repoId = service.createRepo({
     name: "acme/app",
     url: "https://github.com/acme/app",
@@ -44,13 +50,16 @@ afterAll(async () => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
+/** Creates a task and starts it, which is what most of these tests need. */
 function newTask(title: string) {
-  return orchestrator.createAndStartTask({
+  const created = service.createTask({
     repoId,
     title,
     description: "A description long enough to pass validation upstream.",
     priority: "medium",
   });
+  orchestrator.startTask(created.id);
+  return service.getTask(created.id)!;
 }
 
 /** Marks the task's current stage run done, mirroring what the worker does. */

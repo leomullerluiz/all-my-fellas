@@ -7,7 +7,8 @@ import { AGENT_STAGES, GATES, GATE_DECISIONS, PRIORITIES, TASK_STATUSES } from "
  * forms so both sides validate against the same rules.
  */
 
-export const createTaskSchema = z.object({
+/** The fields a task carries, shared by creation and editing. */
+export const taskFieldsSchema = z.object({
   repoId: z.string().min(1, "Select a repository."),
   title: z.string().trim().min(3, "Give the task a title.").max(160),
   description: z
@@ -17,7 +18,19 @@ export const createTaskSchema = z.object({
     .max(20_000),
   priority: z.enum(PRIORITIES).default("medium"),
 });
+
+export const createTaskSchema = taskFieldsSchema.extend({
+  /**
+   * Whether to enter the pipeline immediately. Defaults to false: a task left
+   * sitting costs nothing, a task started by accident costs quota and a clone.
+   */
+  start: z.boolean().default(false),
+});
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
+
+/** Editing is only allowed while a task is still at `CREATED`. */
+export const updateTaskSchema = taskFieldsSchema;
+export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
 
 export const listTasksQuerySchema = z.object({
   status: z.enum(TASK_STATUSES).optional(),

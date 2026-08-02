@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { newId } from "../db/ids";
@@ -123,6 +123,54 @@ export function createTask(input: {
 
   appendEvent(id, null, { type: "task_created", title: input.title });
   return task;
+}
+
+/**
+ * Statuses that occupy a concurrency slot.
+ *
+ * A gated task is not executing, but it still holds a workspace and will resume,
+ * so it counts as in flight. See `spec-task-queue.md` §8.4.
+ */
+export const ACTIVE_STATUSES = ["running", "awaiting_gate"] as const;
+
+export function countActiveTasks(): number {
+  const row = db
+    .select({ count: sql<number>`count(*)` })
+    .from(tasks)
+    .where(inArray(tasks.status, [...ACTIVE_STATUSES]))
+    .get();
+  return row?.count ?? 0;
+}
+
+/** Titles of the tasks currently holding a slot, so a refusal can name them. */
+export function activeTasks(): Array<{ id: string; title: string; status: string }> {
+  return db
+    .select({ id: tasks.id, title: tasks.title, status: tasks.status })
+    .from(tasks)
+    .where(inArray(tasks.status, [...ACTIVE_STATUSES]))
+    .orderBy(tasks.updatedAt)
+    .all();
+}
+
+/** Fields a user may change while a task has not started yet. */
+export type EditableTaskFields = {
+  repoId: string;
+  title: string;
+  description: string;
+  priority: Priority;
+};
+
+export function updateTaskFields(id: string, fields: EditableTaskFields): TaskRow | null {
+  return updateTask(id, fields);
+}
+
+/**
+ * Hard-deletes a task. Every child table cascades from `tasks`, so one statement
+ * is enough — see `spec-task-queue.md` §7.2.
+ */
+export function deleteTask(id: string): boolean {
+  const removed = db.delete(tasks).where(eq(tasks.id, id)).returning({ id: tasks.id }).all();
+  return removed.length > 0;
 }
 
 export function updateTask(id: string, patch: Partial<TaskRow>): TaskRow | null {

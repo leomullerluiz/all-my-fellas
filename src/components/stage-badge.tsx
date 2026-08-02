@@ -40,7 +40,9 @@ const STATUS_TONES: Record<TaskStatus, NonNullable<BadgeProps["tone"]>> = {
 };
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
-  queued: "Queued",
+  // "Queued" would imply the system picks the task up on its own. Nothing
+  // starts a task but the user — see `spec-task-queue.md` §3.
+  queued: "Not started",
   running: "Running",
   awaiting_gate: "Awaiting approval",
   completed: "Completed",

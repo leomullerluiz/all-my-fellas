@@ -13,6 +13,9 @@ import type { Stage } from "../pipeline/stages";
 
 export type PipelineEvent =
   | { type: "task_created"; title: string }
+  | { type: "task_started" }
+  /** Field names only — the current values already live on the task row. */
+  | { type: "task_edited"; fields: string[] }
   | { type: "stage_started"; stage: Stage; attempt: number; model?: string }
   | { type: "stage_finished"; stage: Stage; attempt: number; costUsd: number }
   | { type: "stage_failed"; stage: Stage; attempt: number; error: string }

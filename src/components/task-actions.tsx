@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -83,26 +84,89 @@ export function GatePanel({ taskId, gate }: { taskId: string; gate: Gate }) {
   );
 }
 
-export function TaskControls({ taskId, status }: { taskId: string; status: TaskStatus }) {
+/**
+ * Detail-page controls.
+ *
+ * A not-yet-started task gets Start / Edit / Delete and deliberately no Cancel:
+ * cancelling from `CREATED` produces a terminal `CANCELLED` row that can never
+ * be started, edited or removed — see `spec-task-queue.md` §10.
+ */
+export function TaskControls({
+  taskId,
+  taskTitle,
+  status,
+  notStarted,
+  capacity,
+}: {
+  taskId: string;
+  taskTitle: string;
+  status: TaskStatus;
+  notStarted: boolean;
+  capacity: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canCancel = ["queued", "running", "awaiting_gate"].includes(status);
+  const canCancel = !notStarted && ["running", "awaiting_gate"].includes(status);
   const canRetry = status === "failed";
 
-  async function call(action: "retry" | "cancel") {
+  const blockedReason = capacity.slotAvailable
+    ? null
+    : `Limit of ${capacity.limit} task${capacity.limit === 1 ? "" : "s"} in progress reached` +
+      (capacity.blocking[0] ? ` — ${capacity.blocking[0].title} is still running.` : ".");
+
+  async function call(action: string, url: string, method = "POST") {
     setBusy(action);
     setError(null);
 
-    const response = await fetch(`/api/tasks/${taskId}/${action}`, { method: "POST" });
+    const response = await fetch(url, { method });
     if (!response.ok) {
-      const payload = (await response.json()) as { error?: string };
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
       setError(payload.error ?? `Could not ${action} the task.`);
+      setBusy(null);
+      return;
     }
 
     setBusy(null);
+    if (action === "delete") {
+      router.push("/");
+    }
     router.refresh();
+  }
+
+  function onDelete() {
+    const confirmed = window.confirm(
+      `Delete "${taskTitle}"? This removes the task permanently and cannot be undone.`,
+    );
+    if (confirmed) void call("delete", `/api/tasks/${taskId}`, "DELETE");
+  }
+
+  if (notStarted) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          disabled={busy !== null || !capacity.slotAvailable}
+          title={blockedReason ?? undefined}
+          onClick={() => call("start", `/api/tasks/${taskId}/start`)}
+        >
+          {busy === "start" ? "Starting…" : "Start"}
+        </Button>
+        <Link href={`/tasks/${taskId}/edit`}>
+          <Button variant="secondary" size="sm">
+            Edit
+          </Button>
+        </Link>
+        <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onDelete}>
+          {busy === "delete" ? "Deleting…" : "Delete"}
+        </Button>
+        {error ? <span className="text-xs text-danger">{error}</span> : null}
+        {!error && blockedReason ? (
+          <span className="text-xs text-muted">{blockedReason}</span>
+        ) : null}
+      </div>
+    );
   }
 
   if (!canCancel && !canRetry) return null;
@@ -110,12 +174,23 @@ export function TaskControls({ taskId, status }: { taskId: string; status: TaskS
   return (
     <div className="flex flex-wrap items-center gap-2">
       {canRetry ? (
-        <Button variant="secondary" size="sm" disabled={busy !== null} onClick={() => call("retry")}>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy !== null || !capacity.slotAvailable}
+          title={blockedReason ?? undefined}
+          onClick={() => call("retry", `/api/tasks/${taskId}/retry`)}
+        >
           {busy === "retry" ? "Retrying…" : "Retry failed stage"}
         </Button>
       ) : null}
       {canCancel ? (
-        <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => call("cancel")}>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy !== null}
+          onClick={() => call("cancel", `/api/tasks/${taskId}/cancel`)}
+        >
           {busy === "cancel" ? "Cancelling…" : "Cancel task"}
         </Button>
       ) : null}

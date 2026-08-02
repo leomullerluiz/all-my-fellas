@@ -3,6 +3,7 @@ import Link from "next/link";
 import { NewTaskForm } from "@/components/new-task-form";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { capacity } from "@/server/pipeline/orchestrator";
 import { listRepos } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
@@ -28,5 +29,5 @@ export default async function NewTaskPage() {
     );
   }
 
-  return <NewTaskForm repos={repos} />;
+  return <NewTaskForm repos={repos} capacity={capacity()} />;
 }

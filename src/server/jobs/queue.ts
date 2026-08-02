@@ -11,6 +11,20 @@ import { type JobKind, type JobRow, jobs, tasks } from "../db/schema";
  * so the claim is atomic even if a second worker is ever started by accident.
  */
 
+/**
+ * Ordering used when several jobs are eligible in the same tick: highest
+ * priority first, lowest estimated complexity as the tiebreaker, then FIFO.
+ *
+ * `difficulty` is set by the Architect, so a freshly started task has `NULL`.
+ * It sorts with `M` — neutral — rather than last, which would starve
+ * un-estimated work behind anything already estimated.
+ */
+const PRIORITY_RANK = sql`CASE ${tasks.priority}
+  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
+
+const DIFFICULTY_RANK = sql`CASE ${tasks.difficulty}
+  WHEN 'S' THEN 0 WHEN 'L' THEN 2 ELSE 1 END`;
+
 export type RunStagePayload = { stageRunId: string };
 export type DeliverPayload = Record<string, never>;
 export type CleanupPayload = { deleteAfter: number };
@@ -72,12 +86,14 @@ export function claimNextJob(maxParallelTasks: number): JobRow | null {
     if (busyTaskIds.length >= maxParallelTasks) return null;
 
     const candidates = tx
-      .select()
+      .select({ job: jobs })
       .from(jobs)
+      .innerJoin(tasks, eq(jobs.taskId, tasks.id))
       .where(and(eq(jobs.status, "pending"), lte(jobs.runAfter, Date.now())))
-      .orderBy(asc(jobs.runAfter), asc(jobs.createdAt))
+      .orderBy(PRIORITY_RANK, DIFFICULTY_RANK, asc(jobs.runAfter), asc(jobs.createdAt))
       .limit(50)
-      .all();
+      .all()
+      .map((row) => row.job);
 
     const next = candidates.find((job) => !busyTaskIds.includes(job.taskId));
     if (!next) return null;

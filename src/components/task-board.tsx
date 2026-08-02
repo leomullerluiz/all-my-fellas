@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { TaskCardMenu, type CardMenuCapacity } from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
 import { formatCost } from "@/lib/utils";
 import { BOARD_STAGES, STAGE_LABELS, type Stage } from "@/server/pipeline/stages";
@@ -15,20 +16,36 @@ const PRIORITY_TONE = {
   urgent: "danger",
 } as const;
 
-function TaskCard({ task }: { task: BoardTask }) {
+/**
+ * One card.
+ *
+ * The card is not a link. Only the title navigates, so the action menu can be a
+ * sibling of the anchor rather than a `<button>` nested inside one — see
+ * `spec-task-queue.md` §5.1. The generous padding on the title link keeps the
+ * hit area the full height of the header row rather than just the glyphs.
+ */
+function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapacity }) {
   const isRunning = task.status === "running";
   const needsAttention = task.status === "awaiting_gate";
+  const notStarted = task.currentStage === "CREATED";
 
   return (
-    <Link
-      href={`/tasks/${task.id}`}
-      className="block rounded-md border border-border bg-surface-raised p-2.5 transition-colors hover:border-accent/60"
-    >
-      <div className="flex items-start justify-between gap-2">
+    <div className="rounded-md border border-border bg-surface-raised p-2.5 transition-colors focus-within:border-accent/60 hover:border-accent/60">
+      <div className="flex items-start justify-between gap-1.5">
         {/* `min-w-0` + `break-words` so a long unbroken title cannot widen the
             grid column and reintroduce horizontal overflow. */}
-        <p className="min-w-0 break-words text-sm font-medium leading-snug">{task.title}</p>
-        {isRunning ? (
+        <h3 className="min-w-0 break-words text-sm font-medium leading-snug">
+          <Link
+            href={`/tasks/${task.id}`}
+            className="-my-0.5 block py-0.5 hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            {task.title}
+          </Link>
+        </h3>
+
+        {notStarted ? (
+          <TaskCardMenu taskId={task.id} taskTitle={task.title} capacity={capacity} />
+        ) : isRunning ? (
           <span
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-accent animate-pipeline-pulse"
             title="An agent is running"
@@ -55,7 +72,7 @@ function TaskCard({ task }: { task: BoardTask }) {
         ) : null}
         {task.costUsd > 0 ? <Badge tone="neutral">{formatCost(task.costUsd)}</Badge> : null}
       </div>
-    </Link>
+    </div>
   );
 }
 
@@ -71,7 +88,13 @@ function TaskCard({ task }: { task: BoardTask }) {
  * chosen to divide twelve evenly (2 / 3 / 4 / 6), which keeps every row full
  * and preserves the left-to-right, top-to-bottom pipeline order.
  */
-export function TaskBoard({ tasks }: { tasks: BoardTask[] }) {
+export function TaskBoard({
+  tasks,
+  capacity,
+}: {
+  tasks: BoardTask[];
+  capacity: CardMenuCapacity;
+}) {
   const byStage = new Map<Stage, BoardTask[]>();
   const closed: BoardTask[] = [];
 
@@ -125,7 +148,7 @@ export function TaskBoard({ tasks }: { tasks: BoardTask[] }) {
           ) : (
             <div className="flex flex-col gap-2 p-2">
               {column.items.map((task) => (
-                <TaskCard key={task.id} task={task} />
+                <TaskCard key={task.id} task={task} capacity={capacity} />
               ))}
             </div>
           )}
