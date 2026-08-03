@@ -3,6 +3,7 @@ import { z } from "zod";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
 import { AGENT_STAGES, GATES, GATE_DECISIONS, PRIORITIES, TASK_STATUSES } from "../pipeline/stages";
+import { THEMES } from "../settings/store";
 
 /**
  * Request payload schemas, shared between the route handlers and the client
@@ -142,6 +143,7 @@ export const updateSettingsSchema = z.object({
   qaMaxCycles: z.number().int().min(0).max(10).optional(),
   autoApprovePlanForLowCriticality: z.boolean().optional(),
   workspaceRetentionDays: z.number().int().min(0).max(365).optional(),
+  theme: z.enum(THEMES).optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 

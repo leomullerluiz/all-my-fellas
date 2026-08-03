@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+
+import { getSettings } from "@/server/settings/store";
+
 import "./globals.css";
 
 const geistSans = Geist({
@@ -23,9 +26,13 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const { theme } = getSettings();
+
   return (
     <html
       lang="en"
+      // Omitted for "system": the CSS `prefers-color-scheme` block takes over.
+      data-theme={theme === "system" ? undefined : theme}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
