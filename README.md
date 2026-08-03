@@ -12,6 +12,44 @@ Built with Next.js (UI + API), a separate Node worker process, SQLite, and the
 
 ---
 
+## Why All My Fellas
+
+**Writing the spec is the expensive part.** Handing a feature to one agent means
+authoring the plan yourself first — the context, the constraints, the acceptance
+criteria, the order of the changes — and authoring it again when the first
+attempt comes back wrong. Here you write a title and a description, pick the
+repository, and the brief, the user stories and the technical plan are produced
+for you. Your job is to read the plan and say yes or no. Reading a plan is
+cheaper than writing one, and far cheaper than finding out the approach was
+wrong on a finished branch.
+
+**A reviewer that shares your context is not a reviewer.** Ask one session to
+write the code and then check it, and the check is performed by the thing that
+already talked itself into the code — it re-reads its intentions rather than its
+output. The Code Reviewer and QA are separate `query()` calls that never see the
+Developer's transcript. What they get is the acceptance criteria, the
+Developer's written report and the branch diff, and the verdict fails closed: a
+report that cannot be parsed as an approval counts as changes requested. The
+independence is in the context, not the model — development and code review
+default to the same tier.
+
+**Your attention goes to decisions, not turns.** Two of them by default, the
+technical plan and delivery, plus a diff review if the task opted into one. Each
+is a document you read on your own schedule rather than a session you supervise
+turn by turn, and the work carries on while you are doing something else.
+
+**A wrong turn costs one stage, not the run.** Every agent stage leaves a
+validated artifact, so a retry re-runs that stage as a new attempt recorded
+beside the failure — the brief, stories and plan you already paid for survive,
+and so do the clone and the branch. The same trail is what lets you ask later
+why something was built rather than only what changed, and lets `/usage` tell
+you which stage spent your money.
+
+A one-line fix is faster by hand than seven agent stages and two gates. This
+earns its cost on work you would have written a plan for anyway.
+
+---
+
 ## What makes it different
 
 **It reads the real code.** The Architect explores the repository before
@@ -221,8 +259,9 @@ expired token, a host with no API at all — the push still stands and the task
 completes with a link to the provider's own "create pull request" page,
 pre-filled with the two branches.
 
-Role system prompts live in [`prompts/`](prompts/) as plain Markdown — edit them
-and the next stage run picks the change up.
+Role system prompts live in [`prompts/`](prompts/) as plain Markdown. Each file
+is read once and cached for the life of the process, so restart the worker after
+editing one.
 
 ---
 
