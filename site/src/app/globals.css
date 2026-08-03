@@ -1,0 +1,188 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind's stock `dark:` variant keys off `prefers-color-scheme` alone, which
+ * would contradict the palette below the moment someone picks a theme by hand.
+ * Redefined here to match the exact condition the palette uses, so the `dark:`
+ * utilities inside vendored Animate UI components agree with everything else.
+ */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(html:not([data-theme="light"]), html:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
+
+/*
+ * The same dark-first palette the dashboard uses (src/app/globals.css in the
+ * app). Values are copied rather than imported: the site is a separate build
+ * with its own dependency tree, and a landing page that silently changed colour
+ * because someone tweaked a dashboard token would be a surprise, not a feature.
+ */
+:root {
+  --background: #0b0d12;
+  --surface: #12151d;
+  --surface-raised: #171b25;
+  --border: #262b38;
+  --foreground: #e6e9ef;
+  --muted: #99a1b3;
+  --accent: #6e8bff;
+  --accent-foreground: #ffffff;
+  --success: #46c98b;
+  --warning: #e5b454;
+  --danger: #f0685f;
+  --info: #63b3ed;
+
+  /* Site-only: the wash behind the hero and the section rules. */
+  --glow: rgb(110 139 255 / 0.16);
+  --grid-line: rgb(38 43 56 / 0.6);
+  --star-color: rgb(230 233 239 / 0.5);
+}
+
+/*
+ * Same `data-theme` contract as the app: set on <html> from localStorage,
+ * omitted for "system" so `prefers-color-scheme` decides with no JS. The
+ * light block stays declared *after* the media query so it wins by source
+ * order when both apply.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --background: #f6f7f9;
+    --surface: #ffffff;
+    --surface-raised: #ffffff;
+    --border: #e0e3ea;
+    --foreground: #171a21;
+    --muted: #626b7d;
+    --accent: #3f5fd8;
+    --accent-foreground: #ffffff;
+    --success: #1f8f5f;
+    --warning: #a97612;
+    --danger: #c93b32;
+    --info: #2b6cb0;
+
+    --glow: rgb(63 95 216 / 0.12);
+    --grid-line: rgb(224 227 234 / 0.9);
+    --star-color: rgb(63 95 216 / 0.22);
+  }
+}
+
+:root[data-theme="light"] {
+  --background: #f6f7f9;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #e0e3ea;
+  --foreground: #171a21;
+  --muted: #626b7d;
+  --accent: #3f5fd8;
+  --accent-foreground: #ffffff;
+  --success: #1f8f5f;
+  --warning: #a97612;
+  --danger: #c93b32;
+  --info: #2b6cb0;
+
+  --glow: rgb(63 95 216 / 0.12);
+  --grid-line: rgb(224 227 234 / 0.9);
+  --star-color: rgb(63 95 216 / 0.22);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /*
+   * Animate UI's styled components are written against shadcn/ui token names.
+   * Aliasing them onto the palette above lets those files stay byte-identical
+   * to the registry, so re-running the vendor step never clobbers local edits.
+   * `muted` is deliberately the same on both sides — the dashboard uses it as a
+   * text colour, and nothing vendored here uses it as a surface.
+   */
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-foreground);
+  --color-secondary: var(--surface-raised);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted);
+  --color-destructive: var(--danger);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+  --color-popover: var(--surface-raised);
+  --color-popover-foreground: var(--foreground);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--foreground);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Anchor navigation lands below the sticky header instead of under it. */
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Ripple / liquid button variables read by the vendored Animate UI buttons. */
+:root {
+  --ripple-button-ripple-color: var(--accent-foreground);
+  --liquid-button-color: var(--accent-foreground);
+  --liquid-button-background-color: transparent;
+}
+
+/*
+ * The faint engineering grid behind the hero and the pipeline. Two 1px
+ * gradients, masked to fade out at the edges so it never fights the copy.
+ */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 20%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 20%, transparent 75%);
+}
+
+/* Pulsing dot, identical to the one on running task cards in the dashboard. */
+@keyframes pipeline-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+.animate-pipeline-pulse {
+  animation: pipeline-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pipeline-pulse {
+    animation: none;
+  }
+}

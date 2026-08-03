@@ -291,7 +291,15 @@ prompts/                role system prompts
 workspaces/             one clone per task (gitignored)
 data/                   SQLite file (gitignored)
 tests/                  Vitest
+site/                   the public landing page — a separate static build
 ```
+
+[`site/`](site/) is the GitHub Pages front page: its own Next.js app, its own
+dependencies, `output: "export"`. It shares the dashboard's palette by copying
+it, and imports nothing from `src/` — the pipeline needs SQLite, a worker and a
+live SSE connection, none of which survive a static export. It is published by
+[`.github/workflows/deploy-site.yml`](.github/workflows/deploy-site.yml) on every
+push to `main` that touches it.
 
 ### Why two processes
 
