@@ -2,9 +2,10 @@
 
 A local application that runs a software delivery pipeline staffed entirely by
 Claude agents. You describe a feature; the task walks a pipeline that simulates
-a full team — **Stakeholder → Product Owner → Architect → Developer → QA →
-Homologation** — and the result arrives as a branch and a pull request on a real
-GitHub repository.
+a full team — **Stakeholder → Product Owner → Architect → Developer → Code
+Review → QA → Homologation** — and the result arrives as a branch and an open
+pull request (a *merge request*, on GitLab) against a real repository: GitHub,
+GitLab, Bitbucket, Azure DevOps, or any plain git server.
 
 Built with Next.js (UI + API), a separate Node worker process, SQLite, and the
 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk).
@@ -30,7 +31,8 @@ limit is enforced when you press Start, not deep inside the worker, so a card
 that says "an agent is running" means exactly that.
 
 **Human gates where they matter.** The technical plan and the final delivery both
-require a human decision. Everything in between runs unattended.
+require a human decision, and a task can opt into a third between them: a human
+code review of the diff. Everything else runs unattended.
 
 **Least privilege per role.** Only the Developer can write files. The Architect
 and QA get Bash restricted to an inspection allowlist. The Stakeholder gets no
@@ -38,10 +40,18 @@ filesystem at all. Every tool call — including the Developer's edits — passe
 through a `canUseTool` guard that confines paths to the task workspace and
 blocks destructive or credential-touching commands.
 
-**The agents never hold credentials.** Cloning, pushing and opening the pull
-request are done by the worker. The GitHub token is injected into a remote URL
-for the length of a single command and is never written to `.git/config`, the
-database, or an agent's environment.
+**The agents never hold credentials.** Cloning, pushing and opening the change
+request are done by the worker. The token is injected into a remote URL — or an
+`Authorization` header, for Azure DevOps — for the length of a single command,
+and is never written to `.git/config`, the database, or an agent's environment.
+What the database stores is the *name* of an environment variable, never its
+value.
+
+**Any git host.** GitHub, GitLab, Bitbucket and Azure DevOps each get a real API
+integration, so the pipeline opens the change request itself and calls it by the
+name that host uses. Anything else — a self-hosted Gitea, an internal server —
+works as a generic connection: the branch is pushed and you open the request by
+hand.
 
 ---
 
@@ -49,9 +59,11 @@ database, or an agent's environment.
 
 - Node.js ≥ 20.9
 - `git` on `PATH`
-- [`gh`](https://cli.github.com/) on `PATH` — optional. Without it the branch is
-  still pushed and you get a "create pull request" link instead.
 - A Claude credential (see below)
+- A token for whichever git host you use (see below)
+
+No provider CLI is needed. `gh`, `glab` and `az` used to be optional
+dependencies; the pipeline now calls each provider's REST API directly.
 
 ## Setup
 
@@ -79,11 +91,50 @@ the Agent SDK picks up whichever is present, and Settings shows the active mode.
 > This design assumes personal use with your own subscription — offering
 > "log in with Claude" to other people requires approval from Anthropic.
 
-### GitHub
+### Repository credentials
 
-Create a Personal Access Token with the minimum `repo` scope and put it in
-`.env` as `GITHUB_TOKEN`. It stays in the worker's environment; it is never
-stored in the database and never reaches an agent.
+Put a token in `.env` for the host you use. It stays in the worker's
+environment: it is never stored in the database and never reaches an agent.
+
+| Host | Variable | Token scopes | Basic-auth username |
+|---|---|---|---|
+| GitHub | `GITHUB_TOKEN` | `repo` | `x-access-token` |
+| GitLab | `GITLAB_TOKEN` | `api`, `write_repository` | `oauth2` |
+| Bitbucket Cloud | `BITBUCKET_TOKEN` | `repository:write`, `pullrequest:write` | `x-token-auth` |
+| Azure DevOps | `AZURE_DEVOPS_TOKEN` | Code (read & write), Pull Request Contribute | *(empty — sent as a header)* |
+| Generic git server | *(you name it)* | whatever the server needs | `git` |
+
+The username column is handled for you and is only worth knowing about when it
+has to change. Bitbucket resolves an access token **only** when the username is
+exactly `x-token-auth`; a legacy app password authenticates as an Atlassian
+account instead and needs that account's real name, which is what the
+per-connection *credential username* override is for.
+
+**Registering a repository.** *Repositories* → paste the URL. The provider is
+detected from the host, so `https://gitlab.com/acme/platform/store` is enough;
+pick one by hand for a self-managed instance, whose hostname says nothing about
+what is running on it. The connection is verified immediately — the token is
+checked against the API, and the repository's real default branch is reported
+back, because a `main`/`master` mismatch is the most common reason a first task
+dies at clone time. A repository that cannot be reached is still saved, with the
+reason shown.
+
+**One token per host is the default, not the rule.** A connection's *credential
+variable* may name any environment variable of its own — `GITHUB_TOKEN_WORK`,
+`BITBUCKET_TOKEN_ACME` — for a second account on the same host, or to keep a
+client's token separate. It takes a variable *name*, and only a plausible one:
+names the pipeline reserves for itself (`ANTHROPIC_API_KEY`, `PATH`,
+`DATABASE_URL`, and the rest) are rejected, since otherwise the field would be a
+way to hand any environment variable to a remote git server.
+
+**Self-managed instances.** A self-managed **GitLab** is supported: choose the
+provider explicitly and set *API base URL* to that instance's API root
+(`https://git.acme.internal/api/v4`). Left empty, the public endpoint is used.
+
+Bitbucket Data Center and Azure DevOps Server are not — both speak an API that
+differs from their cloud siblings by more than a base URL. Register them as a
+generic connection: cloning, branching and pushing all work, and you open the
+pull request yourself.
 
 ## Running
 
@@ -128,7 +179,7 @@ CREATED
                                          ├─ request_changes → DEVELOPMENT
                                          └─► PO_HOMOLOGATION  agent
                                               └─► STAKEHOLDER_GATE   human
-                                                   └─► DELIVERY  worker · push + PR
+                                                   └─► DELIVERY  worker · push + change request
                                                         └─► COMPLETED
 
 Rework from any reviewer shares one budget (REWORK_MAX_CYCLES).
@@ -164,6 +215,12 @@ cannot be parsed as a pass is treated as a rejection.
 The plan gate can be waived for low-criticality work (Settings → *Automatic plan
 gate*); the delivery gate is always manual.
 
+**Delivery degrades rather than fails.** The branch is pushed first, then the
+change request is opened through the provider's API. If that call fails — an
+expired token, a host with no API at all — the push still stands and the task
+completes with a link to the provider's own "create pull request" page,
+pre-filled with the two branches.
+
 Role system prompts live in [`prompts/`](prompts/) as plain Markdown — edit them
 and the next stage run picks the change up.
 
@@ -182,7 +239,8 @@ src/
 │  ├─ config/           environment resolution
 │  ├─ db/               Drizzle schema, lazy SQLite client, bootstrap DDL
 │  ├─ events/           append-only event log behind the SSE stream
-│  ├─ git/              workspace clone/branch/commit/push, pull requests
+│  ├─ git/              workspace clone/branch/commit/push, diffs, credentials
+│  │  └─ providers/     one module per host, behind a common interface
 │  ├─ http/             route-handler helpers
 │  ├─ jobs/             SQLite-backed job queue
 │  ├─ pipeline/         state machine, stage execution, artifacts, guardrails
@@ -220,7 +278,8 @@ which is what makes two writer processes on one file safe.
 | `POST /api/tasks/:id/gates/:gate` | Record a human decision |
 | `POST /api/tasks/:id/retry` | Re-run the failed stage |
 | `POST /api/tasks/:id/cancel` | Cancel |
-| `GET / POST /api/repos`, `GET / DELETE /api/repos/:id` | Repository connections |
+| `GET / POST /api/repos` | List connections, or register one (provider detected, access verified) |
+| `GET / DELETE /api/repos/:id` | Connection detail with a live access check; delete if unused |
 | `GET / PATCH /api/settings` | Models per role, turn ceilings, limits |
 | `GET /api/usage?days=&taskId=` | Token and cost aggregates |
 
@@ -233,13 +292,18 @@ worker re-reads them at the start of every job.
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | Subscription credential |
 | `ANTHROPIC_API_KEY` | — | Pay-per-use alternative |
-| `GITHUB_TOKEN` | — | PAT with `repo` scope, worker only |
+| `GITHUB_TOKEN` | — | GitHub PAT, worker only |
+| `GITLAB_TOKEN` | — | GitLab token, worker only |
+| `BITBUCKET_TOKEN` | — | Bitbucket Cloud token, worker only |
+| `AZURE_DEVOPS_TOKEN` | — | Azure DevOps PAT, worker only |
+| `GIT_TOKEN` | — | Suggested fallback for a generic server |
 | `DATABASE_URL` | `file:./data/pipeline.db` | SQLite file |
 | `WORKSPACES_DIR` | `./workspaces` | Where task clones live |
 | `MAX_PARALLEL_TASKS` | `1` | Keep at 1 on a subscription |
 | `REWORK_MAX_CYCLES` | `2` | Shared rework budget (old `QA_MAX_CYCLES` still read) |
 | `MODEL_LIGHT` / `MODEL_DEFAULT` / `MODEL_HEAVY` | `claude-haiku-4-5` / `claude-sonnet-5` / `claude-opus-5` | Model tiers |
 | `WORKSPACE_RETENTION_DAYS` | `7` | How long a finished clone is kept |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `All My Fellas Pipeline` / `pipeline@localhost` | Who the pipeline's commits are attributed to |
 
 ## Tests
 
@@ -247,13 +311,21 @@ worker re-reads them at the start of every job.
 npm test
 ```
 
-Covers the state machine (including the QA rework budget and gate rules),
-artifact validation and verdict parsing, and the sandbox guardrails.
+Covers the state machine (rework budget, gate rules, reviewer verdicts),
+artifact validation, admission control and job ordering, the diff parser against
+a real git repository, the sandbox guardrails, and the provider layer — URL
+parsing per host, credential resolution, and that no secret survives into a
+clone URL, a log line or a browser link.
 
 ## Known limits
 
-- GitHub only. GitLab and Bitbucket are not implemented.
 - Single user, no authentication. Do not expose the port publicly.
-- The pipeline opens pull requests; **merging is always manual, on GitHub**.
+- The pipeline opens the change request; **merging is always manual**, on the
+  host.
+- A generic connection has no API: the branch is pushed and the pull request is
+  yours to open.
+- Auto-detection covers the public hosts only, and of the self-hosted editions
+  only GitLab has an API integration. GitHub Enterprise Server, Bitbucket Data
+  Center and Azure DevOps Server run as generic connections.
 - Cost figures come from the Agent SDK's own `total_cost_usd`; in subscription
   mode they are an estimate of equivalent API spend, not a bill.

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
 import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
+import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import {
@@ -103,7 +104,8 @@ export default async function TaskDetailPage(props: {
               rel="noreferrer"
               className="text-accent underline-offset-2 hover:underline"
             >
-              Open pull request ↗
+              {/* "merge request" on GitLab — the provider owns the wording. */}
+              Open {providerFor(task.repo.provider).changeRequestNoun} ↗
             </Link>
           ) : null}
         </div>

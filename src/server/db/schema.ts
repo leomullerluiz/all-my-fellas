@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+import type { ProviderId } from "../git/providers/types";
 import type {
   ArtifactType,
   Criticality,
@@ -25,9 +26,19 @@ const now = sql`(unixepoch() * 1000)`;
 export const repos = sqliteTable("repos", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  provider: text("provider").$type<"github">().notNull().default("github"),
+  /** Defaults to `github` so rows written before multi-provider stay valid. */
+  provider: text("provider").$type<ProviderId>().notNull().default("github"),
   url: text("url").notNull(),
   defaultBranch: text("default_branch").notNull().default("main"),
+  /**
+   * Name of the environment variable holding the credential — never the value.
+   * `NULL` falls back to the provider's conventional variable.
+   */
+  credentialRef: text("credential_ref"),
+  /** Overrides the provider's default Basic-auth username. */
+  credentialUsername: text("credential_username"),
+  /** API root for self-hosted instances; `NULL` uses the provider's default. */
+  apiBaseUrl: text("api_base_url"),
   createdAt: integer("created_at").notNull().default(now),
 });
 

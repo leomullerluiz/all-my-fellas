@@ -1,7 +1,11 @@
 import { roleFor } from "../agents/roles";
+import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
-import { createPullRequest } from "../git/pull-request";
+import { requireCredential, resolveCredential } from "../git/credentials";
+import { createChangeRequest } from "../git/pull-request";
+import { providerFor } from "../git/providers";
 import {
+  type RemoteAccess,
   branchNameFor,
   commitPendingChanges,
   diffAgainstBase,
@@ -54,6 +58,29 @@ export class StageJobError extends Error {
     super(message);
     this.name = "StageJobError";
   }
+}
+
+/**
+ * Resolves a repository row into the credential and provider a git command
+ * needs.
+ *
+ * @param required When true a missing credential throws instead of producing an
+ *   unauthenticated command. Cloning a public repository works without one;
+ *   pushing never does, and failing at the push after a full pipeline run is
+ *   the expensive way to find out.
+ */
+function remoteAccessFor(repo: RepoRow, required = false): RemoteAccess {
+  const provider = providerFor(repo.provider);
+  const target = {
+    provider,
+    credentialRef: repo.credentialRef,
+    credentialUsername: repo.credentialUsername,
+  };
+  return {
+    provider,
+    repoUrl: repo.url,
+    credential: required ? requireCredential(target) : resolveCredential(target),
+  };
 }
 
 /** Collects the artifacts a role consumes, newest version of each. */
@@ -118,8 +145,8 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     const workspace = await prepareWorkspace({
       taskId: task.id,
       title: task.title,
-      repoUrl: task.repo.url,
       defaultBranch: task.repo.defaultBranch,
+      access: remoteAccessFor(task.repo),
     });
     workspacePath = workspace.path;
     branchName = workspace.branchName;
@@ -328,30 +355,30 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
   });
 
   try {
-    await pushBranch(task.workspacePath, task.repo.url, task.branchName);
+    await pushBranch(task.workspacePath, task.branchName, remoteAccessFor(task.repo, true));
     appendEvent(task.id, stageRunId, {
       type: "git",
       message: `Pushed ${task.branchName} to origin.`,
     });
 
-    const pr = await createPullRequest({
-      workspacePath: task.workspacePath,
-      repoUrl: task.repo.url,
-      baseBranch: task.repo.defaultBranch,
-      branchName: task.branchName,
+    const change = await createChangeRequest({
+      connection: task.repo,
+      headBranch: task.branchName,
       title: task.title,
       body: buildPullRequestBody(task.id, task.title),
     });
 
-    updateTask(task.id, { prUrl: pr.url });
+    updateTask(task.id, { prUrl: change.url });
 
-    if (pr.status === "created") {
-      appendEvent(task.id, stageRunId, { type: "pr_opened", url: pr.url });
+    if (change.status === "created") {
+      appendEvent(task.id, stageRunId, { type: "pr_opened", url: change.url });
     } else {
       appendEvent(task.id, stageRunId, {
         type: "log",
         level: "warn",
-        message: `Branch pushed, but the pull request was not opened automatically (${pr.reason}). Open it here: ${pr.url}`,
+        message:
+          `Branch pushed, but the ${change.noun} was not opened automatically ` +
+          `(${change.reason}). Open it here: ${change.url}`,
       });
     }
   } catch (error) {

@@ -16,6 +16,7 @@ import {
   tasks,
 } from "../db/schema";
 import { appendEvent } from "../events/store";
+import type { ProviderId } from "../git/providers/types";
 import type {
   ArtifactType,
   Criticality,
@@ -44,15 +45,22 @@ export function createRepo(input: {
   name: string;
   url: string;
   defaultBranch: string;
+  provider?: ProviderId;
+  credentialRef?: string | null;
+  credentialUsername?: string | null;
+  apiBaseUrl?: string | null;
 }): RepoRow {
   const row = db
     .insert(repos)
     .values({
       id: newId("repo"),
       name: input.name,
-      provider: "github",
+      provider: input.provider ?? "github",
       url: input.url,
       defaultBranch: input.defaultBranch,
+      credentialRef: input.credentialRef ?? null,
+      credentialUsername: input.credentialUsername ?? null,
+      apiBaseUrl: input.apiBaseUrl ?? null,
     })
     .returning()
     .get();

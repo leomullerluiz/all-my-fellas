@@ -1,4 +1,6 @@
 import { conflict, json, notFound, serverError } from "@/server/http/respond";
+import { credentialSource } from "@/server/git/credentials";
+import { providerFor } from "@/server/git/providers";
 import { verifyRepositoryAccess } from "@/server/git/pull-request";
 import { deleteRepo, getRepo } from "@/server/tasks/service";
 
@@ -9,10 +11,18 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const repo = getRepo(id);
     if (!repo) return notFound(`Repository ${id} not found.`);
 
-    const access = await verifyRepositoryAccess(repo.url);
+    const provider = providerFor(repo.provider);
+    const access = await verifyRepositoryAccess(repo);
     return json({
       repo,
+      providerName: provider.displayName,
+      credential: credentialSource({
+        provider,
+        credentialRef: repo.credentialRef,
+        credentialUsername: repo.credentialUsername,
+      }),
       verified: access.ok,
+      defaultBranch: access.ok ? access.defaultBranch : undefined,
       reason: access.ok ? undefined : access.reason,
     });
   } catch (error) {

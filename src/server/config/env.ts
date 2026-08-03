@@ -72,10 +72,17 @@ export function hasGithubToken(): boolean {
   return str("GITHUB_TOKEN", "") !== "";
 }
 
-/** Read only at the moment a git command needs it; never logged or persisted. */
-export function readGithubToken(): string | null {
-  const token = str("GITHUB_TOKEN", "");
-  return token === "" ? null : token;
+/**
+ * Author recorded on commits the pipeline makes itself.
+ *
+ * Configurable because the default shows up in the history of the user's own
+ * repository, where "pipeline@localhost" may not be acceptable.
+ */
+export function resolveGitIdentity(): { name: string; email: string } {
+  return {
+    name: str("GIT_AUTHOR_NAME", "All My Fellas Pipeline"),
+    email: str("GIT_AUTHOR_EMAIL", "pipeline@localhost"),
+  };
 }
 
 export type ModelTierConfig = {

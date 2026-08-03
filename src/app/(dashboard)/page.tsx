@@ -5,7 +5,9 @@ import { TaskBoard, type BoardTask } from "@/components/task-board";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { formatCost } from "@/lib/utils";
-import { hasGithubToken, resolveProviderAuth } from "@/server/config/env";
+import { resolveProviderAuth } from "@/server/config/env";
+import { credentialSource } from "@/server/git/credentials";
+import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
 import { listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
 
@@ -22,8 +24,22 @@ function SetupNotice() {
       "No Claude credential found. Set CLAUDE_CODE_OAUTH_TOKEN (subscription) or ANTHROPIC_API_KEY in .env.",
     );
   }
-  if (!hasGithubToken()) {
-    problems.push("GITHUB_TOKEN is not set. Cloning and pull request creation will fail.");
+
+  // Warn per connection that is actually configured, rather than about
+  // GITHUB_TOKEN specifically — a GitLab-only install does not need it.
+  for (const repo of listRepos()) {
+    const provider = providerFor(repo.provider);
+    const credential = credentialSource({
+      provider,
+      credentialRef: repo.credentialRef,
+      credentialUsername: repo.credentialUsername,
+    });
+    if (!credential.present) {
+      problems.push(
+        `${repo.name}: ${credential.variable} is not set, so cloning private repositories ` +
+          `and opening a ${provider.changeRequestNoun} will fail.`,
+      );
+    }
   }
 
   if (problems.length === 0) return null;

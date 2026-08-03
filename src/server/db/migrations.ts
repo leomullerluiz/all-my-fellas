@@ -48,6 +48,19 @@ const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    name: "per-connection repository credentials and API base",
+    up: (sqlite) => {
+      // The environment variable NAME the connection reads. Never the value:
+      // secrets stay out of the database.
+      addColumn(sqlite, "repos", "credential_ref", "TEXT");
+      // Overrides the provider's default Basic-auth username, for credentials
+      // that need a real account name (Bitbucket app passwords, Gitea).
+      addColumn(sqlite, "repos", "credential_username", "TEXT");
+      // Self-hosted GitLab, Gitea, Azure DevOps Server.
+      addColumn(sqlite, "repos", "api_base_url", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

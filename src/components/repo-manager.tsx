@@ -1,39 +1,62 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, Input } from "@/components/ui/field";
+import { Field, Input, Select } from "@/components/ui/field";
 import { formatDateTime } from "@/lib/utils";
+
+/** Provider metadata, passed from the server so the client needs no registry. */
+export type ProviderOption = {
+  id: string;
+  displayName: string;
+  defaultCredentialEnvVar: string;
+  exampleUrl: string;
+  /** Whether the URL pattern can be recognised automatically. */
+  autoDetectable: boolean;
+};
 
 export type RepoRowView = {
   id: string;
   name: string;
   url: string;
+  provider: string;
+  providerName: string;
   defaultBranch: string;
   createdAt: number;
   taskCount: number;
+  credential: { variable: string; present: boolean };
 };
 
 export function RepoManager({
   repos,
-  githubTokenPresent,
+  providers,
 }: {
   repos: RepoRowView[];
-  githubTokenPresent: boolean;
+  providers: ProviderOption[];
 }) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
+  const [provider, setProvider] = useState("");
+  const [credentialRef, setCredentialRef] = useState("");
+  const [credentialUsername, setCredentialUsername] = useState("");
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ tone: "warning" | "success"; text: string } | null>(
     null,
   );
+
+  const selected = useMemo(
+    () => providers.find((option) => option.id === provider),
+    [providers, provider],
+  );
+  const isGeneric = provider === "generic";
 
   async function addRepo(event: React.FormEvent) {
     event.preventDefault();
@@ -44,13 +67,22 @@ export function RepoManager({
     const response = await fetch("/api/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, url, defaultBranch }),
+      body: JSON.stringify({
+        name,
+        url,
+        defaultBranch,
+        provider: provider === "" ? undefined : provider,
+        credentialRef: credentialRef || undefined,
+        credentialUsername: credentialUsername || undefined,
+        apiBaseUrl: apiBaseUrl || undefined,
+      }),
     });
-    const payload = (await response.json()) as {
+    const payload = (await response.json().catch(() => ({}))) as {
       error?: string;
       details?: Record<string, string>;
       warning?: string;
       verified?: boolean;
+      detectedDefaultBranch?: string;
     };
 
     setBusy(false);
@@ -64,9 +96,20 @@ export function RepoManager({
     setName("");
     setUrl("");
     setDefaultBranch("main");
+    setCredentialRef("");
+    setCredentialUsername("");
+    setApiBaseUrl("");
+
+    const branchMismatch =
+      payload.detectedDefaultBranch && payload.detectedDefaultBranch !== defaultBranch;
     setNotice(
       payload.verified
-        ? { tone: "success", text: "Connected and verified." }
+        ? {
+            tone: branchMismatch ? "warning" : "success",
+            text: branchMismatch
+              ? `Connected, but the repository's default branch is "${payload.detectedDefaultBranch}", not "${defaultBranch}". Tasks will clone the branch you entered.`
+              : "Connected and verified.",
+          }
         : {
             tone: "warning",
             text: `Saved, but the access check failed: ${payload.warning ?? "unknown reason"}`,
@@ -81,7 +124,7 @@ export function RepoManager({
 
     const response = await fetch(`/api/repos/${id}`, { method: "DELETE" });
     if (!response.ok) {
-      const payload = (await response.json()) as { error?: string };
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
       setNotice({ tone: "warning", text: payload.error ?? "Could not remove the repository." });
     }
 
@@ -90,13 +133,14 @@ export function RepoManager({
   }
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
       <Card className="h-fit">
         <CardHeader>
           <CardTitle>Connect a repository</CardTitle>
           <CardDescription>
-            The token is read from <code className="font-mono">GITHUB_TOKEN</code> in your
-            environment. It is never stored in the database and never reaches an agent.
+            Credentials are read from environment variables at the moment a git command
+            runs. Only the variable <em>name</em> is stored — never the secret, and never
+            anything an agent can reach.
           </CardDescription>
         </CardHeader>
         <CardBody>
@@ -110,7 +154,13 @@ export function RepoManager({
                 required
               />
             </Field>
-            <Field label="Repository URL" htmlFor="repo-url" error={errors.url}>
+
+            <Field
+              label="Repository URL"
+              htmlFor="repo-url"
+              error={errors.url}
+              hint={selected ? `e.g. ${selected.exampleUrl}` : undefined}
+            >
               <Input
                 id="repo-url"
                 type="url"
@@ -120,6 +170,28 @@ export function RepoManager({
                 required
               />
             </Field>
+
+            <Field
+              label="Provider"
+              htmlFor="repo-provider"
+              error={errors.provider}
+              hint="Leave on auto-detect unless the host is self-hosted or unrecognised."
+            >
+              <Select
+                id="repo-provider"
+                value={provider}
+                onChange={(event) => setProvider(event.target.value)}
+              >
+                <option value="">Detect from the URL</option>
+                {providers.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.displayName}
+                    {option.autoDetectable ? "" : " (choose explicitly)"}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+
             <Field label="Default branch" htmlFor="repo-branch" error={errors.defaultBranch}>
               <Input
                 id="repo-branch"
@@ -129,15 +201,59 @@ export function RepoManager({
               />
             </Field>
 
-            {!githubTokenPresent ? (
-              <p className="text-xs text-warning">
-                GITHUB_TOKEN is not set, so the access check will fail and delivery will not
-                work until you add it.
-              </p>
-            ) : null}
+            <Field
+              label="Credential variable"
+              htmlFor="repo-credential"
+              error={errors.credentialRef}
+              hint={
+                selected
+                  ? `Leave blank to use ${selected.defaultCredentialEnvVar}.`
+                  : "Leave blank to use the provider's conventional variable."
+              }
+            >
+              <Input
+                id="repo-credential"
+                value={credentialRef}
+                onChange={(event) => setCredentialRef(event.target.value.toUpperCase())}
+                placeholder={selected?.defaultCredentialEnvVar ?? "GITHUB_TOKEN"}
+                className="font-mono text-xs"
+              />
+            </Field>
+
+            <Field
+              label="Credential username (optional)"
+              htmlFor="repo-credential-user"
+              error={errors.credentialUsername}
+              hint="Only for credentials tied to an account name, such as a Bitbucket app password."
+            >
+              <Input
+                id="repo-credential-user"
+                value={credentialUsername}
+                onChange={(event) => setCredentialUsername(event.target.value)}
+                className="font-mono text-xs"
+              />
+            </Field>
+
+            <Field
+              label={`API base URL${isGeneric ? "" : " (optional)"}`}
+              htmlFor="repo-api-base"
+              error={errors.apiBaseUrl}
+              hint="Self-hosted instances only, e.g. https://git.acme.internal/api/v4"
+            >
+              <Input
+                id="repo-api-base"
+                value={apiBaseUrl}
+                onChange={(event) => setApiBaseUrl(event.target.value)}
+                placeholder="Leave blank for the provider's public API"
+                className="font-mono text-xs"
+              />
+            </Field>
+
             {notice ? (
               <p
-                className={notice.tone === "success" ? "text-xs text-success" : "text-xs text-warning"}
+                className={
+                  notice.tone === "success" ? "text-xs text-success" : "text-xs text-warning"
+                }
               >
                 {notice.text}
               </p>
@@ -168,9 +284,24 @@ export function RepoManager({
                       base {repo.defaultBranch} · added {formatDateTime(repo.createdAt)}
                     </p>
                   </div>
-                  <Badge tone={repo.taskCount > 0 ? "info" : "neutral"}>
-                    {repo.taskCount} task{repo.taskCount === 1 ? "" : "s"}
-                  </Badge>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge tone="info">{repo.providerName}</Badge>
+                    <Badge
+                      tone={repo.credential.present ? "success" : "warning"}
+                      title={
+                        repo.credential.present
+                          ? `${repo.credential.variable} is set`
+                          : `${repo.credential.variable} is not set in this environment`
+                      }
+                    >
+                      {repo.credential.variable} {repo.credential.present ? "✓" : "missing"}
+                    </Badge>
+                    <Badge tone={repo.taskCount > 0 ? "neutral" : "neutral"}>
+                      {repo.taskCount} task{repo.taskCount === 1 ? "" : "s"}
+                    </Badge>
+                  </div>
+
                   <Button
                     variant="ghost"
                     size="sm"
