@@ -1,7 +1,11 @@
 import { roleFor } from "../agents/roles";
+import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
-import { createPullRequest } from "../git/pull-request";
+import { requireCredential, resolveCredential } from "../git/credentials";
+import { createChangeRequest } from "../git/pull-request";
+import { providerFor } from "../git/providers";
 import {
+  type RemoteAccess,
   branchNameFor,
   commitPendingChanges,
   diffAgainstBase,
@@ -26,14 +30,14 @@ import {
 } from "../tasks/service";
 import {
   extractPlanEstimate,
-  extractQaVerdict,
+  extractReviewVerdict,
   validateArtifact,
 } from "./artifacts";
 import { advanceTask } from "./orchestrator";
 import { type ArtifactInput, truncateForPrompt } from "./prompt";
 import { runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, isAgentStage } from "./stages";
-import type { QaVerdict } from "./state-machine";
+import type { ReviewVerdict } from "./state-machine";
 
 /**
  * Stage execution as the worker performs it: prepare the workspace, run the
@@ -56,6 +60,29 @@ export class StageJobError extends Error {
   }
 }
 
+/**
+ * Resolves a repository row into the credential and provider a git command
+ * needs.
+ *
+ * @param required When true a missing credential throws instead of producing an
+ *   unauthenticated command. Cloning a public repository works without one;
+ *   pushing never does, and failing at the push after a full pipeline run is
+ *   the expensive way to find out.
+ */
+function remoteAccessFor(repo: RepoRow, required = false): RemoteAccess {
+  const provider = providerFor(repo.provider);
+  const target = {
+    provider,
+    credentialRef: repo.credentialRef,
+    credentialUsername: repo.credentialUsername,
+  };
+  return {
+    provider,
+    repoUrl: repo.url,
+    credential: required ? requireCredential(target) : resolveCredential(target),
+  };
+}
+
 /** Collects the artifacts a role consumes, newest version of each. */
 function gatherInputs(taskId: string, stage: AgentStage, attempt: number): ArtifactInput[] {
   const role = roleFor(stage);
@@ -72,11 +99,14 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
     inputs.push({ type, content: artifact.contentMd });
   }
 
-  // On a rework cycle the Developer additionally receives the QA report — and
-  // only the report, never QA's transcript.
+  // On a rework cycle the Developer additionally receives the reviewers'
+  // reports — and only the reports, never their transcripts. Human feedback
+  // comes last so it reads as the final word.
   if (stage === "DEVELOPMENT" && attempt > 1) {
-    const qaReport = latestArtifact(taskId, "qa_report");
-    if (qaReport) inputs.push({ type: "qa_report", content: qaReport.contentMd });
+    for (const type of ["code_review_report", "qa_report", "human_review"] as const) {
+      const artifact = latestArtifact(taskId, type);
+      if (artifact) inputs.push({ type, content: artifact.contentMd });
+    }
   }
 
   return inputs;
@@ -115,8 +145,8 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     const workspace = await prepareWorkspace({
       taskId: task.id,
       title: task.title,
-      repoUrl: task.repo.url,
       defaultBranch: task.repo.defaultBranch,
+      access: remoteAccessFor(task.repo),
     });
     workspacePath = workspace.path;
     branchName = workspace.branchName;
@@ -135,9 +165,10 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
 
   const supplements: Array<{ label: string; body: string; fenced?: boolean }> = [];
 
-  if (workspacePath && (run.stage === "QA" || run.stage === "PO_HOMOLOGATION")) {
+  const wantsFullDiff = run.stage === "QA" || run.stage === "CODE_REVIEW";
+  if (workspacePath && (wantsFullDiff || run.stage === "PO_HOMOLOGATION")) {
     const base = task.repo.defaultBranch;
-    if (run.stage === "QA") {
+    if (wantsFullDiff) {
       const diff = await diffAgainstBase(workspacePath, base);
       supplements.push({
         label: `Branch diff against origin/${base}`,
@@ -222,7 +253,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     artifactType: role.produces,
   });
 
-  let qaVerdict: QaVerdict | undefined;
+  let reviewVerdict: ReviewVerdict | undefined;
 
   if (run.stage === "ARCHITECTURE") {
     const estimate = extractPlanEstimate(content);
@@ -254,12 +285,12 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     }
   }
 
-  if (run.stage === "QA") {
-    qaVerdict = extractQaVerdict(content);
+  if (run.stage === "QA" || run.stage === "CODE_REVIEW") {
+    reviewVerdict = extractReviewVerdict(content);
     appendEvent(task.id, stageRunId, {
       type: "log",
-      level: qaVerdict === "approved" ? "info" : "warn",
-      message: `QA verdict: ${qaVerdict}.`,
+      level: reviewVerdict === "approved" ? "info" : "warn",
+      message: `${role.name} verdict: ${reviewVerdict}.`,
     });
   }
 
@@ -271,7 +302,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     costUsd: result.costUsd,
   });
 
-  advanceTask(task.id, { kind: "stage_succeeded", stage: run.stage, qaVerdict });
+  advanceTask(task.id, { kind: "stage_succeeded", stage: run.stage, reviewVerdict });
 }
 
 /** Builds the pull request body from the stories and the developer report. */
@@ -324,30 +355,30 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
   });
 
   try {
-    await pushBranch(task.workspacePath, task.repo.url, task.branchName);
+    await pushBranch(task.workspacePath, task.branchName, remoteAccessFor(task.repo, true));
     appendEvent(task.id, stageRunId, {
       type: "git",
       message: `Pushed ${task.branchName} to origin.`,
     });
 
-    const pr = await createPullRequest({
-      workspacePath: task.workspacePath,
-      repoUrl: task.repo.url,
-      baseBranch: task.repo.defaultBranch,
-      branchName: task.branchName,
+    const change = await createChangeRequest({
+      connection: task.repo,
+      headBranch: task.branchName,
       title: task.title,
       body: buildPullRequestBody(task.id, task.title),
     });
 
-    updateTask(task.id, { prUrl: pr.url });
+    updateTask(task.id, { prUrl: change.url });
 
-    if (pr.status === "created") {
-      appendEvent(task.id, stageRunId, { type: "pr_opened", url: pr.url });
+    if (change.status === "created") {
+      appendEvent(task.id, stageRunId, { type: "pr_opened", url: change.url });
     } else {
       appendEvent(task.id, stageRunId, {
         type: "log",
         level: "warn",
-        message: `Branch pushed, but the pull request was not opened automatically (${pr.reason}). Open it here: ${pr.url}`,
+        message:
+          `Branch pushed, but the ${change.noun} was not opened automatically ` +
+          `(${change.reason}). Open it here: ${change.url}`,
       });
     }
   } catch (error) {

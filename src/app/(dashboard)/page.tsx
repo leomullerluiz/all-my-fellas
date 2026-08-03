@@ -5,7 +5,10 @@ import { TaskBoard, type BoardTask } from "@/components/task-board";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { formatCost } from "@/lib/utils";
-import { hasGithubToken, resolveProviderAuth } from "@/server/config/env";
+import { resolveProviderAuth } from "@/server/config/env";
+import { credentialSource } from "@/server/git/credentials";
+import { providerFor } from "@/server/git/providers";
+import { capacity } from "@/server/pipeline/orchestrator";
 import { listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
 
 // The board reflects worker state that changes between requests, so it must be
@@ -21,8 +24,22 @@ function SetupNotice() {
       "No Claude credential found. Set CLAUDE_CODE_OAUTH_TOKEN (subscription) or ANTHROPIC_API_KEY in .env.",
     );
   }
-  if (!hasGithubToken()) {
-    problems.push("GITHUB_TOKEN is not set. Cloning and pull request creation will fail.");
+
+  // Warn per connection that is actually configured, rather than about
+  // GITHUB_TOKEN specifically — a GitLab-only install does not need it.
+  for (const repo of listRepos()) {
+    const provider = providerFor(repo.provider);
+    const credential = credentialSource({
+      provider,
+      credentialRef: repo.credentialRef,
+      credentialUsername: repo.credentialUsername,
+    });
+    if (!credential.present) {
+      problems.push(
+        `${repo.name}: ${credential.variable} is not set, so cloning private repositories ` +
+          `and opening a ${provider.changeRequestNoun} will fail.`,
+      );
+    }
   }
 
   if (problems.length === 0) return null;
@@ -46,9 +63,8 @@ export default async function DashboardPage() {
     costUsd: totalCostForTask(task.id),
   }));
 
-  const active = tasks.filter((task) =>
-    ["queued", "running", "awaiting_gate"].includes(task.status),
-  ).length;
+  const slots = capacity();
+  const notStarted = tasks.filter((task) => task.currentStage === "CREATED").length;
   const waiting = tasks.filter((task) => task.status === "awaiting_gate").length;
   const spend = tasks.reduce((sum, task) => sum + task.costUsd, 0);
 
@@ -60,7 +76,9 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-lg font-semibold tracking-tight">Pipeline</h1>
           <p className="mt-1 text-xs text-muted">
-            {active} active · {waiting} waiting for approval · {formatCost(spend)} spent in total
+            {slots.active} of {slots.limit} slot{slots.limit === 1 ? "" : "s"} in use ·{" "}
+            {notStarted} not started · {waiting} waiting for approval ·{" "}
+            {formatCost(spend)} spent in total
           </p>
         </div>
         <Link href="/tasks/new">
@@ -83,7 +101,7 @@ export default async function DashboardPage() {
       ) : tasks.length === 0 ? (
         <EmptyState
           title="No tasks yet"
-          description="Describe a feature and the pipeline will refine it, plan it, build it, review it, and open a pull request."
+          description="Describe a feature and the pipeline will refine it, plan it, build it, review it, and open a pull request. Nothing starts until you say so."
           action={
             <Link href="/tasks/new">
               <Button>Create the first task</Button>
@@ -91,7 +109,7 @@ export default async function DashboardPage() {
           }
         />
       ) : (
-        <TaskBoard tasks={tasks} />
+        <TaskBoard tasks={tasks} capacity={slots} />
       )}
     </>
   );

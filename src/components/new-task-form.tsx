@@ -10,60 +10,121 @@ import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
 export type RepoOption = { id: string; name: string; defaultBranch: string };
 
+export type TaskFormValues = {
+  repoId: string;
+  title: string;
+  description: string;
+  priority: Priority;
+  requireHumanCodeReview: boolean;
+};
+
+export type TaskFormProps = {
+  repos: RepoOption[];
+  /** `create` posts a new task; `edit` patches an existing, not-yet-started one. */
+  mode?: "create" | "edit";
+  taskId?: string;
+  initial?: Partial<TaskFormValues>;
+  /** Whether a concurrency slot is free, for the "Start now" button. */
+  capacity?: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
+};
+
 /**
- * Task creation form.
+ * Task creation and editing form.
  *
  * The right-hand preview shows exactly what the Stakeholder agent receives —
  * the request text and nothing else — so the user can see that a vague
  * description is all the first agent has to work with.
  */
-export function NewTaskForm({ repos }: { repos: RepoOption[] }) {
+export function NewTaskForm({
+  repos,
+  mode = "create",
+  taskId,
+  initial,
+  capacity = { slotAvailable: true, limit: 1, blocking: [] },
+}: TaskFormProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState<Priority>("medium");
+  const [repoId, setRepoId] = useState(initial?.repoId ?? repos[0]?.id ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [priority, setPriority] = useState<Priority>(initial?.priority ?? "medium");
+  const [requireHumanCodeReview, setRequireHumanCodeReview] = useState(
+    initial?.requireHumanCodeReview ?? false,
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
 
   const selectedRepo = repos.find((repo) => repo.id === repoId);
+  const isEdit = mode === "edit";
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
+  const blockedReason = capacity.slotAvailable
+    ? null
+    : `Limit of ${capacity.limit} task${capacity.limit === 1 ? "" : "s"} in progress reached` +
+      (capacity.blocking[0] ? ` — ${capacity.blocking[0].title} is still running.` : ".");
+
+  async function submit(start: boolean) {
     setErrors({});
     setSubmitError(null);
+    setSubmitting(start ? "start" : "queue");
 
-    const response = await fetch("/api/tasks", {
-      method: "POST",
+    const body = {
+      repoId,
+      title,
+      description,
+      priority,
+      requireHumanCodeReview,
+      ...(isEdit ? {} : { start }),
+    };
+    const response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
+      method: isEdit ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repoId, title, description, priority }),
+      body: JSON.stringify(body),
     });
 
-    const payload = (await response.json()) as {
+    const payload = (await response.json().catch(() => ({}))) as {
       task?: { id: string };
       error?: string;
       details?: Record<string, string>;
     };
 
+    setSubmitting(null);
+
     if (!response.ok) {
       setErrors(payload.details ?? {});
-      setSubmitError(payload.error ?? "Could not create the task.");
+      setSubmitError(
+        payload.error ?? (isEdit ? "Could not save the task." : "Could not create the task."),
+      );
+      // A capacity refusal on "Start now" still created the task, so send the
+      // user to it rather than stranding them on a form they already submitted.
+      if (response.status === 409 && payload.task) {
+        startTransition(() => {
+          router.push(`/tasks/${payload.task!.id}`);
+          router.refresh();
+        });
+      }
       return;
     }
 
+    const destination =
+      isEdit || start ? `/tasks/${taskId ?? payload.task!.id}` : "/";
     startTransition(() => {
-      router.push(`/tasks/${payload.task!.id}`);
+      router.push(destination);
       router.refresh();
     });
+  }
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    void submit(false);
   }
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
       <Card>
         <CardHeader>
-          <CardTitle>New task</CardTitle>
+          <CardTitle>{isEdit ? "Edit task" : "New task"}</CardTitle>
         </CardHeader>
         <CardBody>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -128,16 +189,62 @@ export function NewTaskForm({ repos }: { repos: RepoOption[] }) {
               </Select>
             </Field>
 
+            {/* A process choice, so it sits with priority rather than with the
+                description, which is the request itself. */}
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={requireHumanCodeReview}
+                onChange={(event) => setRequireHumanCodeReview(event.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-foreground">
+                  Require human code review before delivery
+                </span>
+                <span className="mt-0.5 block text-muted">
+                  After QA passes, the task waits for you to read the diff and approve it.
+                </span>
+              </span>
+            </label>
+
             {submitError ? <p className="text-xs text-danger">{submitError}</p> : null}
 
-            <div className="flex items-center gap-2">
-              <Button type="submit" disabled={pending}>
-                {pending ? "Starting…" : "Start the pipeline"}
-              </Button>
-              <span className="text-xs text-muted">
-                The first agent starts as soon as the worker picks up the job.
-              </span>
-            </div>
+            {isEdit ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" disabled={pending || submitting !== null}>
+                  {submitting ? "Saving…" : "Save changes"}
+                </Button>
+                <span className="text-xs text-muted">
+                  Only tasks that have not started can be edited.
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Queueing is the default and the primary action: a task left
+                      sitting costs nothing, a task started by accident costs
+                      quota and a clone on disk. */}
+                  <Button type="submit" disabled={pending || submitting !== null}>
+                    {submitting === "queue" ? "Adding…" : "Add to queue"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={pending || submitting !== null || !capacity.slotAvailable}
+                    title={blockedReason ?? undefined}
+                    onClick={() => void submit(true)}
+                  >
+                    {submitting === "start" ? "Starting…" : "Start now"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted">
+                  {blockedReason
+                    ? `${blockedReason} You can still add the task to the queue.`
+                    : "Queued tasks wait in the Created column until you start them."}
+                </p>
+              </div>
+            )}
           </form>
         </CardBody>
       </Card>

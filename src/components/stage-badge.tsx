@@ -15,7 +15,9 @@ const STAGE_TONES: Record<Stage, NonNullable<BadgeProps["tone"]>> = {
   ARCHITECTURE: "info",
   PLAN_GATE: "warning",
   DEVELOPMENT: "accent",
+  CODE_REVIEW: "accent",
   QA: "accent",
+  HUMAN_CODE_REVIEW: "warning",
   PO_HOMOLOGATION: "info",
   STAKEHOLDER_GATE: "warning",
   DELIVERY: "accent",
@@ -40,7 +42,9 @@ const STATUS_TONES: Record<TaskStatus, NonNullable<BadgeProps["tone"]>> = {
 };
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
-  queued: "Queued",
+  // "Queued" would imply the system picks the task up on its own. Nothing
+  // starts a task but the user — see `spec-task-queue.md` §3.
+  queued: "Not started",
   running: "Running",
   awaiting_gate: "Awaiting approval",
   completed: "Completed",

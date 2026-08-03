@@ -1,14 +1,36 @@
 import { SettingsForm } from "@/components/settings-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
-import { hasGithubToken, resolveProviderAuth } from "@/server/config/env";
+import { resolveProviderAuth } from "@/server/config/env";
+import { configuredCredentialVariables, conventionalEnvVars } from "@/server/git/credentials";
+import { PROVIDERS, providerFor } from "@/server/git/providers";
 import { getSettings } from "@/server/settings/store";
+import { listRepos } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const auth = resolveProviderAuth();
   const settings = getSettings();
+
+  // One row per provider, plus any variable a connection explicitly names, so
+  // a custom credential reference is visible here too.
+  const repos = listRepos();
+  const conventional = conventionalEnvVars(PROVIDERS).map((entry) => {
+    const users = repos.filter(
+      (repo) => (repo.credentialRef ?? providerFor(repo.provider).defaultCredentialEnvVar) === entry.variable,
+    );
+    return { ...entry, inUse: users.length > 0, count: users.length };
+  });
+  const custom = configuredCredentialVariables(repos.map((repo) => repo.credentialRef))
+    .filter((variable) => !conventional.some((entry) => entry.variable === variable))
+    .map((variable) => ({
+      variable,
+      present: (process.env[variable] ?? "").trim() !== "",
+      inUse: true,
+      count: repos.filter((repo) => repo.credentialRef === variable).length,
+    }));
+  const credentials = [...conventional, ...custom];
 
   return (
     <div className="flex flex-col gap-5">
@@ -29,11 +51,27 @@ export default async function SettingsPage() {
             <span className="text-xs text-muted">Claude:</span>
             <Badge tone={auth.mode === "missing" ? "danger" : "success"}>{auth.label}</Badge>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">GitHub:</span>
-            <Badge tone={hasGithubToken() ? "success" : "warning"}>
-              {hasGithubToken() ? "GITHUB_TOKEN present" : "GITHUB_TOKEN missing"}
-            </Badge>
+          <div className="flex flex-col gap-2">
+            <span className="text-xs text-muted">Repository credentials:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {credentials.map((entry) => (
+                <Badge
+                  key={entry.variable}
+                  tone={entry.present ? "success" : entry.inUse ? "warning" : "neutral"}
+                  title={
+                    entry.inUse
+                      ? `${entry.count} connection(s) read this variable`
+                      : "No connection uses this provider yet"
+                  }
+                >
+                  {entry.variable} {entry.present ? "✓" : "not set"}
+                </Badge>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted">
+              A connection can point at a different variable — see Repositories. Only
+              variables actually in use need to be set.
+            </p>
           </div>
 
           <div className="rounded-md border border-border bg-surface-raised px-3 py-2 text-[11px] leading-relaxed text-muted">

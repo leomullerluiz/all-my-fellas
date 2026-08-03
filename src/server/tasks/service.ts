@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { newId } from "../db/ids";
@@ -16,6 +16,7 @@ import {
   tasks,
 } from "../db/schema";
 import { appendEvent } from "../events/store";
+import type { ProviderId } from "../git/providers/types";
 import type {
   ArtifactType,
   Criticality,
@@ -44,15 +45,22 @@ export function createRepo(input: {
   name: string;
   url: string;
   defaultBranch: string;
+  provider?: ProviderId;
+  credentialRef?: string | null;
+  credentialUsername?: string | null;
+  apiBaseUrl?: string | null;
 }): RepoRow {
   const row = db
     .insert(repos)
     .values({
       id: newId("repo"),
       name: input.name,
-      provider: "github",
+      provider: input.provider ?? "github",
       url: input.url,
       defaultBranch: input.defaultBranch,
+      credentialRef: input.credentialRef ?? null,
+      credentialUsername: input.credentialUsername ?? null,
+      apiBaseUrl: input.apiBaseUrl ?? null,
     })
     .returning()
     .get();
@@ -105,6 +113,7 @@ export function createTask(input: {
   title: string;
   description: string;
   priority: Priority;
+  requireHumanCodeReview?: boolean;
 }): TaskRow {
   const id = newId("task");
   const task = db
@@ -115,6 +124,7 @@ export function createTask(input: {
       title: input.title,
       description: input.description,
       priority: input.priority,
+      requireHumanCodeReview: input.requireHumanCodeReview ?? false,
       status: "queued",
       currentStage: "CREATED",
     })
@@ -123,6 +133,61 @@ export function createTask(input: {
 
   appendEvent(id, null, { type: "task_created", title: input.title });
   return task;
+}
+
+/**
+ * Statuses that occupy a concurrency slot.
+ *
+ * A gated task is not executing, but it still holds a workspace and will resume,
+ * so it counts as in flight. See `spec-task-queue.md` §8.4.
+ */
+export const ACTIVE_STATUSES = ["running", "awaiting_gate"] as const;
+
+export function countActiveTasks(): number {
+  const row = db
+    .select({ count: sql<number>`count(*)` })
+    .from(tasks)
+    .where(inArray(tasks.status, [...ACTIVE_STATUSES]))
+    .get();
+  return row?.count ?? 0;
+}
+
+/** Titles of the tasks currently holding a slot, so a refusal can name them. */
+export function activeTasks(): Array<{ id: string; title: string; status: string }> {
+  return db
+    .select({ id: tasks.id, title: tasks.title, status: tasks.status })
+    .from(tasks)
+    .where(inArray(tasks.status, [...ACTIVE_STATUSES]))
+    .orderBy(tasks.updatedAt)
+    .all();
+}
+
+/**
+ * Fields a user may change while a task has not started yet.
+ *
+ * `requireHumanCodeReview` is here rather than on a started task because
+ * flipping it mid-flight would either skip a gate the task already passed or
+ * insert one it already went by.
+ */
+export type EditableTaskFields = {
+  repoId: string;
+  title: string;
+  description: string;
+  priority: Priority;
+  requireHumanCodeReview: boolean;
+};
+
+export function updateTaskFields(id: string, fields: EditableTaskFields): TaskRow | null {
+  return updateTask(id, fields);
+}
+
+/**
+ * Hard-deletes a task. Every child table cascades from `tasks`, so one statement
+ * is enough — see `spec-task-queue.md` §7.2.
+ */
+export function deleteTask(id: string): boolean {
+  const removed = db.delete(tasks).where(eq(tasks.id, id)).returning({ id: tasks.id }).all();
+  return removed.length > 0;
 }
 
 export function updateTask(id: string, patch: Partial<TaskRow>): TaskRow | null {

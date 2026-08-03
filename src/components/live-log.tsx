@@ -59,6 +59,10 @@ function describe(event: PipelineEvent): string {
   switch (event.type) {
     case "task_created":
       return `Task created: ${event.title}`;
+    case "task_started":
+      return "▶ Task started";
+    case "task_edited":
+      return `✎ Edited: ${event.fields.join(", ")}`;
     case "stage_started":
       return `▶ ${event.stage} started (attempt ${event.attempt}${
         event.model ? `, ${event.model}` : ""

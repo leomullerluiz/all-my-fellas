@@ -5,7 +5,7 @@ import {
   CRITICALITIES,
   DIFFICULTIES,
 } from "./stages";
-import type { QaVerdict } from "./state-machine";
+import type { ReviewVerdict } from "./state-machine";
 
 /**
  * Artifact contracts.
@@ -54,10 +54,20 @@ export const ARTIFACT_SPECS: Record<ArtifactType, ArtifactSpec> = {
     description: "What was implemented and how it was verified",
     requiredSections: ["Summary", "Changes", "Commands Run", "Follow-ups"],
   },
+  code_review_report: {
+    type: "code_review_report",
+    description: "Code review verdict against the diff",
+    requiredSections: ["Verdict", "Summary", "Findings", "Files Reviewed"],
+  },
   qa_report: {
     type: "qa_report",
     description: "QA verdict against the acceptance criteria",
     requiredSections: ["Verdict", "Checks", "Acceptance Criteria Review", "Findings"],
+  },
+  human_review: {
+    type: "human_review",
+    description: "Changes a human reviewer asked for",
+    requiredSections: ["Requested Changes"],
   },
   homolog_report: {
     type: "homolog_report",
@@ -168,13 +178,14 @@ export function extractPlanEstimate(techplan: string): PlanEstimate {
 }
 
 /**
- * Extracts the QA verdict from `qa-report.md`.
+ * Extracts the verdict from a reviewing stage's report — `code-review-report.md`
+ * or `qa-report.md`, which share the same verdict shape.
  *
- * Defaults to `changes_requested` when the verdict cannot be read: an
- * unreadable verdict must never be mistaken for a pass.
+ * Fails closed: anything that cannot be read as `approved` counts as a
+ * rejection, so an unparseable report can never be mistaken for a pass.
  */
-export function extractQaVerdict(qaReport: string): QaVerdict {
-  const value = readField(qaReport, "Verdict")?.toLowerCase() ?? "";
+export function extractReviewVerdict(report: string): ReviewVerdict {
+  const value = readField(report, "Verdict")?.toLowerCase() ?? "";
   return /\bapproved\b/.test(value) && !/not\s+approved/.test(value)
     ? "approved"
     : "changes_requested";

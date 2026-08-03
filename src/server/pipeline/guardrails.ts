@@ -70,13 +70,26 @@ const DENIED_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /(^|[\s;&|(])chmod\s+(-R\s+)?777/, reason: "world-writable permissions" },
   { pattern: /\bgit\s+push\b/, reason: "the worker owns pushing, not the agent" },
   { pattern: /\bgit\s+remote\s+(add|set-url)\b/, reason: "remotes are managed by the worker" },
-  { pattern: /\bgh\s+/, reason: "GitHub CLI access is reserved for the worker" },
+  {
+    // Provider CLIs as a family. Mostly moot now that delivery calls REST
+    // directly, but a blocklist that lags behind a new provider fails open.
+    pattern: /(^|[\s;&|(])(gh|glab|az|bb|tf)(\s|$)/,
+    reason: "provider CLI access is reserved for the worker",
+  },
   { pattern: /\bnpm\s+publish\b/, reason: "publishing is out of scope for the pipeline" },
   { pattern: /\.env(\.[a-z]+)?\b/, reason: "environment files may hold credentials" },
   { pattern: /\b(id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc)\b/, reason: "credential material" },
   { pattern: /\bprintenv\b|\benv\s*$|\bset\s*$/, reason: "dumping the environment" },
   {
-    pattern: /\$\{?(GITHUB_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)\b/,
+    /**
+     * Any variable that looks like a secret, rather than an enumerated list.
+     *
+     * Enumerating them meant every new provider silently widened the hole
+     * until someone remembered to add `GITLAB_TOKEN` here. This matches the
+     * shape instead, so an unknown credential variable is covered on the day
+     * it is introduced.
+     */
+    pattern: /\$\{?[A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL)/i,
     reason: "reading a credential variable",
   },
 ];

@@ -3,16 +3,20 @@ import path from "node:path";
 
 import simpleGit, { type SimpleGit } from "simple-git";
 
-import { readGithubToken, resolveWorkspacesDir } from "../config/env";
+import { resolveGitIdentity, resolveWorkspacesDir } from "../config/env";
 import { slugify } from "../db/ids";
+import type { GitCredential, RepositoryProvider } from "./providers/types";
 
 /**
  * Per-task git workspace management.
  *
  * Every task gets its own shallow clone under `workspaces/<taskId>`. Agents run
- * with `cwd` pinned there and never receive the GitHub token: it is injected
- * into the remote URL only for the clone and push commands the worker issues
- * itself, and stripped from the stored remote immediately afterwards.
+ * with `cwd` pinned there and never receive the credential: it is attached to
+ * the clone and push commands the worker issues itself, and the stored remote
+ * is always the clean URL.
+ *
+ * How the credential is attached is the provider's decision — most embed it in
+ * the remote URL, Azure DevOps sends an `Authorization` header instead.
  */
 
 export const BRANCH_PREFIX = "pipeline";
@@ -25,23 +29,23 @@ export type Workspace = {
   baseBranch: string;
 };
 
-/** Builds an https remote carrying the PAT. Never persisted or logged. */
-function authenticatedUrl(repoUrl: string, token: string | null): string {
-  if (!token) return repoUrl;
-  try {
-    const url = new URL(repoUrl);
-    if (url.protocol !== "https:") return repoUrl;
-    url.username = "x-access-token";
-    url.password = token;
-    return url.toString();
-  } catch {
-    return repoUrl;
-  }
-}
+/** Everything a git command needs to authenticate against a remote. */
+export type RemoteAccess = {
+  provider: RepositoryProvider;
+  repoUrl: string;
+  credential: GitCredential | null;
+};
 
-/** Removes credentials from any string before it reaches a log or the database. */
+/**
+ * Removes credentials from any string before it reaches a log or the database.
+ *
+ * Covers both transports: a `user:secret@host` remote, and the base64 blob in
+ * an `http.extraHeader` argument that git echoes back in some error messages.
+ */
 export function redactRemote(message: string): string {
-  return message.replace(/https:\/\/[^@\s/]+:[^@\s/]+@/g, "https://***@");
+  return message
+    .replace(/https:\/\/[^@\s/]+:[^@\s/]+@/g, "https://***@")
+    .replace(/(Authorization:\s*Basic\s+)\S+/gi, "$1***");
 }
 
 export function workspacePathFor(taskId: string): string {
@@ -70,32 +74,39 @@ async function pathExists(target: string): Promise<boolean> {
 export async function prepareWorkspace(options: {
   taskId: string;
   title: string;
-  repoUrl: string;
   defaultBranch: string;
+  access: RemoteAccess;
 }): Promise<Workspace> {
   const target = workspacePathFor(options.taskId);
   const branchName = branchNameFor(options.taskId, options.title);
-  const token = readGithubToken();
+  const { provider, repoUrl, credential } = options.access;
 
   if (!(await pathExists(path.join(target, ".git")))) {
     await fs.rm(target, { recursive: true, force: true });
     await fs.mkdir(path.dirname(target), { recursive: true });
 
-    const cloner = simpleGit();
-    await cloner.clone(authenticatedUrl(options.repoUrl, token), target, [
+    const transport = provider.transport(repoUrl, credential);
+    // `configArgs` carries the credential for header-transport providers; it is
+    // empty for the URL form. Either way it lives only in this argv.
+    await simpleGit().raw([
+      ...transport.configArgs,
+      "clone",
       "--depth",
       "50",
       "--branch",
       options.defaultBranch,
+      transport.url,
+      target,
     ]);
 
-    // Store the clean URL so the token never sits in `.git/config`.
-    await simpleGit(target).remote(["set-url", "origin", options.repoUrl]);
+    // Store the clean URL so a credential never sits in `.git/config`.
+    await simpleGit(target).remote(["set-url", "origin", repoUrl]);
   }
 
   const git = simpleGit(target);
-  await git.addConfig("user.name", "Multi-Agent Pipeline", false, "local");
-  await git.addConfig("user.email", "pipeline@localhost", false, "local");
+  const identity = resolveGitIdentity();
+  await git.addConfig("user.name", identity.name, false, "local");
+  await git.addConfig("user.email", identity.email, false, "local");
 
   const branches = await git.branchLocal();
   if (branches.all.includes(branchName)) {
@@ -168,20 +179,21 @@ export async function commitPendingChanges(
   return true;
 }
 
-/** Pushes the task branch with the token injected for this command only. */
+/** Pushes the task branch with the credential attached for this command only. */
 export async function pushBranch(
   workspacePath: string,
-  repoUrl: string,
   branchName: string,
+  access: RemoteAccess,
 ): Promise<void> {
-  const token = readGithubToken();
-  if (!token) {
-    throw new Error("GITHUB_TOKEN is not set; the pipeline cannot push the task branch.");
-  }
+  const transport = access.provider.transport(access.repoUrl, access.credential);
   const git = simpleGit(workspacePath);
   try {
-    await git.push(authenticatedUrl(repoUrl, token), `${branchName}:${branchName}`, [
+    await git.raw([
+      ...transport.configArgs,
+      "push",
       "--set-upstream",
+      transport.url,
+      `${branchName}:${branchName}`,
     ]);
   } catch (error) {
     throw new Error(redactRemote(error instanceof Error ? error.message : String(error)));

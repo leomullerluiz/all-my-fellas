@@ -72,10 +72,17 @@ export function hasGithubToken(): boolean {
   return str("GITHUB_TOKEN", "") !== "";
 }
 
-/** Read only at the moment a git command needs it; never logged or persisted. */
-export function readGithubToken(): string | null {
-  const token = str("GITHUB_TOKEN", "");
-  return token === "" ? null : token;
+/**
+ * Author recorded on commits the pipeline makes itself.
+ *
+ * Configurable because the default shows up in the history of the user's own
+ * repository, where "pipeline@localhost" may not be acceptable.
+ */
+export function resolveGitIdentity(): { name: string; email: string } {
+  return {
+    name: str("GIT_AUTHOR_NAME", "All My Fellas Pipeline"),
+    email: str("GIT_AUTHOR_EMAIL", "pipeline@localhost"),
+  };
 }
 
 export type ModelTierConfig = {
@@ -94,14 +101,17 @@ export function resolveModels(): ModelTierConfig {
 
 export type RuntimeLimits = {
   maxParallelTasks: number;
-  qaMaxCycles: number;
+  reworkMaxCycles: number;
   workspaceRetentionDays: number;
 };
 
 export function resolveLimits(): RuntimeLimits {
   return {
     maxParallelTasks: Math.max(1, int("MAX_PARALLEL_TASKS", 1)),
-    qaMaxCycles: Math.max(0, int("QA_MAX_CYCLES", 2)),
+    // Renamed from QA_MAX_CYCLES now that code review and the human gate share
+    // the same budget. The old name is still honoured so existing `.env` files
+    // keep working.
+    reworkMaxCycles: Math.max(0, int("REWORK_MAX_CYCLES", int("QA_MAX_CYCLES", 2))),
     workspaceRetentionDays: Math.max(0, int("WORKSPACE_RETENTION_DAYS", 7)),
   };
 }

@@ -1,36 +1,331 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Multi-Agent Delivery Pipeline - All My Fellas
 
-## Getting Started
+A local application that runs a software delivery pipeline staffed entirely by
+Claude agents. You describe a feature; the task walks a pipeline that simulates
+a full team — **Stakeholder → Product Owner → Architect → Developer → Code
+Review → QA → Homologation** — and the result arrives as a branch and an open
+pull request (a *merge request*, on GitLab) against a real repository: GitHub,
+GitLab, Bitbucket, Azure DevOps, or any plain git server.
 
-First, run the development server:
+Built with Next.js (UI + API), a separate Node worker process, SQLite, and the
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk).
+
+---
+
+## What makes it different
+
+**It reads the real code.** The Architect explores the repository before
+choosing an approach, so its difficulty and criticality estimates come from what
+is actually there rather than from the prompt alone.
+
+**Minimum-context handoff.** Each stage is a brand-new `query()` session with no
+`resume`. A stage's prompt is assembled from three things only: the role's
+system prompt, the task metadata, and the specific Markdown artifacts the
+previous stages produced. No agent ever sees another agent's transcript. Full
+transcripts are kept in `agent_runs` for auditing and are never fed back into
+the pipeline.
+
+**Nothing starts on its own.** A new task sits in the **Created** column until
+you start it, and at most `MAX_PARALLEL_TASKS` tasks are ever in flight — the
+limit is enforced when you press Start, not deep inside the worker, so a card
+that says "an agent is running" means exactly that.
+
+**Human gates where they matter.** The technical plan and the final delivery both
+require a human decision, and a task can opt into a third between them: a human
+code review of the diff. Everything else runs unattended.
+
+**Least privilege per role.** Only the Developer can write files. The Architect
+and QA get Bash restricted to an inspection allowlist. The Stakeholder gets no
+filesystem at all. Every tool call — including the Developer's edits — passes
+through a `canUseTool` guard that confines paths to the task workspace and
+blocks destructive or credential-touching commands.
+
+**The agents never hold credentials.** Cloning, pushing and opening the change
+request are done by the worker. The token is injected into a remote URL — or an
+`Authorization` header, for Azure DevOps — for the length of a single command,
+and is never written to `.git/config`, the database, or an agent's environment.
+What the database stores is the *name* of an environment variable, never its
+value.
+
+**Any git host.** GitHub, GitLab, Bitbucket and Azure DevOps each get a real API
+integration, so the pipeline opens the change request itself and calls it by the
+name that host uses. Anything else — a self-hosted Gitea, an internal server —
+works as a generic connection: the branch is pushed and you open the request by
+hand.
+
+---
+
+## Requirements
+
+- Node.js ≥ 20.9
+- `git` on `PATH`
+- A Claude credential (see below)
+- A token for whichever git host you use (see below)
+
+No provider CLI is needed. `gh`, `glab` and `az` used to be optional
+dependencies; the pipeline now calls each provider's REST API directly.
+
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env    # then fill it in
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Claude credentials
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**Subscription (default).** Consumption comes out of your Claude Pro/Max plan.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm i -g @anthropic-ai/claude-code
+claude setup-token        # authenticate in the browser
+# paste the token into .env as CLAUDE_CODE_OAUTH_TOKEN
+```
 
-## Learn More
+**API key (alternative).** Set `ANTHROPIC_API_KEY` instead. No code changes —
+the Agent SDK picks up whichever is present, and Settings shows the active mode.
 
-To learn more about Next.js, take a look at the following resources:
+> Anthropic's policy on programmatic use of a subscription has changed more than
+> once. Check the current terms before relying on subscription mode for
+> sustained runs; switching to an API key is an environment-variable change.
+> This design assumes personal use with your own subscription — offering
+> "log in with Claude" to other people requires approval from Anthropic.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Repository credentials
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Put a token in `.env` for the host you use. It stays in the worker's
+environment: it is never stored in the database and never reaches an agent.
 
-## Deploy on Vercel
+| Host | Variable | Token scopes | Basic-auth username |
+|---|---|---|---|
+| GitHub | `GITHUB_TOKEN` | `repo` | `x-access-token` |
+| GitLab | `GITLAB_TOKEN` | `api`, `write_repository` | `oauth2` |
+| Bitbucket Cloud | `BITBUCKET_TOKEN` | `repository:write`, `pullrequest:write` | `x-token-auth` |
+| Azure DevOps | `AZURE_DEVOPS_TOKEN` | Code (read & write), Pull Request Contribute | *(empty — sent as a header)* |
+| Generic git server | *(you name it)* | whatever the server needs | `git` |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The username column is handled for you and is only worth knowing about when it
+has to change. Bitbucket resolves an access token **only** when the username is
+exactly `x-token-auth`; a legacy app password authenticates as an Atlassian
+account instead and needs that account's real name, which is what the
+per-connection *credential username* override is for.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**Registering a repository.** *Repositories* → paste the URL. The provider is
+detected from the host, so `https://gitlab.com/acme/platform/store` is enough;
+pick one by hand for a self-managed instance, whose hostname says nothing about
+what is running on it. The connection is verified immediately — the token is
+checked against the API, and the repository's real default branch is reported
+back, because a `main`/`master` mismatch is the most common reason a first task
+dies at clone time. A repository that cannot be reached is still saved, with the
+reason shown.
+
+**One token per host is the default, not the rule.** A connection's *credential
+variable* may name any environment variable of its own — `GITHUB_TOKEN_WORK`,
+`BITBUCKET_TOKEN_ACME` — for a second account on the same host, or to keep a
+client's token separate. It takes a variable *name*, and only a plausible one:
+names the pipeline reserves for itself (`ANTHROPIC_API_KEY`, `PATH`,
+`DATABASE_URL`, and the rest) are rejected, since otherwise the field would be a
+way to hand any environment variable to a remote git server.
+
+**Self-managed instances.** A self-managed **GitLab** is supported: choose the
+provider explicitly and set *API base URL* to that instance's API root
+(`https://git.acme.internal/api/v4`). Left empty, the public endpoint is used.
+
+Bitbucket Data Center and Azure DevOps Server are not — both speak an API that
+differs from their cloud siblings by more than a base URL. Register them as a
+generic connection: cloning, branching and pushing all work, and you open the
+pull request yourself.
+
+## Running
+
+```bash
+npm run dev        # Next.js on :3000 and the worker, together
+```
+
+Or separately:
+
+```bash
+npm run dev:web
+npm run dev:worker
+```
+
+Production:
+
+```bash
+npm run build      # next build + tsc for the worker
+npm start          # next start + node dist/worker/index.js
+```
+
+Do not deploy this serverless. Agent sessions run for minutes and the dashboard
+holds an SSE connection open; both need a persistent server. `docker-compose.yml`
+covers the self-hosted case.
+
+---
+
+## The pipeline
+
+```
+CREATED
+ └─► STAKEHOLDER_REFINEMENT   agent · brief.md
+      └─► PO_REFINEMENT       agent · stories.md
+           └─► ARCHITECTURE   agent · techplan.md
+                └─► PLAN_GATE            human · approve / reject
+                     └─► DEVELOPMENT     agent · commits + dev-report.md
+                          └─► CODE_REVIEW  agent · code-review-report.md
+                               ├─ changes_requested → DEVELOPMENT
+                               └─► QA       agent · qa-report.md
+                                    ├─ changes_requested → DEVELOPMENT
+                                    └─► HUMAN_CODE_REVIEW   human · optional
+                                         ├─ request_changes → DEVELOPMENT
+                                         └─► PO_HOMOLOGATION  agent
+                                              └─► STAKEHOLDER_GATE   human
+                                                   └─► DELIVERY  worker · push + change request
+                                                        └─► COMPLETED
+
+Rework from any reviewer shares one budget (REWORK_MAX_CYCLES).
+Other terminals: REJECTED (gate), FAILED (technical), CANCELLED (user)
+```
+
+| Stage | Consumes | Produces | Tools |
+|---|---|---|---|
+| Stakeholder | raw request | `brief.md` | none |
+| Product Owner | `brief.md` + repo | `stories.md` | Read, Grep, Glob |
+| Architect | `brief.md`, `stories.md` + repo | `techplan.md` | + Bash (read-only) |
+| Developer | `stories.md`, `techplan.md` (+ reviewer reports on rework) | commits, `dev-report.md` | + Edit, Write |
+| Code Reviewer | `stories.md`, `techplan.md`, `dev-report.md`, branch diff | `code-review-report.md` | Read, Grep, Glob, Bash |
+| QA | `stories.md`, `dev-report.md`, branch diff | `qa-report.md` | Read, Grep, Glob, Bash |
+| Homologation | `stories.md`, `qa-report.md`, diff summary | `homolog-report.md` | Read |
+
+**Code review runs before QA.** Reviewing a diff is cheap; QA runs the test
+suite, the linter and the build. Catching a defect before paying for that is
+worth the ordering, and a rejection costs one agent run to detect instead of
+two. QA's prompt is correspondingly narrow — it verifies acceptance criteria and
+does not re-review code quality.
+
+**Human code review is opt-in per task**, chosen at creation. When enabled the
+task parks after QA until you read the diff at `/tasks/{id}/review` and decide.
+*Request changes* sends the work back to the Developer, and your comment is
+persisted as `human-review.md` so it actually reaches their prompt.
+
+Every artifact must contain a fixed set of `##` sections, validated by the worker
+before the pipeline advances. A malformed artifact fails the stage rather than
+being passed on. The QA and homologation verdicts fail closed: anything that
+cannot be parsed as a pass is treated as a rejection.
+
+The plan gate can be waived for low-criticality work (Settings → *Automatic plan
+gate*); the delivery gate is always manual.
+
+**Delivery degrades rather than fails.** The branch is pushed first, then the
+change request is opened through the provider's API. If that call fails — an
+expired token, a host with no API at all — the push still stands and the task
+completes with a link to the provider's own "create pull request" page,
+pre-filled with the two branches.
+
+Role system prompts live in [`prompts/`](prompts/) as plain Markdown — edit them
+and the next stage run picks the change up.
+
+---
+
+## Layout
+
+```
+src/
+├─ app/
+│  ├─ (dashboard)/      board, new task, task detail, repos, settings, costs
+│  └─ api/              REST endpoints + the SSE stream
+├─ components/          UI
+├─ server/              shared by web and worker
+│  ├─ agents/           role definitions: tools, prompts, artifact contracts
+│  ├─ config/           environment resolution
+│  ├─ db/               Drizzle schema, lazy SQLite client, bootstrap DDL
+│  ├─ events/           append-only event log behind the SSE stream
+│  ├─ git/              workspace clone/branch/commit/push, diffs, credentials
+│  │  └─ providers/     one module per host, behind a common interface
+│  ├─ http/             route-handler helpers
+│  ├─ jobs/             SQLite-backed job queue
+│  ├─ pipeline/         state machine, stage execution, artifacts, guardrails
+│  ├─ settings/         runtime settings store
+│  ├─ tasks/            data access
+│  └─ validation/       Zod schemas shared by API and forms
+└─ worker/index.ts      the long-running orchestrator
+prompts/                role system prompts
+workspaces/             one clone per task (gitignored)
+data/                   SQLite file (gitignored)
+tests/                  Vitest
+```
+
+### Why two processes
+
+A stage takes minutes and streams continuously — that does not fit a Next.js
+request/response cycle. The worker owns all execution and all state transitions;
+the web app only reads state, records gate decisions, and cancels. They
+communicate through the database: a `jobs` table the worker polls, and an
+`events` table the SSE route tails. SQLite runs in WAL mode with a busy timeout,
+which is what makes two writer processes on one file safe.
+
+## API
+
+| Method / route | Purpose |
+|---|---|
+| `POST /api/tasks` | Create a task; enters the pipeline only with `start: true` |
+| `GET /api/tasks?status=` | List for the board, plus current capacity |
+| `POST /api/tasks/:id/start` | Start a queued task (admission controlled) |
+| `PATCH /api/tasks/:id` | Edit a task that has not started |
+| `DELETE /api/tasks/:id` | Delete a task that has not started |
+| `GET /api/tasks/:id` | Detail: stage, runs, artifacts, approvals, cost |
+| `GET /api/tasks/:id/stream` | **SSE** — live event tail, resumable via `Last-Event-ID` |
+| `GET /api/tasks/:id/diff` | Changed-file index, or one file's patch with `?file=` |
+| `POST /api/tasks/:id/gates/:gate` | Record a human decision |
+| `POST /api/tasks/:id/retry` | Re-run the failed stage |
+| `POST /api/tasks/:id/cancel` | Cancel |
+| `GET / POST /api/repos` | List connections, or register one (provider detected, access verified) |
+| `GET / DELETE /api/repos/:id` | Connection detail with a live access check; delete if unused |
+| `GET / PATCH /api/settings` | Models per role, turn ceilings, limits |
+| `GET /api/usage?days=&taskId=` | Token and cost aggregates |
+
+## Configuration
+
+`.env` supplies defaults; the Settings screen overrides them per install, and the
+worker re-reads them at the start of every job.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | Subscription credential |
+| `ANTHROPIC_API_KEY` | — | Pay-per-use alternative |
+| `GITHUB_TOKEN` | — | GitHub PAT, worker only |
+| `GITLAB_TOKEN` | — | GitLab token, worker only |
+| `BITBUCKET_TOKEN` | — | Bitbucket Cloud token, worker only |
+| `AZURE_DEVOPS_TOKEN` | — | Azure DevOps PAT, worker only |
+| `GIT_TOKEN` | — | Suggested fallback for a generic server |
+| `DATABASE_URL` | `file:./data/pipeline.db` | SQLite file |
+| `WORKSPACES_DIR` | `./workspaces` | Where task clones live |
+| `MAX_PARALLEL_TASKS` | `1` | Keep at 1 on a subscription |
+| `REWORK_MAX_CYCLES` | `2` | Shared rework budget (old `QA_MAX_CYCLES` still read) |
+| `MODEL_LIGHT` / `MODEL_DEFAULT` / `MODEL_HEAVY` | `claude-haiku-4-5` / `claude-sonnet-5` / `claude-opus-5` | Model tiers |
+| `WORKSPACE_RETENTION_DAYS` | `7` | How long a finished clone is kept |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `All My Fellas Pipeline` / `pipeline@localhost` | Who the pipeline's commits are attributed to |
+
+## Tests
+
+```bash
+npm test
+```
+
+Covers the state machine (rework budget, gate rules, reviewer verdicts),
+artifact validation, admission control and job ordering, the diff parser against
+a real git repository, the sandbox guardrails, and the provider layer — URL
+parsing per host, credential resolution, and that no secret survives into a
+clone URL, a log line or a browser link.
+
+## Known limits
+
+- Single user, no authentication. Do not expose the port publicly.
+- The pipeline opens the change request; **merging is always manual**, on the
+  host.
+- A generic connection has no API: the branch is pushed and the pull request is
+  yours to open.
+- Auto-detection covers the public hosts only, and of the self-hosted editions
+  only GitLab has an API integration. GitHub Enterprise Server, Bitbucket Data
+  Center and Azure DevOps Server run as generic connections.
+- Cost figures come from the Agent SDK's own `total_cost_usd`; in subscription
+  mode they are an estimate of equivalent API spend, not a bill.

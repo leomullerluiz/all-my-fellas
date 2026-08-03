@@ -5,7 +5,7 @@ import {
   MAX_ARTIFACT_CHARS,
   extractHomologationVerdict,
   extractPlanEstimate,
-  extractQaVerdict,
+  extractReviewVerdict,
   normalizeArtifact,
   validateArtifact,
 } from "@/server/pipeline/artifacts";
@@ -98,23 +98,59 @@ describe("extractPlanEstimate", () => {
   });
 });
 
-describe("extractQaVerdict", () => {
+describe("extractReviewVerdict", () => {
   it("reads an approval", () => {
-    expect(extractQaVerdict("## Verdict\n\nVerdict: approved\n")).toBe("approved");
+    expect(extractReviewVerdict("## Verdict\n\nVerdict: approved\n")).toBe("approved");
   });
 
   it("reads a change request", () => {
-    expect(extractQaVerdict("## Verdict\n\nVerdict: changes_requested\n")).toBe(
+    expect(extractReviewVerdict("## Verdict\n\nVerdict: changes_requested\n")).toBe(
       "changes_requested",
     );
   });
 
   it("fails closed when the verdict is unreadable", () => {
-    expect(extractQaVerdict("## Verdict\n\nLooks fine to me!\n")).toBe("changes_requested");
+    expect(extractReviewVerdict("## Verdict\n\nLooks fine to me!\n")).toBe("changes_requested");
   });
 
   it("does not read 'not approved' as an approval", () => {
-    expect(extractQaVerdict("## Verdict\n\nVerdict: not approved\n")).toBe("changes_requested");
+    expect(extractReviewVerdict("## Verdict\n\nVerdict: not approved\n")).toBe("changes_requested");
+  });
+});
+
+describe("the new review artifacts", () => {
+  const VALID_REVIEW = `## Verdict
+
+Verdict: approved
+
+## Summary
+Implements the plan.
+
+## Findings
+- **minor** — \`src/a.ts:3\` — naming.
+
+## Files Reviewed
+- src/a.ts
+`;
+
+  it("accepts a well-formed code review report", () => {
+    expect(validateArtifact("code_review_report", VALID_REVIEW)).toContain("## Findings");
+  });
+
+  it("rejects a code review report missing a section", () => {
+    const withoutFiles = VALID_REVIEW.replace(/## Files Reviewed[\s\S]*$/, "");
+    expect(() => validateArtifact("code_review_report", withoutFiles)).toThrow(
+      ArtifactValidationError,
+    );
+  });
+
+  it("requires the human review artifact to carry its section", () => {
+    expect(validateArtifact("human_review", "## Requested Changes\n\nFix the loop.\n")).toContain(
+      "Fix the loop",
+    );
+    expect(() => validateArtifact("human_review", "Fix the loop.")).toThrow(
+      ArtifactValidationError,
+    );
   });
 });
 

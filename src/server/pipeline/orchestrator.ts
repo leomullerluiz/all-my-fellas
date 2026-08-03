@@ -1,24 +1,36 @@
+import { db } from "../db/client";
 import { appendEvent } from "../events/store";
 import { cancelPendingJobs, enqueueJob } from "../jobs/queue";
 import { getSettings } from "../settings/store";
 import {
+  type EditableTaskFields,
+  activeTasks,
   countStageRuns,
   createStageRun,
-  createTask,
+  deleteTask,
   getTask,
   listApprovals,
   listStageRuns,
   recordApproval,
+  saveArtifact,
   setTaskStage,
+  updateTaskFields,
 } from "../tasks/service";
-import type { Priority } from "./stages";
+import type { TaskRow } from "../db/schema";
 import {
+  InvalidGateDecisionError,
   type PipelineContext,
   type PipelineSignal,
   type Transition,
   nextTransition,
 } from "./state-machine";
-import { type Gate, type GateDecision, type Stage, isAgentStage } from "./stages";
+import {
+  GATE_ALLOWED_DECISIONS,
+  type Gate,
+  type GateDecision,
+  type Stage,
+  isAgentStage,
+} from "./stages";
 
 /**
  * Applies pipeline transitions.
@@ -37,15 +49,16 @@ export class TaskNotFoundError extends Error {
 }
 
 /** Builds the state-machine context from persisted task state and settings. */
-function contextFor(taskId: string, criticality: string | null): PipelineContext {
+function contextFor(task: TaskRow): PipelineContext {
   const settings = getSettings();
   const planGateRequired = !(
-    settings.autoApprovePlanForLowCriticality && criticality === "low"
+    settings.autoApprovePlanForLowCriticality && task.criticality === "low"
   );
   return {
-    developmentAttempts: countStageRuns(taskId, "DEVELOPMENT"),
-    qaMaxCycles: settings.qaMaxCycles,
+    developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
+    reworkMaxCycles: settings.reworkMaxCycles,
     planGateRequired,
+    humanCodeReviewRequired: task.requireHumanCodeReview,
   };
 }
 
@@ -112,32 +125,121 @@ export function advanceTask(taskId: string, signal: PipelineSignal): Transition 
   const task = getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
 
-  const transition = nextTransition(
-    task.currentStage,
-    signal,
-    contextFor(taskId, task.criticality),
-  );
+  const transition = nextTransition(task.currentStage, signal, contextFor(task));
   applyTransition(taskId, transition);
   return transition;
 }
 
-/** Enters the pipeline. Called right after a task is created. */
-export function startTask(taskId: string): void {
-  advanceTask(taskId, { kind: "start" });
+/**
+ * Raised when starting a task would exceed `MAX_PARALLEL_TASKS`.
+ *
+ * Carries the tasks currently holding a slot so the UI can tell the user what
+ * to resolve rather than just refusing.
+ */
+export class CapacityError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly blocking: Array<{ id: string; title: string; status: string }>,
+  ) {
+    const names = blocking.map((task) => `"${task.title}"`).join(", ");
+    super(
+      `Limit of ${limit} task${limit === 1 ? "" : "s"} in progress reached` +
+        (names ? `; ${names} must finish or be cancelled first.` : "."),
+    );
+    this.name = "CapacityError";
+  }
 }
 
-/** Creates a task and immediately enqueues its first stage. */
-export function createAndStartTask(input: {
-  repoId: string;
-  title: string;
-  description: string;
-  priority: Priority;
-}) {
-  const created = createTask(input);
-  startTask(created.id);
-  // `startTask` moves the task to its first stage, so re-read rather than
-  // returning the pre-transition snapshot.
-  return getTask(created.id) ?? created;
+/**
+ * Throws unless a concurrency slot is free.
+ *
+ * Must be called inside the same transaction as the transition it guards, or
+ * two concurrent requests can both observe a free slot — see
+ * `spec-task-queue.md` §8.2.
+ */
+function assertSlotAvailable(): void {
+  const limit = getSettings().maxParallelTasks;
+  const active = activeTasks();
+  if (active.length >= limit) throw new CapacityError(limit, active);
+}
+
+/** Whether a task could be started right now, for rendering the Start action. */
+export function capacity(): {
+  limit: number;
+  active: number;
+  slotAvailable: boolean;
+  blocking: Array<{ id: string; title: string; status: string }>;
+} {
+  const limit = getSettings().maxParallelTasks;
+  const active = activeTasks();
+  return {
+    limit,
+    active: active.length,
+    slotAvailable: active.length < limit,
+    blocking: active,
+  };
+}
+
+/**
+ * Enters the pipeline, subject to admission control.
+ *
+ * The capacity check and the transition share one transaction so the invariant
+ * "at most `MAX_PARALLEL_TASKS` tasks are in flight" cannot be raced.
+ *
+ * @throws {CapacityError} when no slot is free.
+ * @throws {InvalidTransitionError} when the task is not at `CREATED`.
+ */
+export function startTask(taskId: string): Transition {
+  return db.transaction(() => {
+    assertSlotAvailable();
+    const transition = advanceTask(taskId, { kind: "start" });
+    appendEvent(taskId, null, { type: "task_started" });
+    return transition;
+  });
+}
+
+/**
+ * Applies an edit to a task that has not started yet.
+ *
+ * @throws {TaskNotFoundError} when the task does not exist.
+ * @throws {GateError} when the task has already left `CREATED`.
+ */
+export function editTask(taskId: string, fields: EditableTaskFields): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (task.currentStage !== "CREATED") {
+    throw new GateError(
+      `Only tasks that have not started can be edited; this one is at ${task.currentStage}.`,
+    );
+  }
+
+  const changed = (Object.keys(fields) as Array<keyof EditableTaskFields>).filter(
+    (key) => task[key] !== fields[key],
+  );
+
+  updateTaskFields(taskId, fields);
+  if (changed.length > 0) {
+    appendEvent(taskId, null, { type: "task_edited", fields: changed });
+  }
+}
+
+/**
+ * Deletes a task that has not started yet.
+ *
+ * Restricted to `CREATED` because a started task owns a workspace on disk that
+ * a plain row delete would orphan — see `spec-task-queue.md` §7.2.
+ *
+ * @throws {GateError} when the task has already started.
+ */
+export function deleteCreatedTask(taskId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (task.currentStage !== "CREATED") {
+    throw new GateError(
+      `Only tasks that have not started can be deleted; this one is at ${task.currentStage}.`,
+    );
+  }
+  deleteTask(taskId);
 }
 
 export class GateError extends Error {
@@ -159,27 +261,55 @@ export function decideGate(input: {
   decision: GateDecision;
   comment?: string;
 }): Transition {
-  const task = getTask(input.taskId);
-  if (!task) throw new TaskNotFoundError(input.taskId);
-  if (task.currentStage !== input.gate) {
-    throw new GateError(
-      `Task is at ${task.currentStage}, not waiting on ${input.gate}.`,
-    );
-  }
+  return db.transaction(() => {
+    const task = getTask(input.taskId);
+    if (!task) throw new TaskNotFoundError(input.taskId);
+    if (task.currentStage !== input.gate) {
+      throw new GateError(
+        `Task is at ${task.currentStage}, not waiting on ${input.gate}.`,
+      );
+    }
+    if (!GATE_ALLOWED_DECISIONS[input.gate].includes(input.decision)) {
+      throw new InvalidGateDecisionError(input.gate, input.decision);
+    }
 
-  recordApproval(input);
-  appendEvent(input.taskId, null, {
-    type: "gate_decided",
-    gate: input.gate,
-    decision: input.decision,
-    comment: input.comment,
-  });
+    recordApproval(input);
+    appendEvent(input.taskId, null, {
+      type: "gate_decided",
+      gate: input.gate,
+      decision: input.decision,
+      comment: input.comment,
+    });
 
-  return advanceTask(input.taskId, {
-    kind: "gate_decided",
-    gate: input.gate,
-    decision: input.decision,
-    comment: input.comment,
+    // A comment the Developer never sees is worse than useless — the same code
+    // would come back. Persist it as a real artifact so it flows through the
+    // existing input machinery in `gatherInputs`.
+    if (input.decision === "request_changes") {
+      const comment = input.comment?.trim();
+      if (!comment) {
+        throw new GateError("Requesting changes needs a comment saying what to change.");
+      }
+      // `artifacts.stage_run_id` is NOT NULL and making it nullable would mean
+      // rebuilding the table in SQLite. The run the reviewer was looking at is
+      // the honest owner anyway, so the artifact hangs off that.
+      const reviewedRun = listStageRuns(input.taskId).at(-1);
+      if (!reviewedRun) {
+        throw new GateError("The task has no stage run to attach the review to.");
+      }
+      saveArtifact({
+        taskId: input.taskId,
+        stageRunId: reviewedRun.id,
+        type: "human_review",
+        contentMd: `## Requested Changes\n\n${comment}\n`,
+      });
+    }
+
+    return advanceTask(input.taskId, {
+      kind: "gate_decided",
+      gate: input.gate,
+      decision: input.decision,
+      comment: input.comment,
+    });
   });
 }
 
@@ -188,34 +318,41 @@ export function decideGate(input: {
  *
  * A new stage run is created with the next attempt number rather than reusing
  * the failed one, so the audit trail keeps both the failure and the retry.
+ *
+ * `failed` is terminal, so a retry re-admits the task and is capacity-checked
+ * like a fresh start — otherwise it would be a hole in the invariant.
  */
 export function retryTask(taskId: string): Transition {
-  const task = getTask(taskId);
-  if (!task) throw new TaskNotFoundError(taskId);
-  if (task.status !== "failed") {
-    throw new GateError(`Only failed tasks can be retried; this task is ${task.status}.`);
-  }
+  return db.transaction(() => {
+    const task = getTask(taskId);
+    if (!task) throw new TaskNotFoundError(taskId);
+    if (task.status !== "failed") {
+      throw new GateError(`Only failed tasks can be retried; this task is ${task.status}.`);
+    }
 
-  const lastRun = listStageRuns(taskId)
-    .filter((run) => run.status === "failed")
-    .at(-1);
-  if (!lastRun) {
-    throw new GateError("No failed stage was found to retry.");
-  }
+    const lastRun = listStageRuns(taskId)
+      .filter((run) => run.status === "failed")
+      .at(-1);
+    if (!lastRun) {
+      throw new GateError("No failed stage was found to retry.");
+    }
 
-  appendEvent(taskId, null, {
-    type: "log",
-    level: "info",
-    message: `Retrying ${lastRun.stage} (attempt ${lastRun.attempt + 1}).`,
+    assertSlotAvailable();
+
+    appendEvent(taskId, null, {
+      type: "log",
+      level: "info",
+      message: `Retrying ${lastRun.stage} (attempt ${lastRun.attempt + 1}).`,
+    });
+
+    const transition: Transition = {
+      type: "run",
+      stage: lastRun.stage,
+      attempt: lastRun.attempt + 1,
+    };
+    applyTransition(taskId, transition);
+    return transition;
   });
-
-  const transition: Transition = {
-    type: "run",
-    stage: lastRun.stage,
-    attempt: lastRun.attempt + 1,
-  };
-  applyTransition(taskId, transition);
-  return transition;
 }
 
 /** Cancels a task from the UI. Safe to call on an already-finished task. */

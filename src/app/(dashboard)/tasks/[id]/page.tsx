@@ -8,6 +8,9 @@ import { GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
+import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
+import { providerFor } from "@/server/git/providers";
+import { capacity } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import {
   getTaskWithRepo,
@@ -31,7 +34,23 @@ export default async function TaskDetailPage(props: {
   const artifacts = listLatestArtifacts(id);
   const approvals = listApprovals(id);
   const cost = totalCostForTask(id);
-  const live = ["queued", "running", "awaiting_gate"].includes(task.status);
+  const slots = capacity();
+  const notStarted = task.currentStage === "CREATED";
+  const live = ["running", "awaiting_gate"].includes(task.status);
+
+  // Only read the workspace when a diff can actually exist; on the gate the
+  // summary tells the reviewer how big the review is before they open it.
+  let diffSummary: string | null = null;
+  if (task.workspacePath && task.currentStage === "HUMAN_CODE_REVIEW") {
+    try {
+      diffSummary = summarizeDiff(
+        await readDiffIndex(task.workspacePath, task.repo.defaultBranch),
+      );
+    } catch {
+      // A missing or broken workspace must not take the whole page down.
+      diffSummary = null;
+    }
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -45,7 +64,13 @@ export default async function TaskDetailPage(props: {
             </div>
             <p className="mt-1 font-mono text-[11px] text-muted">{task.id}</p>
           </div>
-          <TaskControls taskId={task.id} status={task.status} />
+          <TaskControls
+            taskId={task.id}
+            taskTitle={task.title}
+            status={task.status}
+            notStarted={notStarted}
+            capacity={slots}
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -61,6 +86,17 @@ export default async function TaskDetailPage(props: {
           {task.branchName ? (
             <span className="font-mono text-[11px]">{task.branchName}</span>
           ) : null}
+          {task.requireHumanCodeReview ? (
+            <Badge tone="warning">human code review</Badge>
+          ) : null}
+          {task.workspacePath ? (
+            <Link
+              href={`/tasks/${task.id}/review`}
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              View diff
+            </Link>
+          ) : null}
           {task.prUrl ? (
             <Link
               href={task.prUrl}
@@ -68,7 +104,8 @@ export default async function TaskDetailPage(props: {
               rel="noreferrer"
               className="text-accent underline-offset-2 hover:underline"
             >
-              Open pull request ↗
+              {/* "merge request" on GitLab — the provider owns the wording. */}
+              Open {providerFor(task.repo.provider).changeRequestNoun} ↗
             </Link>
           ) : null}
         </div>
@@ -81,7 +118,7 @@ export default async function TaskDetailPage(props: {
       </header>
 
       {isGate(task.currentStage) ? (
-        <GatePanel taskId={task.id} gate={task.currentStage} />
+        <GatePanel taskId={task.id} gate={task.currentStage} diffSummary={diffSummary} />
       ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
@@ -160,7 +197,24 @@ export default async function TaskDetailPage(props: {
         </div>
 
         <div className="flex flex-col gap-5">
-          <LiveLog taskId={task.id} live={live} />
+          {/* A not-started task has nothing to stream, and an EventSource that
+              polls every 700 ms for hours is pure waste — spec §10. */}
+          {notStarted ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Not started</CardTitle>
+              </CardHeader>
+              <CardBody>
+                <p className="text-xs text-muted">
+                  This task is waiting in the queue. Nothing runs and nothing is spent until
+                  you start it. You can still edit the description — that is what the
+                  Stakeholder agent will receive.
+                </p>
+              </CardBody>
+            </Card>
+          ) : (
+            <LiveLog taskId={task.id} live={live} />
+          )}
           <ArtifactTabs artifacts={artifacts} />
         </div>
       </div>
