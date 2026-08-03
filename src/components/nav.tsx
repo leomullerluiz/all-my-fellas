@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { ThemeSwitch } from "@/components/theme-switch";
 import { cn } from "@/lib/utils";
+import type { Theme } from "@/server/settings/store";
 
 const LINKS = [
   { href: "/", label: "Dashboard" },
@@ -13,7 +15,7 @@ const LINKS = [
   { href: "/settings", label: "Settings" },
 ];
 
-export function Nav() {
+export function Nav({ initialTheme }: { initialTheme: Theme }) {
   const pathname = usePathname();
 
   return (
@@ -45,6 +47,10 @@ export function Nav() {
             );
           })}
         </nav>
+
+        <div className="ml-auto">
+          <ThemeSwitch initialTheme={initialTheme} />
+        </div>
       </div>
     </header>
   );

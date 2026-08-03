@@ -19,8 +19,23 @@
   --info: #63b3ed;
 }
 
+/*
+ * Explicit theme override contract: `data-theme` is set on `<html>` from the
+ * stored `theme` setting ("dark" | "light" | omitted for "system").
+ *
+ * - `data-theme="dark"` needs no rule of its own — the base `:root` above is
+ *   already dark; the guard below just stops the OS-light media query from
+ *   overriding it.
+ * - `data-theme="light"` gets its own unconditional block so it applies
+ *   regardless of what the OS prefers. Its selector has the same specificity
+ *   as the guarded media rule below, so it must stay declared *after* it —
+ *   moving it earlier would let a light-OS media match win by source order
+ *   when both apply.
+ * - No `data-theme` (system) keeps today's behavior: `prefers-color-scheme`
+ *   decides, and updates live with no JS.
+ */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     --background: #f6f7f9;
     --surface: #ffffff;
     --surface-raised: #ffffff;
@@ -34,6 +49,21 @@
     --danger: #c93b32;
     --info: #2b6cb0;
   }
+}
+
+:root[data-theme="light"] {
+  --background: #f6f7f9;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #e0e3ea;
+  --foreground: #171a21;
+  --muted: #626b7d;
+  --accent: #3f5fd8;
+  --accent-foreground: #ffffff;
+  --success: #1f8f5f;
+  --warning: #a97612;
+  --danger: #c93b32;
+  --info: #2b6cb0;
 }
 
 @theme inline {
