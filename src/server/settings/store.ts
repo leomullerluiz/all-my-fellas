@@ -14,6 +14,10 @@ import type { AgentStage } from "../pipeline/stages";
 
 const SETTINGS_KEY = "app";
 
+/** `"system"` follows the browser's `prefers-color-scheme`; the other two are explicit. */
+export const THEMES = ["dark", "light", "system"] as const;
+export type Theme = (typeof THEMES)[number];
+
 export type AppSettings = {
   /** Model id per agent stage. */
   models: Record<AgentStage, string>;
@@ -30,6 +34,8 @@ export type AppSettings = {
   /** Per-stage turn ceiling; caps the cost of a runaway agent. */
   maxTurns: Record<AgentStage, number>;
   workspaceRetentionDays: number;
+  /** Dark/Light/System palette for the dashboard UI. */
+  theme: Theme;
 };
 
 export function defaultSettings(): AppSettings {
@@ -63,6 +69,7 @@ export function defaultSettings(): AppSettings {
       PO_HOMOLOGATION: 10,
     },
     workspaceRetentionDays: limits.workspaceRetentionDays,
+    theme: "system",
   };
 }
 
