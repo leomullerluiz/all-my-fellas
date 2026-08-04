@@ -1,5 +1,10 @@
 import { badRequest, conflict, json, notFound, parseBody, serverError } from "@/server/http/respond";
-import { GateError, TaskNotFoundError, decideGate } from "@/server/pipeline/orchestrator";
+import {
+  CapacityError,
+  GateError,
+  TaskNotFoundError,
+  decideGate,
+} from "@/server/pipeline/orchestrator";
 import { gateDecisionSchema, gateParamSchema } from "@/server/validation/schemas";
 
 /** `POST /api/tasks/:id/gates/:gate` — records a human approval decision. */
@@ -27,6 +32,7 @@ export async function POST(
   } catch (error) {
     if (error instanceof TaskNotFoundError) return notFound(error.message);
     if (error instanceof GateError) return conflict(error.message);
+    if (error instanceof CapacityError) return conflict(error.message);
     return serverError(error);
   }
 }

@@ -93,6 +93,14 @@ function seed(overrides: Partial<typeof VALID_BODY> = {}) {
   return service.createTask({ ...VALID_BODY, repoId, ...overrides });
 }
 
+/** Starts a task and parks it on `PLAN_GATE`, awaiting a human decision. */
+function gated(title: string) {
+  const task = seed({ title });
+  orchestrator.startTask(task.id);
+  service.setTaskStage(task.id, "PLAN_GATE");
+  return task;
+}
+
 describe("POST /api/tasks", () => {
   it("creates without starting by default", async () => {
     const response = await post({ ...VALID_BODY, repoId });
@@ -128,6 +136,16 @@ describe("POST /api/tasks", () => {
     expect(payload.error).toContain("Limit of 1 task");
     // The work is not lost: the task exists and can be started later.
     expect(service.getTask(payload.task.id)!.currentStage).toBe("CREATED");
+  });
+
+  it("starts with 201 even while another task is awaiting_gate", async () => {
+    gated("Awaiting approval");
+
+    const response = await post({ ...VALID_BODY, repoId, start: true });
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as { task: { id: string }; started: boolean };
+    expect(payload.started).toBe(true);
   });
 
   it("rejects an invalid payload with field errors", async () => {
@@ -177,6 +195,15 @@ describe("POST /api/tasks/:id/start", () => {
   it("returns 404 for an unknown task", async () => {
     const response = await startRoute.POST(new Request("http://test"), params("task_missing"));
     expect(response.status).toBe(404);
+  });
+
+  it("starts a different task while one is awaiting_gate", async () => {
+    gated("Awaiting approval");
+    const task = seed();
+
+    const response = await startRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(200);
+    expect(service.getTask(task.id)!.status).toBe("running");
   });
 });
 
@@ -310,6 +337,15 @@ describe("POST /api/tasks/:id/retry", () => {
     const response = await retryRoute.POST(new Request("http://test"), params(task.id));
     expect(response.status).toBe(409);
   });
+
+  it("retries while another task is awaiting_gate", async () => {
+    gated("Awaiting approval");
+    const task = fail("Failed");
+
+    const response = await retryRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(200);
+    expect(service.getTask(task.id)!.status).toBe("running");
+  });
 });
 
 describe("GET /api/tasks", () => {
@@ -325,5 +361,18 @@ describe("GET /api/tasks", () => {
 
     expect(payload.tasks).toHaveLength(1);
     expect(payload.capacity).toMatchObject({ limit: 1, active: 1, slotAvailable: false });
+  });
+
+  it("never lists an awaiting_gate task in capacity.blocking", async () => {
+    const task = gated("Awaiting approval");
+
+    const response = await tasksRoute.GET(new Request("http://test/api/tasks"));
+    const payload = (await response.json()) as {
+      capacity: { slotAvailable: boolean; blocking: Array<{ id: string }> };
+    };
+
+    expect(payload.capacity.slotAvailable).toBe(true);
+    expect(payload.capacity.blocking.map((t) => t.id)).not.toContain(task.id);
+    expect(payload.capacity.blocking).toEqual([]);
   });
 });

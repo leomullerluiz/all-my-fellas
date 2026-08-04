@@ -138,10 +138,13 @@ export function createTask(input: {
 /**
  * Statuses that occupy a concurrency slot.
  *
- * A gated task is not executing, but it still holds a workspace and will resume,
- * so it counts as in flight. See `spec-task-queue.md` §8.4.
+ * Only `running` counts: a gated task holds no claimed job, so it does not
+ * need a slot to stay honest about what is executing. See
+ * `spec-task-queue.md` §8.2. Resuming a gated task back into `run` is itself
+ * admission-checked in `decideGate`, which is what keeps the `running` badge
+ * truthful now that gated tasks no longer reserve a slot.
  */
-export const ACTIVE_STATUSES = ["running", "awaiting_gate"] as const;
+export const ACTIVE_STATUSES = ["running"] as const;
 
 export function countActiveTasks(): number {
   const row = db
