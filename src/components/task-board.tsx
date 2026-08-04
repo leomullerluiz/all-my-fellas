@@ -49,7 +49,12 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
         {notStarted ? (
           <div className="flex shrink-0 items-start gap-1">
             <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
-            <TaskCardMenu taskId={task.id} taskTitle={task.title} capacity={capacity} />
+            <TaskCardMenu
+              taskId={task.id}
+              taskTitle={task.title}
+              status={task.status}
+              capacity={capacity}
+            />
           </div>
         ) : isRunning ? (
           <span
@@ -89,13 +94,13 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
  * Terminal states other than COMPLETED are collected into a trailing column so
  * the board does not grow a column per failure mode.
  *
- * The resulting thirteen columns (`BOARD_STAGES` + "On Queue" + "Not
- * delivered") are laid out as a wrapping grid rather than a horizontally
- * scrolling row: at thirteen across even a wide monitor leaves each column
- * too narrow to read, so the columns wrap into whole rows instead. Unlike the
- * former twelve, thirteen is prime and does not divide evenly into any of
- * this grid's row sizes (2 / 3 / 4 / 6) — the last row of the widest layout
- * is simply short by one, which is a cosmetic gap, not a bug.
+ * `BOARD_STAGES` has thirteen entries; adding "On Queue" and "Not delivered"
+ * makes fifteen columns total. They are laid out as a wrapping grid rather
+ * than a horizontally scrolling row: at fifteen across even a wide monitor
+ * leaves each column too narrow to read, so the columns wrap into whole rows
+ * instead. Fifteen divides evenly into the grid's 3-per-row breakpoint (five
+ * full rows) but not its 2-, 4-, or 6-per-row breakpoints — those layouts'
+ * last row is simply short, which is a cosmetic gap, not a bug.
  */
 export function TaskBoard({
   tasks,
