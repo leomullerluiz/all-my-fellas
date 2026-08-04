@@ -117,17 +117,25 @@ describe("BatchStartButton enable/disable and count", () => {
 });
 
 describe("BatchStartButton outcome summary", () => {
-  it("shows a partial-start summary and reuses the capacity-blocked reason text", async () => {
+  it("shows a partial-start summary distinguishing a genuine failure from an on-queue task", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         results: [
-          { taskId: "task_a", title: "Task A", started: true, reason: null },
+          { taskId: "task_a", title: "Task A", started: true, queued: false, reason: null },
           {
             taskId: "task_b",
             title: "Task B",
             started: false,
+            queued: true,
             reason: "Limit of 1 task in progress reached — Task A is still running.",
+          },
+          {
+            taskId: "task_c",
+            title: "Task C",
+            started: false,
+            queued: false,
+            reason: "This task has already been started.",
           },
         ],
       }),
@@ -137,16 +145,24 @@ describe("BatchStartButton outcome summary", () => {
     renderBoard([
       makeTask({ id: "task_a", title: "Task A" }),
       makeTask({ id: "task_b", title: "Task B" }),
+      makeTask({ id: "task_c", title: "Task C" }),
     ]);
 
     fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /Task B/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Start selected (2)" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task C/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start selected (3)" }));
 
-    await waitFor(() => expect(screen.getByText("1 of 2 started — some tasks could not be started")).toBeTruthy());
-    expect(
-      screen.getByText(/Task B: Limit of 1 task in progress reached — Task A is still running\./),
-    ).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        screen.getByText("1 of 3 started, 1 on queue — some tasks could not be started"),
+      ).toBeTruthy(),
+    );
+    // The on-queue task is not reported with the capacity-refusal reason as a
+    // failure — it will start automatically, so the copy says so instead.
+    expect(screen.getByText("Task B: on queue, will start automatically")).toBeTruthy();
+    // A genuine failure still shows the server's reason text.
+    expect(screen.getByText(/Task C: This task has already been started\./)).toBeTruthy();
 
     // Selection is cleared once the batch completes.
     expect(fetchMock).toHaveBeenCalledWith(

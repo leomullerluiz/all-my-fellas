@@ -6,9 +6,13 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { capacityBlockedReason } from "@/lib/capacity";
 import { cn } from "@/lib/utils";
+import type { TaskStatus } from "@/server/pipeline/stages";
 
 /**
- * Start / Edit / Delete menu on a not-yet-started card.
+ * Start / Edit / Delete menu on a not-yet-started card, with a Cancel item
+ * added when the task is `on_queue` — S3 needs some UI path that calls
+ * `cancelTask` for a queued task, and this menu is where every other
+ * `CREATED`-stage action already lives.
  *
  * The trigger is a sibling of the card's title link, never a descendant: a
  * `<button>` inside an `<a>` is invalid HTML and breaks keyboard and screen
@@ -21,15 +25,18 @@ export type CardMenuCapacity = {
   blocking: Array<{ id: string; title: string }>;
 };
 
-type Action = "start" | "delete" | null;
+type Action = "start" | "cancel" | "delete" | null;
 
 export function TaskCardMenu({
   taskId,
   taskTitle,
+  status,
   capacity,
 }: {
   taskId: string;
   taskTitle: string;
+  /** Only `on_queue` changes this menu — it adds a Cancel item (S3). */
+  status: TaskStatus;
   capacity: CardMenuCapacity;
 }) {
   const router = useRouter();
@@ -108,6 +115,10 @@ export function TaskCardMenu({
     void call("start", `/api/tasks/${taskId}/start`, "POST");
   }
 
+  function onCancel() {
+    void call("cancel", `/api/tasks/${taskId}/cancel`, "POST");
+  }
+
   function onDelete() {
     const confirmed = window.confirm(
       `Delete "${taskTitle}"? This removes the task permanently and cannot be undone.`,
@@ -166,6 +177,18 @@ export function TaskCardMenu({
           >
             Edit
           </a>
+
+          {status === "on_queue" ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={onCancel}
+              disabled={pending !== null}
+              className="block w-full border-t border-border px-3 py-2 text-left text-xs transition-colors hover:bg-border/40"
+            >
+              {pending === "cancel" ? "Cancelling…" : "Cancel"}
+            </button>
+          ) : null}
 
           <button
             type="button"

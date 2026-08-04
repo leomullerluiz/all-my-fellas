@@ -70,11 +70,17 @@ badge truthful.
 
 **Explicit non-goals**
 
-- **No "Start all" / bulk start.** Every start is a deliberate, per-card action.
 - Reordering the queue by drag and drop.
 - Scheduling a start for a future time.
-- Auto-promoting the next queued task when a slot frees.
 - Editing or deleting a task that has already started.
+
+> **Superseded.** This section originally also listed "No 'Start all' / bulk
+> start" and "Auto-promoting the next queued task when a slot frees" as
+> non-goals. Both were later reversed by product decision: `batch-start.tsx`
+> added "Start selected", and `promoteQueue()` (§8.5) now auto-starts the next
+> `on_queue` task whenever a slot frees. Kept here as history, not as a
+> constraint — see the "On Queue" board column and `promoteQueue` in
+> `orchestrator.ts` for the current behavior.
 
 ---
 
@@ -388,16 +394,24 @@ first. The gate decision (and any request-changes comment) is not recorded in
 that case — the check and the resume share one transaction, so a refused
 approval leaves the task exactly as it was, free to retry once a slot opens.
 
-### 8.5 Freeing a slot does not auto-start anything
+### 8.5 Freeing a slot auto-starts the next queued task
 
-When a task finishes, the next queued task does **not** start automatically —
-`Start` stays a deliberate action, per the non-goals in §2. The board's next
-`AutoRefresh` tick re-enables the Start items, and the user chooses which one
-goes next.
+**Superseded.** This section originally read "Freeing a slot does not
+auto-start anything" — `Start` was a deliberate, per-card action and the user
+chose what ran next. A later product decision reversed that for tasks queued
+via "Start selected": when a task reaches a terminal stage or a gate,
+`promoteQueue()` (in `orchestrator.ts`) starts the highest-priority `on_queue`
+task automatically, through the same `startTask` → `assertSlotAvailable` path
+a manual click uses. A task that was never queued (created fresh, or started
+individually) is unaffected — nothing promotes it, and it doesn't preempt an
+existing queue.
 
-This is what makes the priority ordering in §9 mostly advisory rather than
-load-bearing: with the default `MAX_PARALLEL_TASKS = 1`, the user *is* the
-scheduler.
+The board's next `AutoRefresh` tick is what makes this visible to the user;
+no extra client request is needed to trigger the transition itself.
+
+This also means the priority ordering in §9 is no longer purely advisory:
+with `MAX_PARALLEL_TASKS = 1`, a multi-task "Start selected" batch now drains
+itself in that order without the user clicking `Start` again for each one.
 
 ---
 
@@ -461,8 +475,10 @@ It matters in exactly two situations, both worth supporting:
 - A retry or a rework cycle enqueued while another task's job is pending.
 
 Implement it because it is cheap and because the UI already promises that
-priority means something, but do not expect it to be visible day to day. The
-user remains the real scheduler (§8.5).
+priority means something, but do not expect it to be visible day to day with
+a single manually-started task. It is directly visible, though, in a
+multi-task "Start selected" batch, where it decides the `on_queue` drain
+order (§8.5).
 
 ---
 
@@ -477,10 +493,17 @@ Revised controls by state:
 
 | Task state | Controls |
 |---|---|
-| `CREATED` | **Start** (admission-checked) · **Edit** · **Delete** — no Cancel |
+| `CREATED`, status `queued` | **Start** (admission-checked) · **Edit** · **Delete** — no Cancel |
+| `CREATED`, status `on_queue` | **Start** (admission-checked) · **Edit** · **Delete** · **Cancel** |
 | In flight | Cancel |
 | `failed` | Retry (admission-checked) · Cancel |
 | Other terminal | none |
+
+**Superseded addition (§8.5's `on_queue` status).** The original rule above
+("no Cancel" for any `CREATED` task) predates the "On Queue" board column. A
+task parked at `on_queue` by "Start selected" has already committed to
+running, so per S3 it keeps the Cancel affordance a `queued`/never-selected
+`CREATED` task still doesn't get — see `TaskControls`/`TaskCardMenu`.
 
 **Do not mount `LiveLog` for a `CREATED` task.** It opens an `EventSource` that
 polls the `events` table every 700 ms and only closes on a terminal status. That

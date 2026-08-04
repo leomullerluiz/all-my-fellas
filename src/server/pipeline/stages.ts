@@ -71,9 +71,16 @@ export function isGate(stage: Stage): stage is Gate {
   return (GATES as readonly Stage[]).includes(stage);
 }
 
-/** Coarse task status shown on the board, derived from the current stage. */
+/**
+ * Coarse task status shown on the board, derived from the current stage —
+ * except `on_queue`, which is set explicitly by `startTasksBatch` on a
+ * `CREATED` task that lost the capacity race. `currentStage` stays `CREATED`
+ * for those, so `statusForStage` never produces `on_queue` itself; only
+ * `orchestrator.ts`'s batch/promotion path does.
+ */
 export const TASK_STATUSES = [
   "queued",
+  "on_queue",
   "running",
   "awaiting_gate",
   "completed",

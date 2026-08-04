@@ -49,7 +49,12 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
         {notStarted ? (
           <div className="flex shrink-0 items-start gap-1">
             <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
-            <TaskCardMenu taskId={task.id} taskTitle={task.title} capacity={capacity} />
+            <TaskCardMenu
+              taskId={task.id}
+              taskTitle={task.title}
+              status={task.status}
+              capacity={capacity}
+            />
           </div>
         ) : isRunning ? (
           <span
@@ -83,16 +88,19 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
 }
 
 /**
- * Kanban view of the pipeline: one column per stage.
+ * Kanban view of the pipeline: one column per stage, plus a dedicated
+ * "On Queue" column spliced in right after "Created".
  *
  * Terminal states other than COMPLETED are collected into a trailing column so
  * the board does not grow a column per failure mode.
  *
- * The twelve columns are laid out as a wrapping grid rather than a horizontally
- * scrolling row: at twelve across even a wide monitor leaves each column too
- * narrow to read, so the columns wrap into whole rows instead. The counts are
- * chosen to divide twelve evenly (2 / 3 / 4 / 6), which keeps every row full
- * and preserves the left-to-right, top-to-bottom pipeline order.
+ * `BOARD_STAGES` has thirteen entries; adding "On Queue" and "Not delivered"
+ * makes fifteen columns total. They are laid out as a wrapping grid rather
+ * than a horizontally scrolling row: at fifteen across even a wide monitor
+ * leaves each column too narrow to read, so the columns wrap into whole rows
+ * instead. Fifteen divides evenly into the grid's 3-per-row breakpoint (five
+ * full rows) but not its 2-, 4-, or 6-per-row breakpoints — those layouts'
+ * last row is simply short, which is a cosmetic gap, not a bug.
  */
 export function TaskBoard({
   tasks,
@@ -102,6 +110,7 @@ export function TaskBoard({
   capacity: CardMenuCapacity;
 }) {
   const byStage = new Map<Stage, BoardTask[]>();
+  const onQueue: BoardTask[] = [];
   const closed: BoardTask[] = [];
 
   for (const task of tasks) {
@@ -109,19 +118,26 @@ export function TaskBoard({
       closed.push(task);
       continue;
     }
+    // A `CREATED` task parked by "Start selected" losing the capacity race
+    // shows under "On Queue" instead of "Created" — its `currentStage` is
+    // still `CREATED`, so the split has to happen on `status`, not stage.
+    if (task.currentStage === "CREATED" && task.status === "on_queue") {
+      onQueue.push(task);
+      continue;
+    }
     const bucket = byStage.get(task.currentStage) ?? [];
     bucket.push(task);
     byStage.set(task.currentStage, bucket);
   }
 
-  const columns: Array<{ key: string; label: string; items: BoardTask[] }> = [
-    ...BOARD_STAGES.map((stage) => ({
-      key: stage,
-      label: STAGE_LABELS[stage],
-      items: byStage.get(stage) ?? [],
-    })),
-    { key: "CLOSED", label: "Not delivered", items: closed },
-  ];
+  const columns: Array<{ key: string; label: string; items: BoardTask[] }> = [];
+  for (const stage of BOARD_STAGES) {
+    columns.push({ key: stage, label: STAGE_LABELS[stage], items: byStage.get(stage) ?? [] });
+    if (stage === "CREATED") {
+      columns.push({ key: "ON_QUEUE", label: "On Queue", items: onQueue });
+    }
+  }
+  columns.push({ key: "CLOSED", label: "Not delivered", items: closed });
 
   return (
     // `items-start` keeps each column as tall as its own cards. Stretching them

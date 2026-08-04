@@ -144,6 +144,12 @@ export function GatePanel({
  * A not-yet-started task gets Start / Edit / Delete and deliberately no Cancel:
  * cancelling from `CREATED` produces a terminal `CANCELLED` row that can never
  * be started, edited or removed — see `spec-task-queue.md` §10.
+ *
+ * The one exception is `on_queue`: a task parked there by "Start selected"
+ * has already committed to running, so — per S3 — it also gets Cancel, the
+ * same as an in-flight task. Removing it that way is what lets the rest of
+ * the queue keep advancing (`promoteQueue` re-reads the `on_queue` list on
+ * the next slot-freeing transition, unaffected by the removal).
  */
 export function TaskControls({
   taskId,
@@ -162,7 +168,7 @@ export function TaskControls({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canCancel = !notStarted && ["running", "awaiting_gate"].includes(status);
+  const canCancel = ["running", "awaiting_gate", "on_queue"].includes(status);
   const canRetry = status === "failed";
 
   const blockedReason = capacityBlockedReason(capacity);
@@ -212,6 +218,16 @@ export function TaskControls({
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onDelete}>
           {busy === "delete" ? "Deleting…" : "Delete"}
         </Button>
+        {canCancel ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy !== null}
+            onClick={() => call("cancel", `/api/tasks/${taskId}/cancel`)}
+          >
+            {busy === "cancel" ? "Cancelling…" : "Cancel"}
+          </Button>
+        ) : null}
         {error ? <span className="text-xs text-danger">{error}</span> : null}
         {!error && blockedReason ? (
           <span className="text-xs text-muted">{blockedReason}</span>

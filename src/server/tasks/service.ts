@@ -166,6 +166,14 @@ export function activeTasks(): Array<{ id: string; title: string; status: string
 }
 
 /**
+ * Tasks parked at `on_queue` by `startTasksBatch`, waiting for
+ * `orchestrator.promoteQueue` to start them as slots free up.
+ */
+export function queuedTasks(): TaskRow[] {
+  return db.select().from(tasks).where(eq(tasks.status, "on_queue")).all();
+}
+
+/**
  * Fields a user may change while a task has not started yet.
  *
  * `requireHumanCodeReview` is here rather than on a started task because

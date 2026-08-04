@@ -33,6 +33,7 @@ export function StageBadge({ stage }: { stage: Stage }) {
 
 const STATUS_TONES: Record<TaskStatus, NonNullable<BadgeProps["tone"]>> = {
   queued: "neutral",
+  on_queue: "neutral",
   running: "accent",
   awaiting_gate: "warning",
   completed: "success",
@@ -42,9 +43,12 @@ const STATUS_TONES: Record<TaskStatus, NonNullable<BadgeProps["tone"]>> = {
 };
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
-  // "Queued" would imply the system picks the task up on its own. Nothing
-  // starts a task but the user — see `spec-task-queue.md` §3.
+  // "Queued" would imply the system picks the task up on its own, which used
+  // to be true of every `CREATED` task — see `spec-task-queue.md` §3. That is
+  // no longer the only "not auto-started" status: `on_queue` below *is*
+  // picked up automatically once a slot frees, via "Start selected"'s queue.
   queued: "Not started",
+  on_queue: "On queue",
   running: "Running",
   awaiting_gate: "Awaiting approval",
   completed: "Completed",
