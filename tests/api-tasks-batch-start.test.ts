@@ -71,7 +71,13 @@ function post(taskIds: string[]) {
   );
 }
 
-type Result = { taskId: string; title: string; started: boolean; reason: string | null };
+type Result = {
+  taskId: string;
+  title: string;
+  started: boolean;
+  queued: boolean;
+  reason: string | null;
+};
 
 describe("POST /api/tasks/batch-start", () => {
   it("rejects an empty selection", async () => {
@@ -125,7 +131,7 @@ describe("POST /api/tasks/batch-start", () => {
     expect(order).toEqual(["Small", "Unset", "Large"]);
   });
 
-  it("fills only the remaining capacity, in sorted order", async () => {
+  it("fills only the remaining capacity, parking the rest on the queue in sorted order", async () => {
     settings.updateSettings({ maxParallelTasks: 2 });
     const already = seed({ title: "Already running" });
     orchestrator.startTask(already.id);
@@ -142,13 +148,46 @@ describe("POST /api/tasks/batch-start", () => {
 
     const skipped = payload.results.find((r) => r.title === "High");
     expect(skipped?.started).toBe(false);
+    expect(skipped?.queued).toBe(true);
     expect(skipped?.reason).toContain("Limit of 2 tasks in progress reached");
 
     expect(service.getTask(urgent.id)!.currentStage).toBe("STAKEHOLDER_REFINEMENT");
     expect(service.getTask(high.id)!.currentStage).toBe("CREATED");
-    expect(service.getTask(high.id)!.status).toBe("queued");
+    expect(service.getTask(high.id)!.status).toBe("on_queue");
     expect(service.getTask(medium.id)!.currentStage).toBe("CREATED");
-    expect(service.getTask(medium.id)!.status).toBe("queued");
+    expect(service.getTask(medium.id)!.status).toBe("on_queue");
+
+    const missingQueued = payload.results.find((r) => r.title === "Urgent");
+    expect(missingQueued?.queued).toBe(false);
+  });
+
+  it("auto-promotes the next queued task once the active one finishes", async () => {
+    settings.updateSettings({ maxParallelTasks: 1 });
+    const urgent = seed({ title: "Urgent", priority: "urgent" });
+    const high = seed({ title: "High", priority: "high" });
+    const medium = seed({ title: "Medium", priority: "medium" });
+
+    const response = await post([medium.id, high.id, urgent.id]);
+    const payload = (await response.json()) as { results: Result[] };
+
+    expect(payload.results.filter((r) => r.started)).toHaveLength(1);
+    expect(payload.results.filter((r) => r.queued)).toHaveLength(2);
+    expect(service.getTask(urgent.id)!.status).toBe("running");
+    expect(service.getTask(high.id)!.status).toBe("on_queue");
+    expect(service.getTask(medium.id)!.status).toBe("on_queue");
+
+    // The active task finishes (a real transition, not a direct status
+    // write, so `promoteQueue` actually fires); the next queued task (High,
+    // by priority) starts on its own — no additional client request.
+    orchestrator.cancelTask(urgent.id);
+
+    expect(service.getTask(high.id)!.status).toBe("running");
+    expect(service.getTask(medium.id)!.status).toBe("on_queue");
+
+    // Cancelling the now-running High task frees the slot again, promoting
+    // Medium — the last task from the original batch.
+    orchestrator.cancelTask(high.id);
+    expect(service.getTask(medium.id)!.status).toBe("running");
   });
 
   it("continues past a mid-batch InvalidTransitionError", async () => {
