@@ -178,3 +178,66 @@ describe("BatchStartButton outcome summary", () => {
     expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
   });
 });
+
+describe("selection reset when the board reloads", () => {
+  it("clears a checked selection once boardVersion reflects a task's state changing", () => {
+    const created = makeTask({ id: "task_a", title: "Task A" });
+
+    const { rerender } = render(
+      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+        <BatchStartButton />
+        <TaskBoard tasks={[created]} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+
+    // Simulates the dashboard server component re-rendering with fresh task
+    // data (a fresh page load, `AutoRefresh`'s poll noticing the task
+    // started, or `TaskCardMenu.call()`'s refresh after an unrelated
+    // action) — `page.tsx` recomputes `boardVersion` from `id:stage:status`
+    // on every request, so it changes here because the task is no longer
+    // `CREATED`/`queued`.
+    const started = makeTask({
+      id: "task_a",
+      title: "Task A",
+      currentStage: "STAKEHOLDER_REFINEMENT",
+      status: "running",
+    });
+    rerender(
+      <BatchSelectionProvider boardVersion="task_a:STAKEHOLDER_REFINEMENT:running">
+        <BatchStartButton />
+        <TaskBoard tasks={[started]} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.queryByRole("checkbox", { name: /Task A/ })).toBeNull();
+    const button = screen.getByRole("button", { name: "Start selected" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps the selection across a re-render where boardVersion is unchanged (e.g. an idle poll)", () => {
+    const tasks = [makeTask({ id: "task_a", title: "Task A" })];
+
+    const { rerender } = render(
+      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+        <BatchStartButton />
+        <TaskBoard tasks={tasks} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+
+    rerender(
+      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+        <BatchStartButton />
+        <TaskBoard tasks={tasks} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.getByRole("checkbox", { name: /Task A/ })).toHaveProperty("checked", true);
+    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+  });
+});

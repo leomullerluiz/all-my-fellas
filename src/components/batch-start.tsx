@@ -27,8 +27,37 @@ type BatchSelectionContextValue = {
 
 const BatchSelectionContext = createContext<BatchSelectionContextValue | null>(null);
 
-export function BatchSelectionProvider({ children }: { children: ReactNode }) {
+export function BatchSelectionProvider({
+  children,
+  boardVersion,
+}: {
+  children: ReactNode;
+  /**
+   * A digest of the current task list (id + stage + status), recomputed by
+   * `page.tsx` on every request that renders the dashboard route — a fresh
+   * page load or any `router.refresh()` (the `AutoRefresh` poll, or
+   * `TaskCardMenu.call()`'s refresh after an unrelated single-task action).
+   * When this value differs from the last render, the board has reloaded
+   * with different task state, so the selection below is reset. Derived
+   * from already-fetched data rather than e.g. `Date.now()` so the value
+   * stays a pure computation (`react-hooks/purity` forbids impure calls
+   * during render) and an idle poll that changed nothing doesn't wipe an
+   * in-progress selection.
+   */
+  boardVersion?: string;
+}) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // "Adjusting state when a prop changes" (see react.dev) rather than a
+  // `useEffect` + `setState`, which `react-hooks/set-state-in-effect` flags:
+  // reset the selection directly during render when the board has reloaded
+  // with different task state, distinct from `clear()` below which only
+  // runs once a batch action completes (S3).
+  const [seenBoardVersion, setSeenBoardVersion] = useState(boardVersion);
+  if (boardVersion !== seenBoardVersion) {
+    setSeenBoardVersion(boardVersion);
+    setSelected(new Set());
+  }
 
   const toggle = useCallback((taskId: string) => {
     setSelected((current) => {

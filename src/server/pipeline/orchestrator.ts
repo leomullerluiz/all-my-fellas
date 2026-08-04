@@ -251,9 +251,10 @@ export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
   });
 
   const results: BatchStartResult[] = [];
-  const missing = taskIds.filter((id) => !found.some((task) => task.id === id));
+  const foundIds = new Set(found.map((task) => task.id));
+  const missing = taskIds.filter((id) => !foundIds.has(id));
   for (const id of missing) {
-    results.push({ taskId: id, title: id, started: false, reason: "Task not found." });
+    results.push({ taskId: id, title: "Unknown task", started: false, reason: "Task not found." });
   }
 
   for (const task of sorted) {
