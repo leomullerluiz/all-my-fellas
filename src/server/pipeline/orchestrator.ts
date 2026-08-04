@@ -304,12 +304,23 @@ export function decideGate(input: {
       });
     }
 
-    return advanceTask(input.taskId, {
+    // Gated tasks no longer hold a slot (§8.2), so resuming one back into
+    // `run` is itself a re-admission: another task may have taken the slot
+    // while this one waited for approval. `reject` and an exhausted
+    // `request_changes` are terminal and release a slot instead, so only the
+    // `run` outcome needs the check — mirrors `retryTask`'s re-admission.
+    const signal: PipelineSignal = {
       kind: "gate_decided",
       gate: input.gate,
       decision: input.decision,
       comment: input.comment,
-    });
+    };
+    const transition = nextTransition(task.currentStage, signal, contextFor(task));
+    if (transition.type === "run") {
+      assertSlotAvailable();
+    }
+    applyTransition(input.taskId, transition);
+    return transition;
   });
 }
 

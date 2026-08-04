@@ -115,16 +115,51 @@ describe("admission control", () => {
     }
   });
 
-  it("counts a gated task as holding its slot", () => {
+  it("does not count a gated task as holding its slot", () => {
     const first = create("Gated");
     const second = create("Second");
     orchestrator.startTask(first.id);
 
-    // Park the first task on a gate; it is not executing but still in flight.
+    // Park the first task on a gate; it holds no claimed job, so it no
+    // longer reserves a slot — a second task can start while it waits.
     service.setTaskStage(first.id, "PLAN_GATE");
     expect(service.getTask(first.id)!.status).toBe("awaiting_gate");
 
-    expect(() => orchestrator.startTask(second.id)).toThrow(orchestrator.CapacityError);
+    expect(orchestrator.capacity().slotAvailable).toBe(true);
+    expect(() => orchestrator.startTask(second.id)).not.toThrow();
+    expect(service.getTask(second.id)!.status).toBe("running");
+  });
+
+  it("still enforces the limit against a genuinely running task", () => {
+    const first = create("Running");
+    const second = create("Second");
+    orchestrator.startTask(first.id);
+    expect(service.getTask(first.id)!.status).toBe("running");
+
+    try {
+      orchestrator.startTask(second.id);
+      expect.unreachable("expected a CapacityError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(orchestrator.CapacityError);
+      const capacityError = error as InstanceType<typeof orchestrator.CapacityError>;
+      expect(capacityError.message).toContain("Running");
+      expect(capacityError.blocking.map((t) => t.id)).toEqual([first.id]);
+    }
+    expect(service.getTask(second.id)!.currentStage).toBe("CREATED");
+  });
+
+  it("allows two tasks to sit at awaiting_gate simultaneously with no error", () => {
+    const first = create("First gated");
+    const second = create("Second gated");
+    orchestrator.startTask(first.id);
+    service.setTaskStage(first.id, "PLAN_GATE");
+
+    orchestrator.startTask(second.id);
+    service.setTaskStage(second.id, "PLAN_GATE");
+
+    expect(service.getTask(first.id)!.status).toBe("awaiting_gate");
+    expect(service.getTask(second.id)!.status).toBe("awaiting_gate");
+    expect(orchestrator.capacity()).toMatchObject({ active: 0, slotAvailable: true });
   });
 
   it("frees the slot when the active task is cancelled", () => {
@@ -165,6 +200,14 @@ describe("admission control", () => {
     const after = orchestrator.capacity();
     expect(after).toMatchObject({ limit: 1, active: 1, slotAvailable: false });
     expect(after.blocking.map((t) => t.title)).toEqual(["Active"]);
+  });
+
+  it("never lists a gated task in capacity().blocking", () => {
+    const first = create("Gated");
+    orchestrator.startTask(first.id);
+    service.setTaskStage(first.id, "PLAN_GATE");
+
+    expect(orchestrator.capacity().blocking).toEqual([]);
   });
 
   it("rolls the whole start back when capacity is refused", () => {
@@ -222,6 +265,57 @@ describe("retry is admission controlled", () => {
 
     expect(() => orchestrator.retryTask(failed.id)).not.toThrow();
     expect(service.getTask(failed.id)!.status).toBe("running");
+  });
+});
+
+describe("decideGate is admission controlled on resume", () => {
+  it("throws CapacityError when approving would resume into a taken slot, leaving the gate untouched", () => {
+    const gated = create("Gated");
+    orchestrator.startTask(gated.id);
+    service.setTaskStage(gated.id, "PLAN_GATE");
+
+    // The gate holds no slot, so a second task can genuinely run and take it.
+    const running = create("Running");
+    orchestrator.startTask(running.id);
+
+    expect(() =>
+      orchestrator.decideGate({ taskId: gated.id, gate: "PLAN_GATE", decision: "approve" }),
+    ).toThrow(orchestrator.CapacityError);
+
+    // No partial state: the gate decision itself must not be recorded either,
+    // since the check and the resume share one transaction.
+    expect(service.getTask(gated.id)!.currentStage).toBe("PLAN_GATE");
+    expect(service.getTask(gated.id)!.status).toBe("awaiting_gate");
+    expect(orchestrator.approvalHistory(gated.id)).toHaveLength(0);
+  });
+
+  it("succeeds once the slot frees", () => {
+    const gated = create("Gated");
+    orchestrator.startTask(gated.id);
+    service.setTaskStage(gated.id, "PLAN_GATE");
+
+    const running = create("Running");
+    orchestrator.startTask(running.id);
+    orchestrator.cancelTask(running.id);
+
+    expect(() =>
+      orchestrator.decideGate({ taskId: gated.id, gate: "PLAN_GATE", decision: "approve" }),
+    ).not.toThrow();
+    expect(service.getTask(gated.id)!.status).toBe("running");
+  });
+
+  it("does not check capacity on reject, which is terminal and releases a slot", () => {
+    const gated = create("Gated");
+    orchestrator.startTask(gated.id);
+    service.setTaskStage(gated.id, "PLAN_GATE");
+
+    const running = create("Running");
+    orchestrator.startTask(running.id);
+
+    expect(() =>
+      orchestrator.decideGate({ taskId: gated.id, gate: "PLAN_GATE", decision: "reject" }),
+    ).not.toThrow();
+    expect(service.getTask(gated.id)!.status).toBe("rejected");
   });
 });
 
