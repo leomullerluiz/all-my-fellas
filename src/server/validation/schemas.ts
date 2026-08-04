@@ -41,6 +41,11 @@ export const listTasksQuerySchema = z.object({
   status: z.enum(TASK_STATUSES).optional(),
 });
 
+export const batchStartSchema = z.object({
+  taskIds: z.array(z.string().min(1)).min(1, "Select at least one task."),
+});
+export type BatchStartInput = z.infer<typeof batchStartSchema>;
+
 export const gateDecisionSchema = z
   .object({
     decision: z.enum(GATE_DECISIONS),
