@@ -6,11 +6,14 @@ import { cancelPendingJobs, enqueueJob } from "../jobs/queue";
 import { getSettings } from "../settings/store";
 import {
   type EditableTaskFields,
+  type NewAttachment,
   activeTasks,
   countStageRuns,
   createStageRun,
+  deleteAttachment,
   deleteTask,
   getTask,
+  insertAttachments,
   listApprovals,
   listStageRuns,
   recordApproval,
@@ -280,10 +283,17 @@ export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
 /**
  * Applies an edit to a task that has not started yet.
  *
+ * Any `newAttachments` are added alongside the field changes, under the same
+ * gate — a task past `CREATED` refuses both.
+ *
  * @throws {TaskNotFoundError} when the task does not exist.
  * @throws {GateError} when the task has already left `CREATED`.
  */
-export function editTask(taskId: string, fields: EditableTaskFields): void {
+export function editTask(
+  taskId: string,
+  fields: EditableTaskFields,
+  newAttachments: NewAttachment[] = [],
+): void {
   const task = getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
   if (task.currentStage !== "CREATED") {
@@ -297,8 +307,41 @@ export function editTask(taskId: string, fields: EditableTaskFields): void {
   );
 
   updateTaskFields(taskId, fields);
-  if (changed.length > 0) {
+  if (newAttachments.length > 0) {
+    insertAttachments(taskId, newAttachments);
+  }
+  if (changed.length > 0 || newAttachments.length > 0) {
     appendEvent(taskId, null, { type: "task_edited", fields: changed });
+  }
+}
+
+/** Raised when an attachment id does not exist, or belongs to another task. */
+export class AttachmentNotFoundError extends Error {
+  constructor(taskId: string, attachmentId: string) {
+    super(`Attachment ${attachmentId} not found on task ${taskId}.`);
+    this.name = "AttachmentNotFoundError";
+  }
+}
+
+/**
+ * Removes one attachment from a task that has not started yet.
+ *
+ * @throws {TaskNotFoundError} when the task does not exist.
+ * @throws {GateError} when the task has already left `CREATED`.
+ * @throws {AttachmentNotFoundError} when the id is unknown or belongs to
+ * another task.
+ */
+export function removeAttachment(taskId: string, attachmentId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (task.currentStage !== "CREATED") {
+    throw new GateError(
+      `Only tasks that have not started can be edited; this one is at ${task.currentStage}.`,
+    );
+  }
+
+  if (!deleteAttachment(taskId, attachmentId)) {
+    throw new AttachmentNotFoundError(taskId, attachmentId);
   }
 }
 
