@@ -1,0 +1,180 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-start";
+import { TaskBoard, type BoardTask } from "@/components/task-board";
+
+// Both components only call `router.refresh()` after a successful fetch; a
+// stub is enough, matching `tests/task-card-menu.test.tsx`.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}));
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+const REPO = {
+  id: "repo_1",
+  name: "acme/app",
+  provider: "github" as const,
+  url: "https://github.com/acme/app",
+  defaultBranch: "main",
+  credentialRef: null,
+  credentialUsername: null,
+  apiBaseUrl: null,
+  createdAt: 0,
+};
+
+function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
+  return {
+    id: "task_1",
+    repoId: REPO.id,
+    title: "A task",
+    description: "Some description",
+    status: "queued",
+    currentStage: "CREATED",
+    priority: "medium",
+    difficulty: null,
+    criticality: null,
+    requireHumanCodeReview: false,
+    branchName: null,
+    prUrl: null,
+    workspacePath: null,
+    failureReason: null,
+    createdAt: 0,
+    updatedAt: 0,
+    repo: REPO,
+    costUsd: 0,
+    ...overrides,
+  };
+}
+
+const CAPACITY = { slotAvailable: true, limit: 5, blocking: [] };
+
+function renderBoard(tasks: BoardTask[]) {
+  return render(
+    <BatchSelectionProvider>
+      <BatchStartButton />
+      <TaskBoard tasks={tasks} capacity={CAPACITY} />
+    </BatchSelectionProvider>,
+  );
+}
+
+describe("checkbox visibility", () => {
+  it("renders a checkbox only on CREATED cards", () => {
+    renderBoard([
+      makeTask({ id: "task_created", title: "Not started", currentStage: "CREATED" }),
+      makeTask({
+        id: "task_running",
+        title: "Running",
+        currentStage: "DEVELOPMENT",
+        status: "running",
+      }),
+      makeTask({
+        id: "task_waiting",
+        title: "Waiting",
+        currentStage: "PLAN_GATE",
+        status: "awaiting_gate",
+      }),
+      makeTask({
+        id: "task_done",
+        title: "Done",
+        currentStage: "COMPLETED",
+        status: "completed",
+      }),
+    ]);
+
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    expect(screen.getByRole("checkbox", { name: /Not started/ })).toBeTruthy();
+  });
+});
+
+describe("BatchStartButton enable/disable and count", () => {
+  it("is disabled with zero selected and enables with a count once checked", () => {
+    renderBoard([
+      makeTask({ id: "task_a", title: "Task A" }),
+      makeTask({ id: "task_b", title: "Task B" }),
+    ]);
+
+    const button = screen.getByRole("button", { name: "Start selected" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+
+    const updated = screen.getByRole("button", { name: "Start selected (1)" });
+    expect(updated.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task B/ }));
+    expect(screen.getByRole("button", { name: "Start selected (2)" })).toBeTruthy();
+
+    // Unchecking drops the count back down.
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+  });
+});
+
+describe("BatchStartButton outcome summary", () => {
+  it("shows a partial-start summary and reuses the capacity-blocked reason text", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        results: [
+          { taskId: "task_a", title: "Task A", started: true, reason: null },
+          {
+            taskId: "task_b",
+            title: "Task B",
+            started: false,
+            reason: "Limit of 1 task in progress reached — Task A is still running.",
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderBoard([
+      makeTask({ id: "task_a", title: "Task A" }),
+      makeTask({ id: "task_b", title: "Task B" }),
+    ]);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task B/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start selected (2)" }));
+
+    await waitFor(() => expect(screen.getByText("1 of 2 started — some tasks could not be started")).toBeTruthy());
+    expect(
+      screen.getByText(/Task B: Limit of 1 task in progress reached — Task A is still running\./),
+    ).toBeTruthy();
+
+    // Selection is cleared once the batch completes.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/tasks/batch-start",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const button = screen.getByRole("button", { name: "Start selected" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("keeps the selection and shows an inline error when the request fails outright", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("network down")),
+    );
+
+    renderBoard([makeTask({ id: "task_a", title: "Task A" })]);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start selected (1)" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("The request failed. Is the server still running?")).toBeTruthy(),
+    );
+
+    // The selection survives the failure: the checkbox is still checked and
+    // the button still shows the count.
+    expect(screen.getByRole("checkbox", { name: /Task A/ })).toHaveProperty("checked", true);
+    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+  });
+});

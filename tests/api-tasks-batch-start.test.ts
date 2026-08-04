@@ -45,11 +45,16 @@ beforeEach(() => {
   settings.updateSettings({ maxParallelTasks: 1 });
 });
 
-const VALID_BODY = {
+const VALID_BODY: {
+  repoId: string;
+  title: string;
+  description: string;
+  priority: "low" | "medium" | "high" | "urgent";
+} = {
   repoId: "",
   title: "A perfectly reasonable title",
   description: "A description long enough to pass the twenty character minimum.",
-  priority: "medium" as const,
+  priority: "medium",
 };
 
 function seed(overrides: Partial<typeof VALID_BODY> = {}) {

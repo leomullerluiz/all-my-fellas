@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { AutoRefresh } from "@/components/auto-refresh";
+import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-start";
 import { TaskBoard, type BoardTask } from "@/components/task-board";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -69,7 +70,7 @@ export default async function DashboardPage() {
   const spend = tasks.reduce((sum, task) => sum + task.costUsd, 0);
 
   return (
-    <>
+    <BatchSelectionProvider>
       <AutoRefresh />
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -81,9 +82,12 @@ export default async function DashboardPage() {
             {formatCost(spend)} spent in total
           </p>
         </div>
-        <Link href="/tasks/new">
-          <Button>New task</Button>
-        </Link>
+        <div className="flex items-start gap-2">
+          <BatchStartButton />
+          <Link href="/tasks/new">
+            <Button>New task</Button>
+          </Link>
+        </div>
       </div>
 
       <SetupNotice />
@@ -111,6 +115,6 @@ export default async function DashboardPage() {
       ) : (
         <TaskBoard tasks={tasks} capacity={slots} />
       )}
-    </>
+    </BatchSelectionProvider>
   );
 }
