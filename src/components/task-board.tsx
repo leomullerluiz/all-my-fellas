@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 
+import { TaskSelectCheckbox } from "@/components/batch-start";
 import { TaskCardMenu, type CardMenuCapacity } from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
 import { formatCost } from "@/lib/utils";
@@ -44,7 +47,10 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
         </h3>
 
         {notStarted ? (
-          <TaskCardMenu taskId={task.id} taskTitle={task.title} capacity={capacity} />
+          <div className="flex shrink-0 items-start gap-1">
+            <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
+            <TaskCardMenu taskId={task.id} taskTitle={task.title} capacity={capacity} />
+          </div>
         ) : isRunning ? (
           <span
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-accent animate-pipeline-pulse"

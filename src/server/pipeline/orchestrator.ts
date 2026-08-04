@@ -1,3 +1,5 @@
+import { capacityBlockedReason } from "@/lib/capacity";
+
 import { db } from "../db/client";
 import { appendEvent } from "../events/store";
 import { cancelPendingJobs, enqueueJob } from "../jobs/queue";
@@ -19,6 +21,7 @@ import {
 import type { TaskRow } from "../db/schema";
 import {
   InvalidGateDecisionError,
+  InvalidTransitionError,
   type PipelineContext,
   type PipelineSignal,
   type Transition,
@@ -196,6 +199,82 @@ export function startTask(taskId: string): Transition {
     appendEvent(taskId, null, { type: "task_started" });
     return transition;
   });
+}
+
+/**
+ * Ranking mirroring {@link "../jobs/queue".claimNextJob}'s `PRIORITY_RANK` /
+ * `DIFFICULTY_RANK`, but computed in JS: the batch sorts a handful of already
+ * fetched rows rather than issuing another query, so there is no SQL
+ * ordering to share with `queue.ts` here.
+ */
+const PRIORITY_RANK: Record<TaskRow["priority"], number> = {
+  urgent: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+const DIFFICULTY_RANK: Record<string, number> = { S: 0, M: 1, L: 2 };
+
+function difficultyRank(difficulty: TaskRow["difficulty"]): number {
+  return difficulty ? (DIFFICULTY_RANK[difficulty] ?? 1) : 1;
+}
+
+export type BatchStartResult = {
+  taskId: string;
+  title: string;
+  started: boolean;
+  reason: string | null;
+};
+
+/**
+ * Starts several `CREATED` tasks in one action, in priority-descending,
+ * difficulty-ascending order — the same rule {@link claimNextJob} already
+ * applies to queued stage jobs.
+ *
+ * Each task is started through the ordinary {@link startTask}, one at a time,
+ * so admission control is re-checked before every single one exactly as it
+ * would be for a sequence of manual clicks. A task that cannot start (no
+ * slot, already started by another tab, or any other failure) is recorded
+ * and skipped without aborting the rest of the batch — see
+ * `techplan.md`'s "Partial-failure semantics are new" risk note.
+ */
+export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
+  const found = taskIds
+    .map((id) => getTask(id))
+    .filter((task): task is TaskRow => task !== null);
+
+  const sorted = [...found].sort((a, b) => {
+    const priorityDelta = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+    if (priorityDelta !== 0) return priorityDelta;
+    return difficultyRank(a.difficulty) - difficultyRank(b.difficulty);
+  });
+
+  const results: BatchStartResult[] = [];
+  const foundIds = new Set(found.map((task) => task.id));
+  const missing = taskIds.filter((id) => !foundIds.has(id));
+  for (const id of missing) {
+    results.push({ taskId: id, title: "Unknown task", started: false, reason: "Task not found." });
+  }
+
+  for (const task of sorted) {
+    try {
+      startTask(task.id);
+      results.push({ taskId: task.id, title: task.title, started: true, reason: null });
+    } catch (error) {
+      const reason =
+        error instanceof CapacityError
+          ? capacityBlockedReason({ slotAvailable: false, limit: error.limit, blocking: error.blocking })!
+          : error instanceof InvalidTransitionError
+            ? "This task has already been started."
+            : error instanceof Error
+              ? error.message
+              : "Could not start this task.";
+      results.push({ taskId: task.id, title: task.title, started: false, reason });
+    }
+  }
+
+  return results;
 }
 
 /**

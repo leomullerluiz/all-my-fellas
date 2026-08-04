@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { AutoRefresh } from "@/components/auto-refresh";
+import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-start";
 import { TaskBoard, type BoardTask } from "@/components/task-board";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -68,8 +69,15 @@ export default async function DashboardPage() {
   const waiting = tasks.filter((task) => task.status === "awaiting_gate").length;
   const spend = tasks.reduce((sum, task) => sum + task.costUsd, 0);
 
+  // A digest of every task's id/stage/status, recomputed on each request
+  // that renders this route (full load or `router.refresh()`). Changes
+  // whenever a task's state actually moves — which is what makes a
+  // previously checked task's selection stale — so `BatchSelectionProvider`
+  // can reset it (S1) without needing an impure, always-different value.
+  const boardVersion = tasks.map((task) => `${task.id}:${task.currentStage}:${task.status}`).join("|");
+
   return (
-    <>
+    <BatchSelectionProvider boardVersion={boardVersion}>
       <AutoRefresh />
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -81,9 +89,12 @@ export default async function DashboardPage() {
             {formatCost(spend)} spent in total
           </p>
         </div>
-        <Link href="/tasks/new">
-          <Button>New task</Button>
-        </Link>
+        <div className="flex items-start gap-2">
+          <BatchStartButton />
+          <Link href="/tasks/new">
+            <Button>New task</Button>
+          </Link>
+        </div>
       </div>
 
       <SetupNotice />
@@ -111,6 +122,6 @@ export default async function DashboardPage() {
       ) : (
         <TaskBoard tasks={tasks} capacity={slots} />
       )}
-    </>
+    </BatchSelectionProvider>
   );
 }
