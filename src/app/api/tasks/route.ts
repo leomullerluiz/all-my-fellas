@@ -1,7 +1,16 @@
-import { badRequest, json, parseBody, serverError } from "@/server/http/respond";
+import {
+  badRequest,
+  isMultipartRequest,
+  json,
+  parseBody,
+  parseMultipartFields,
+  serverError,
+} from "@/server/http/respond";
 import { CapacityError, capacity, startTask } from "@/server/pipeline/orchestrator";
 import { createTask, getRepo, getTask, listTasks, totalCostForTask } from "@/server/tasks/service";
+import { validateAttachmentFiles } from "@/server/validation/attachments";
 import { createTaskSchema, listTasksQuerySchema } from "@/server/validation/schemas";
+import type { CreateTaskInput } from "@/server/validation/schemas";
 
 /** `GET /api/tasks?status=` — board and list views, plus current capacity. */
 export async function GET(request: Request) {
@@ -28,18 +37,38 @@ export async function GET(request: Request) {
  * The pipeline is entered only when `start: true`. A capacity refusal still
  * leaves the task created, so the work is not lost — the user can start it once
  * a slot frees.
+ *
+ * Plain JSON when no files are attached (the client only builds a
+ * `multipart/form-data` body once a file is picked), so the existing
+ * JSON-only contract is untouched.
  */
 export async function POST(request: Request) {
   try {
-    const parsed = await parseBody(request, createTaskSchema);
-    if (!parsed.ok) return parsed.response;
+    let fields: CreateTaskInput;
+    let files: File[] = [];
 
-    if (!getRepo(parsed.data.repoId)) {
+    if (isMultipartRequest(request)) {
+      const parsed = await parseMultipartFields(request, createTaskSchema);
+      if (!parsed.ok) return parsed.response;
+      fields = parsed.data;
+      files = parsed.formData
+        .getAll("attachments")
+        .filter((entry): entry is File => entry instanceof File);
+    } else {
+      const parsed = await parseBody(request, createTaskSchema);
+      if (!parsed.ok) return parsed.response;
+      fields = parsed.data;
+    }
+
+    if (!getRepo(fields.repoId)) {
       return badRequest("That repository connection no longer exists.");
     }
 
-    const created = createTask(parsed.data);
-    if (!parsed.data.start) {
+    const validatedAttachments = await validateAttachmentFiles(files);
+    if (!validatedAttachments.ok) return validatedAttachments.response;
+
+    const created = createTask({ ...fields, attachments: validatedAttachments.data });
+    if (!fields.start) {
       return json({ task: created, started: false }, { status: 201 });
     }
 
