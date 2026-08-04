@@ -13,9 +13,11 @@ import {
   getTask,
   listApprovals,
   listStageRuns,
+  queuedTasks,
   recordApproval,
   saveArtifact,
   setTaskStage,
+  updateTask,
   updateTaskFields,
 } from "../tasks/service";
 import type { TaskRow } from "../db/schema";
@@ -130,6 +132,13 @@ export function advanceTask(taskId: string, signal: PipelineSignal): Transition 
 
   const transition = nextTransition(task.currentStage, signal, contextFor(task));
   applyTransition(taskId, transition);
+  // A terminal stage or a gate both release the concurrency slot this task
+  // held (§8.2), so this is exactly when the next `on_queue` task, if any,
+  // can take its place. `promoteQueue` is never itself wrapped in a
+  // transaction here — see the warning on its definition.
+  if (transition.type === "terminal" || transition.type === "await_gate") {
+    promoteQueue();
+  }
   return transition;
 }
 
@@ -220,10 +229,57 @@ function difficultyRank(difficulty: TaskRow["difficulty"]): number {
   return difficulty ? (DIFFICULTY_RANK[difficulty] ?? 1) : 1;
 }
 
+/**
+ * Priority-descending, difficulty-ascending order — shared by
+ * {@link startTasksBatch} (initial batch order) and {@link promoteQueue}
+ * (which `on_queue` task goes next), so the queue drains in the same order it
+ * was presented.
+ */
+function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
+  return [...tasksToSort].sort((a, b) => {
+    const priorityDelta = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+    if (priorityDelta !== 0) return priorityDelta;
+    return difficultyRank(a.difficulty) - difficultyRank(b.difficulty);
+  });
+}
+
+/**
+ * Starts the highest-priority `on_queue` task, if a slot is free.
+ *
+ * Called after any transition that frees a concurrency slot (a terminal
+ * outcome or a gate) so a "Start selected" batch keeps draining without a
+ * poller. One call promotes at most one task, since one transition frees at
+ * most one slot; each subsequent slot-freeing transition calls this again.
+ *
+ * Any failure to start (no free slot after all, or the task changed/vanished
+ * concurrently) is swallowed rather than thrown: the caller here is always a
+ * transition that already succeeded, and the next slot-freeing event will
+ * retry against the current `on_queue` list.
+ *
+ * MUST NOT be called from inside an open `db.transaction()` — it calls
+ * {@link startTask}, which opens its own. `advanceTask` is safe (no caller
+ * wraps it in a transaction); `decideGate` calls this only after its own
+ * transaction has committed. A future call site that adds a transition
+ * inside a transaction and expects promotion "to just happen" would
+ * silently miss it.
+ */
+export function promoteQueue(): void {
+  const [next] = sortByPriorityThenDifficulty(queuedTasks());
+  if (!next) return;
+  try {
+    startTask(next.id);
+  } catch {
+    // No slot after all, or the task was cancelled/deleted/started elsewhere
+    // in the same instant — nothing to do until the next promotion trigger.
+  }
+}
+
 export type BatchStartResult = {
   taskId: string;
   title: string;
   started: boolean;
+  /** True when the task was parked at `on_queue` rather than genuinely failing to start. */
+  queued: boolean;
   reason: string | null;
 };
 
@@ -234,43 +290,56 @@ export type BatchStartResult = {
  *
  * Each task is started through the ordinary {@link startTask}, one at a time,
  * so admission control is re-checked before every single one exactly as it
- * would be for a sequence of manual clicks. A task that cannot start (no
- * slot, already started by another tab, or any other failure) is recorded
- * and skipped without aborting the rest of the batch — see
- * `techplan.md`'s "Partial-failure semantics are new" risk note.
+ * would be for a sequence of manual clicks. A task that loses the capacity
+ * race is parked at `on_queue` instead of being left indistinguishable at
+ * `CREATED`/`queued` — {@link promoteQueue} starts it automatically once a
+ * slot frees. A task that fails for any other reason (already started,
+ * missing) is recorded and skipped without aborting the rest of the batch —
+ * see `techplan.md`'s "Partial-failure semantics are new" risk note.
  */
 export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
   const found = taskIds
     .map((id) => getTask(id))
     .filter((task): task is TaskRow => task !== null);
 
-  const sorted = [...found].sort((a, b) => {
-    const priorityDelta = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
-    if (priorityDelta !== 0) return priorityDelta;
-    return difficultyRank(a.difficulty) - difficultyRank(b.difficulty);
-  });
+  const sorted = sortByPriorityThenDifficulty(found);
 
   const results: BatchStartResult[] = [];
   const foundIds = new Set(found.map((task) => task.id));
   const missing = taskIds.filter((id) => !foundIds.has(id));
   for (const id of missing) {
-    results.push({ taskId: id, title: "Unknown task", started: false, reason: "Task not found." });
+    results.push({
+      taskId: id,
+      title: "Unknown task",
+      started: false,
+      queued: false,
+      reason: "Task not found.",
+    });
   }
 
   for (const task of sorted) {
     try {
       startTask(task.id);
-      results.push({ taskId: task.id, title: task.title, started: true, reason: null });
+      results.push({ taskId: task.id, title: task.title, started: true, queued: false, reason: null });
     } catch (error) {
+      if (error instanceof CapacityError) {
+        updateTask(task.id, { status: "on_queue" });
+        results.push({
+          taskId: task.id,
+          title: task.title,
+          started: false,
+          queued: true,
+          reason: capacityBlockedReason({ slotAvailable: false, limit: error.limit, blocking: error.blocking })!,
+        });
+        continue;
+      }
       const reason =
-        error instanceof CapacityError
-          ? capacityBlockedReason({ slotAvailable: false, limit: error.limit, blocking: error.blocking })!
-          : error instanceof InvalidTransitionError
-            ? "This task has already been started."
-            : error instanceof Error
-              ? error.message
-              : "Could not start this task.";
-      results.push({ taskId: task.id, title: task.title, started: false, reason });
+        error instanceof InvalidTransitionError
+          ? "This task has already been started."
+          : error instanceof Error
+            ? error.message
+            : "Could not start this task.";
+      results.push({ taskId: task.id, title: task.title, started: false, queued: false, reason });
     }
   }
 
@@ -340,7 +409,7 @@ export function decideGate(input: {
   decision: GateDecision;
   comment?: string;
 }): Transition {
-  return db.transaction(() => {
+  const transition = db.transaction(() => {
     const task = getTask(input.taskId);
     if (!task) throw new TaskNotFoundError(input.taskId);
     if (task.currentStage !== input.gate) {
@@ -401,6 +470,15 @@ export function decideGate(input: {
     applyTransition(input.taskId, transition);
     return transition;
   });
+
+  // Outside the transaction: `reject` and an exhausted `request_changes` are
+  // terminal and free this task's slot, which is exactly when the next
+  // `on_queue` task can take it. `promoteQueue` opens its own transaction via
+  // `startTask`, so it must run after this one has committed.
+  if (transition.type === "terminal") {
+    promoteQueue();
+  }
+  return transition;
 }
 
 /**
