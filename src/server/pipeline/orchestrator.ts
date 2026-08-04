@@ -251,10 +251,13 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
  * poller. One call promotes at most one task, since one transition frees at
  * most one slot; each subsequent slot-freeing transition calls this again.
  *
- * Any failure to start (no free slot after all, or the task changed/vanished
- * concurrently) is swallowed rather than thrown: the caller here is always a
- * transition that already succeeded, and the next slot-freeing event will
- * retry against the current `on_queue` list.
+ * `CapacityError` (no free slot after all) and `InvalidTransitionError` /
+ * `TaskNotFoundError` (the task was cancelled/deleted/started elsewhere in
+ * the same instant) are expected races and are swallowed: the caller here is
+ * always a transition that already succeeded, and the next slot-freeing
+ * event will retry against the current `on_queue` list. Anything else is an
+ * unanticipated failure that would otherwise strand the task at `on_queue`
+ * with zero signal, so it is logged rather than swallowed.
  *
  * MUST NOT be called from inside an open `db.transaction()` — it calls
  * {@link startTask}, which opens its own. `advanceTask` is safe (no caller
@@ -268,9 +271,14 @@ export function promoteQueue(): void {
   if (!next) return;
   try {
     startTask(next.id);
-  } catch {
-    // No slot after all, or the task was cancelled/deleted/started elsewhere
-    // in the same instant — nothing to do until the next promotion trigger.
+  } catch (error) {
+    const expected =
+      error instanceof CapacityError ||
+      error instanceof InvalidTransitionError ||
+      error instanceof TaskNotFoundError;
+    if (!expected) {
+      console.error("[promoteQueue]", error instanceof Error ? error.message : error);
+    }
   }
 }
 
