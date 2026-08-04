@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     // Compiled worker output and per-task repository clones.
     "dist/**",
     "workspaces/**",
+    // The landing page is a separate app; it lints itself with its own config.
+    "site/**",
   ]),
 ]);
 

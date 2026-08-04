@@ -9,10 +9,12 @@ import { Reveal } from "@/components/reveal";
 import { Section } from "@/components/section";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteNav } from "@/components/site-nav";
+import { StructuredData } from "@/components/structured-data";
 
 export default function Home() {
   return (
     <>
+      <StructuredData />
       <SiteNav />
 
       <main className="flex-1">

@@ -7,6 +7,23 @@
 
 export const REPO_URL = "https://github.com/leomullerluiz/all-my-fellas";
 
+/**
+ * Canonical origin + path of the published site. Every absolute URL the page
+ * emits — canonical link, OG image, sitemap entries — is built from this, so a
+ * move to a custom domain is one environment variable rather than a grep.
+ *
+ * Must agree with `NEXT_PUBLIC_BASE_PATH` in next.config.ts: this carries the
+ * origin *and* the subpath, that one carries the subpath alone.
+ */
+export const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://leomullerluiz.github.io/all-my-fellas"
+).replace(/\/$/, "");
+
+export const SITE_NAME = "All My Fellas";
+
+export const SITE_DESCRIPTION =
+  "A local software delivery pipeline staffed entirely by Claude agents. Describe a feature; get back a branch and an open pull request on GitHub, GitLab, Bitbucket or Azure DevOps.";
+
 export type StageKind = "agent" | "human" | "worker";
 
 export type Stage = {

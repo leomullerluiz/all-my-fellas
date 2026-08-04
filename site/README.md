@@ -28,6 +28,40 @@ Every claim on the page lives in [`src/lib/content.ts`](src/lib/content.ts),
 sourced from the root README. When the pipeline changes, that file is the one
 place the site has to follow.
 
+## SEO and icons
+
+Everything a crawler reads is generated at build time — there are no binary
+assets to keep in sync with the copy:
+
+| Output | Source |
+|---|---|
+| `icon.svg` | [`src/app/icon.svg`](src/app/icon.svg) — three pipeline nodes on one spine, coloured by owner: accent for an agent, amber for a human gate, green for delivery |
+| `apple-touch-icon.png` | [`src/app/apple-touch-icon.png/route.tsx`](src/app/apple-touch-icon.png/route.tsx) — the same mark, redrawn in flexbox at 180×180 |
+| `og.png` | [`src/app/og.png/route.tsx`](src/app/og.png/route.tsx) — the 1200×630 social card |
+| `robots.txt` / `sitemap.xml` | [`src/app/robots.ts`](src/app/robots.ts), [`src/app/sitemap.ts`](src/app/sitemap.ts) |
+| JSON-LD | [`src/components/structured-data.tsx`](src/components/structured-data.tsx) — `SoftwareApplication` + `FAQPage`, built from `content.ts` |
+
+**Why the images are Route Handlers and not `opengraph-image.tsx`.** Under
+`output: "export"` with a `basePath`, the metadata file conventions get two
+things wrong: they write the file with no extension — so a static host serves a
+PNG as the wrong Content-Type, which the stricter social crawlers reject — and
+they override `metadata.openGraph.images`, the one place the missing basePath
+could be corrected. A route named `og.png/route.tsx` exports to `out/og.png` and
+leaves the metadata alone. Every metadata route also needs
+`export const dynamic = "force-static"`, or the export build refuses to run.
+
+**`SITE_URL` is the single source of absolute URLs** ([`src/lib/content.ts`](src/lib/content.ts)) —
+canonical link, OG image, sitemap entries. It must agree with
+`NEXT_PUBLIC_BASE_PATH`: that carries the subpath, this carries origin *and*
+subpath. Override with `NEXT_PUBLIC_SITE_URL` for a custom domain.
+
+**robots.txt does nothing here.** Crawlers only read it from the *domain* root,
+and a project site lives at a subpath — so nothing fetches
+`<user>.github.io/all-my-fellas/robots.txt`. It is generated so the file is
+correct the day the site moves to a custom domain. The sitemap *is* valid at a
+subpath, but has to be submitted by hand in Search Console, since the robots.txt
+that would normally advertise it is unreachable.
+
 ## Animate UI
 
 The animated components under `src/components/animate-ui/`, plus `src/hooks/`

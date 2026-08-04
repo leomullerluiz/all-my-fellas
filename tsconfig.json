@@ -30,5 +30,8 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "workspaces", "dist"]
+  // `site` is a separate app with its own tsconfig, dependencies and `@/*`
+  // alias. Type-checking it from here resolves its imports against this
+  // project's src/ and fails.
+  "exclude": ["node_modules", "workspaces", "dist", "site"]
 }
