@@ -106,15 +106,24 @@ export function TaskSelectCheckbox({ taskId, taskTitle }: { taskId: string; task
   );
 }
 
-type BatchResult = { taskId: string; title: string; started: boolean; reason: string | null };
+type BatchResult = {
+  taskId: string;
+  title: string;
+  started: boolean;
+  /** True when the task was parked on the "On Queue" column rather than genuinely failing. */
+  queued: boolean;
+  reason: string | null;
+};
 
 /**
  * Top-right "Start selected" button.
  *
- * Runs the batch, then shows a summary of what started and what didn't — the
- * reason text for anything skipped is whatever the server sent, which for a
- * capacity refusal is the same string `TaskCardMenu`'s `blockedReason` shows
- * (both derive from `capacityBlockedReason`).
+ * Runs the batch, then shows a summary of what started, what's on queue, and
+ * what genuinely failed — the reason text for anything on queue or failed is
+ * whatever the server sent, which for a capacity refusal is the same string
+ * `TaskCardMenu`'s `blockedReason` shows (both derive from
+ * `capacityBlockedReason`). Queued tasks start automatically as slots free
+ * up (see `orchestrator.promoteQueue`), so they are not reported as failures.
  */
 export function BatchStartButton() {
   const router = useRouter();
@@ -158,7 +167,8 @@ export function BatchStartButton() {
   }
 
   const startedCount = summary?.filter((result) => result.started).length ?? 0;
-  const skipped = summary?.filter((result) => !result.started) ?? [];
+  const queued = summary?.filter((result) => result.queued) ?? [];
+  const failed = summary?.filter((result) => !result.started && !result.queued) ?? [];
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -172,9 +182,17 @@ export function BatchStartButton() {
         <div className="max-w-xs text-right text-xs text-muted">
           <p>
             {startedCount} of {summary.length} started
-            {skipped.length > 0 ? " — some tasks could not be started" : ""}
+            {queued.length > 0
+              ? `, ${queued.length} on queue`
+              : ""}
+            {failed.length > 0 ? " — some tasks could not be started" : ""}
           </p>
-          {skipped.map((result) => (
+          {queued.map((result) => (
+            <p key={result.taskId} className="text-[11px] text-muted/80">
+              {result.title}: on queue, will start automatically
+            </p>
+          ))}
+          {failed.map((result) => (
             <p key={result.taskId} className="text-[11px] text-muted/80">
               {result.title}: {result.reason}
             </p>
