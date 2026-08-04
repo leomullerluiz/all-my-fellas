@@ -34,6 +34,14 @@ function columns(sqlite: Database.Database, table: string): string[] {
   );
 }
 
+function tableExists(sqlite: Database.Database, table: string): boolean {
+  return (
+    sqlite
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table) !== undefined
+  );
+}
+
 function version(sqlite: Database.Database): number {
   return (sqlite.pragma("user_version") as Array<{ user_version: number }>)[0].user_version;
 }
@@ -99,6 +107,28 @@ describe("runMigrations", () => {
     expect(second.applied).toEqual([]);
     expect(second.from).toBe(SCHEMA_VERSION);
     expect(version(sqlite)).toBe(SCHEMA_VERSION);
+    sqlite.close();
+  });
+
+  it("adds the attachments table to a database created before it existed", () => {
+    // The attachments table is new: `bootstrap.sql.ts`'s `CREATE TABLE IF NOT
+    // EXISTS` covers it directly, with no `migrations.ts` entry needed. This
+    // simulates a database from before the table existed by bootstrapping with
+    // the attachments DDL stripped out, then re-running the *current* bootstrap
+    // SQL exactly as `client.ts` does on every process start.
+    const preAttachmentsSql = BOOTSTRAP_SQL.replace(
+      /CREATE TABLE IF NOT EXISTS attachments[\s\S]*?attachments_task_idx ON attachments\(task_id\);/,
+      "",
+    );
+    expect(preAttachmentsSql).not.toContain("attachments");
+
+    const sqlite = new Database(path.join(tempDir, "pre-attachments.db"));
+    sqlite.exec(preAttachmentsSql);
+    expect(tableExists(sqlite, "attachments")).toBe(false);
+
+    sqlite.exec(BOOTSTRAP_SQL);
+
+    expect(tableExists(sqlite, "attachments")).toBe(true);
     sqlite.close();
   });
 

@@ -26,6 +26,19 @@ export function formatDateTime(epochMs: number): string {
   });
 }
 
+/** `1.2 MB` — for attachment sizes, which range from a few bytes to tens of MB. */
+export function formatBytes(size: number): string {
+  if (size < 1_024) return `${size} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = size / 1_024;
+  let unitIndex = 0;
+  while (value >= 1_024 && unitIndex < units.length - 1) {
+    value /= 1_024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unitIndex]}`;
+}
+
 export function formatDuration(startedAt: number | null, finishedAt: number | null): string {
   if (!startedAt) return "—";
   const end = finishedAt ?? Date.now();

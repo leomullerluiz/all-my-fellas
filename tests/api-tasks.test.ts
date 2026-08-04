@@ -85,6 +85,25 @@ function post(body: unknown) {
   );
 }
 
+/** Builds the multipart body the client sends once a file is picked. */
+function multipartForm(fields: Record<string, unknown>, files: File[] = []): FormData {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) form.set(key, String(value));
+  }
+  for (const file of files) form.append("attachments", file);
+  return form;
+}
+
+function postMultipart(fields: Record<string, unknown>, files: File[] = []) {
+  return tasksRoute.POST(
+    new Request("http://test/api/tasks", {
+      method: "POST",
+      body: multipartForm(fields, files),
+    }),
+  );
+}
+
 function params(id: string) {
   return { params: Promise.resolve({ id }) };
 }
@@ -160,6 +179,55 @@ describe("POST /api/tasks", () => {
   it("rejects an unknown repository", async () => {
     const response = await post({ ...VALID_BODY, repoId: "repo_missing" });
     expect(response.status).toBe(400);
+  });
+
+  it("accepts multiple attachments in one multipart submission", async () => {
+    const image = new File([new Uint8Array([1, 2, 3])], "diagram.png", { type: "image/png" });
+    const config = new File(['{"a":1}'], "config.json", { type: "application/json" });
+
+    const response = await postMultipart({ ...VALID_BODY, repoId }, [image, config]);
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as { task: { id: string } };
+    const detail = await taskRoute.GET(new Request("http://test"), params(payload.task.id));
+    const detailPayload = (await detail.json()) as {
+      attachments: Array<{ filename: string }>;
+    };
+    expect(detailPayload.attachments.map((a) => a.filename).sort()).toEqual([
+      "config.json",
+      "diagram.png",
+    ]);
+  });
+
+  it("rejects an unsupported file type, naming the file and its type", async () => {
+    const exe = new File(["MZ"], "installer.exe", { type: "application/x-msdownload" });
+
+    const response = await postMultipart({ ...VALID_BODY, repoId }, [exe]);
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("installer.exe");
+    expect(payload.error).toContain("application/x-msdownload");
+
+    // No task and no attachment should have been created.
+    expect(service.listTasks()).toHaveLength(0);
+  });
+
+  it("rejects an empty file without creating a record", async () => {
+    const empty = new File([], "empty.json", { type: "application/json" });
+
+    const response = await postMultipart({ ...VALID_BODY, repoId }, [empty]);
+    expect(response.status).toBe(400);
+    expect(service.listTasks()).toHaveLength(0);
+  });
+
+  // A file with no filename cannot survive a real multipart round-trip (an
+  // empty `filename=` degrades the part to a plain text field before it
+  // reaches the server) — see `tests/attachments-validation.test.ts` for the
+  // rejection itself, exercised directly against `validateAttachmentFiles`.
+
+  it("creates without attachments over multipart when none are picked", async () => {
+    const response = await postMultipart({ ...VALID_BODY, repoId });
+    expect(response.status).toBe(201);
   });
 });
 
@@ -254,6 +322,36 @@ describe("PATCH /api/tasks/:id", () => {
   it("returns 404 for an unknown task", async () => {
     const response = await patch("task_missing", { ...VALID_BODY, repoId });
     expect(response.status).toBe(404);
+  });
+
+  function patchMultipart(id: string, fields: Record<string, unknown>, files: File[] = []) {
+    return taskRoute.PATCH(
+      new Request("http://test", { method: "PATCH", body: multipartForm(fields, files) }),
+      params(id),
+    );
+  }
+
+  it("adds an attachment to a created task over multipart", async () => {
+    const task = seed();
+    const file = new File(["<x/>"], "note.xml", { type: "application/xml" });
+
+    const response = await patchMultipart(task.id, { ...VALID_BODY, repoId }, [file]);
+    expect(response.status).toBe(200);
+
+    const detail = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await detail.json()) as { attachments: Array<{ filename: string }> };
+    expect(payload.attachments.map((a) => a.filename)).toEqual(["note.xml"]);
+  });
+
+  it("returns 409 when adding an attachment to a task past CREATED", async () => {
+    for (const stage of ALL_STAGES) {
+      const task = seed({ title: `Task at ${stage}` });
+      service.setTaskStage(task.id, stage);
+      const file = new File(["x"], "a.json", { type: "application/json" });
+
+      const response = await patchMultipart(task.id, { ...VALID_BODY, repoId }, [file]);
+      expect(response.status, `stage ${stage} must refuse an attachment upload`).toBe(409);
+    }
   });
 });
 

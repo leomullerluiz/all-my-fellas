@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 
 import { NewTaskForm } from "@/components/new-task-form";
-import { getTask, listRepos } from "@/server/tasks/service";
+import { getTask, listAttachments, listRepos } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +35,7 @@ export default async function EditTaskPage(props: { params: Promise<{ id: string
         description: task.description,
         priority: task.priority,
         requireHumanCodeReview: task.requireHumanCodeReview,
+        attachments: listAttachments(task.id),
       }}
     />
   );

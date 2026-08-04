@@ -1,9 +1,11 @@
 import {
   badRequest,
   conflict,
+  isMultipartRequest,
   json,
   notFound,
   parseBody,
+  parseMultipartFields,
   serverError,
 } from "@/server/http/respond";
 import {
@@ -17,11 +19,13 @@ import {
   getTask,
   getTaskWithRepo,
   listApprovals,
+  listAttachments,
   listLatestArtifacts,
   listStageRuns,
   totalCostForTask,
 } from "@/server/tasks/service";
-import { updateTaskSchema } from "@/server/validation/schemas";
+import { validateAttachmentFiles } from "@/server/validation/attachments";
+import { type UpdateTaskInput, updateTaskSchema } from "@/server/validation/schemas";
 
 /** `GET /api/tasks/:id` — full detail: stage, artifacts, runs, cost, PR. */
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
@@ -35,6 +39,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       stageRuns: listStageRuns(id),
       artifacts: listLatestArtifacts(id),
       approvals: listApprovals(id),
+      attachments: listAttachments(id).map((attachment) => ({
+        ...attachment,
+        url: `/api/tasks/${id}/attachments/${attachment.id}`,
+      })),
       costUsd: totalCostForTask(id),
     });
   } catch (error) {
@@ -46,21 +54,38 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
  * `PATCH /api/tasks/:id` — edits a task that has not started.
  *
  * The stage is re-read server-side: a disabled control on a stale board is a
- * hint, not a guarantee.
+ * hint, not a guarantee. Plain JSON when no files are attached, exactly like
+ * `POST /api/tasks`.
  */
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await context.params;
     if (!getTask(id)) return notFound(`Task ${id} not found.`);
 
-    const parsed = await parseBody(request, updateTaskSchema);
-    if (!parsed.ok) return parsed.response;
+    let fields: UpdateTaskInput;
+    let files: File[] = [];
 
-    if (!getRepo(parsed.data.repoId)) {
+    if (isMultipartRequest(request)) {
+      const parsed = await parseMultipartFields(request, updateTaskSchema);
+      if (!parsed.ok) return parsed.response;
+      fields = parsed.data;
+      files = parsed.formData
+        .getAll("attachments")
+        .filter((entry): entry is File => entry instanceof File);
+    } else {
+      const parsed = await parseBody(request, updateTaskSchema);
+      if (!parsed.ok) return parsed.response;
+      fields = parsed.data;
+    }
+
+    if (!getRepo(fields.repoId)) {
       return badRequest("That repository connection no longer exists.");
     }
 
-    editTask(id, parsed.data);
+    const validatedAttachments = await validateAttachmentFiles(files);
+    if (!validatedAttachments.ok) return validatedAttachments.response;
+
+    editTask(id, fields, validatedAttachments.data);
     return json({ task: getTask(id) });
   } catch (error) {
     if (error instanceof TaskNotFoundError) return notFound(error.message);

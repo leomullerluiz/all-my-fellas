@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { blob, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 import type { ProviderId } from "../git/providers/types";
 import type {
@@ -124,6 +124,31 @@ export const artifacts = sqliteTable(
 );
 
 /**
+ * Files attached to a task's description (images, PDF, JSON, XML).
+ *
+ * Stored as a BLOB rather than on disk: a `CREATED` task has no
+ * `workspacePath` yet (it exists only once the Developer stage clones the
+ * repo), and the workspace directory is deleted by `scheduleWorkspaceCleanup`
+ * on a retention timer — either would be the wrong home for something the
+ * brief treats as part of the task's permanent record.
+ */
+export const attachments = sqliteTable(
+  "attachments",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    data: blob("data", { mode: "buffer" }).notNull(),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (table) => [index("attachments_task_idx").on(table.taskId)],
+);
+
+/**
  * Full agent transcripts. Kept for auditing and debugging only — the pipeline
  * never feeds these back into a later stage (minimum-context handoff).
  */
@@ -208,6 +233,7 @@ export type RepoRow = typeof repos.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type StageRunRow = typeof stageRuns.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
+export type AttachmentRow = typeof attachments.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;

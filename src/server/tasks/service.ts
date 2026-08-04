@@ -5,12 +5,14 @@ import { newId } from "../db/ids";
 import {
   type ApprovalRow,
   type ArtifactRow,
+  type AttachmentRow,
   type RepoRow,
   type StageRunRow,
   type TaskRow,
   agentRuns,
   approvals,
   artifacts,
+  attachments,
   repos,
   stageRuns,
   tasks,
@@ -104,9 +106,21 @@ export function listTasks(filter?: { status?: string }): TaskWithRepo[] {
   return rows.map((row) => ({ ...row.task, repo: row.repo }));
 }
 
+/** A file ready to persist: already read into memory and validated. */
+export type NewAttachment = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  buffer: Buffer;
+};
+
 /**
  * Inserts a task row. The caller is responsible for entering the pipeline via
  * `orchestrator.startTask`, which keeps this module free of a cyclic import.
+ *
+ * Any attachments are inserted in the same transaction as the task row, so a
+ * failed attachment insert cannot leave a task behind with no way to attach
+ * the files it was created with.
  */
 export function createTask(input: {
   repoId: string;
@@ -114,25 +128,85 @@ export function createTask(input: {
   description: string;
   priority: Priority;
   requireHumanCodeReview?: boolean;
+  attachments?: NewAttachment[];
 }): TaskRow {
   const id = newId("task");
-  const task = db
-    .insert(tasks)
-    .values({
-      id,
-      repoId: input.repoId,
-      title: input.title,
-      description: input.description,
-      priority: input.priority,
-      requireHumanCodeReview: input.requireHumanCodeReview ?? false,
-      status: "queued",
-      currentStage: "CREATED",
-    })
-    .returning()
-    .get();
+  const task = db.transaction(() => {
+    const created = db
+      .insert(tasks)
+      .values({
+        id,
+        repoId: input.repoId,
+        title: input.title,
+        description: input.description,
+        priority: input.priority,
+        requireHumanCodeReview: input.requireHumanCodeReview ?? false,
+        status: "queued",
+        currentStage: "CREATED",
+      })
+      .returning()
+      .get();
+
+    if (input.attachments && input.attachments.length > 0) {
+      insertAttachments(created.id, input.attachments);
+    }
+    return created;
+  });
 
   appendEvent(id, null, { type: "task_created", title: input.title });
   return task;
+}
+
+/** Persists a batch of already-validated files against `taskId`. */
+export function insertAttachments(taskId: string, files: NewAttachment[]): AttachmentRow[] {
+  return files.map((file) =>
+    db
+      .insert(attachments)
+      .values({
+        id: newId("att"),
+        taskId,
+        filename: file.filename,
+        mimeType: file.mimeType,
+        sizeBytes: file.size,
+        data: file.buffer,
+      })
+      .returning()
+      .get(),
+  );
+}
+
+/** Attachment metadata without the file bytes, for list views. */
+export type AttachmentMeta = Omit<AttachmentRow, "data">;
+
+export function listAttachments(taskId: string): AttachmentMeta[] {
+  return db
+    .select({
+      id: attachments.id,
+      taskId: attachments.taskId,
+      filename: attachments.filename,
+      mimeType: attachments.mimeType,
+      sizeBytes: attachments.sizeBytes,
+      createdAt: attachments.createdAt,
+    })
+    .from(attachments)
+    .where(eq(attachments.taskId, taskId))
+    .orderBy(attachments.createdAt)
+    .all();
+}
+
+/** Includes the file bytes — only for the download route, never for a list. */
+export function getAttachment(id: string): AttachmentRow | null {
+  return db.select().from(attachments).where(eq(attachments.id, id)).get() ?? null;
+}
+
+/** Removes one attachment, scoped to `taskId` so a foreign id cannot match. */
+export function deleteAttachment(taskId: string, attachmentId: string): boolean {
+  const removed = db
+    .delete(attachments)
+    .where(and(eq(attachments.id, attachmentId), eq(attachments.taskId, taskId)))
+    .returning({ id: attachments.id })
+    .all();
+  return removed.length > 0;
 }
 
 /**

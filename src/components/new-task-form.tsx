@@ -6,9 +6,21 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
+import { formatBytes } from "@/lib/utils";
 import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
 export type RepoOption = { id: string; name: string; defaultBranch: string };
+
+/** Accepted by both the picker's `accept` attribute and server-side validation. */
+export const ATTACHMENT_ACCEPT =
+  "image/png,image/jpeg,image/gif,image/webp,application/pdf,application/json,application/xml,text/xml";
+
+export type AttachmentMeta = {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+};
 
 export type TaskFormValues = {
   repoId: string;
@@ -16,6 +28,8 @@ export type TaskFormValues = {
   description: string;
   priority: Priority;
   requireHumanCodeReview: boolean;
+  /** Existing attachments, only meaningful in `edit` mode. */
+  attachments: AttachmentMeta[];
 };
 
 export type TaskFormProps = {
@@ -56,6 +70,15 @@ export function NewTaskForm({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
 
+  // Files picked but not yet uploaded (create and edit).
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  // Attachments already on the task (edit mode only), removable in place.
+  const [existingAttachments, setExistingAttachments] = useState<AttachmentMeta[]>(
+    initial?.attachments ?? [],
+  );
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+
   const selectedRepo = repos.find((repo) => repo.id === repoId);
   const isEdit = mode === "edit";
 
@@ -69,19 +92,38 @@ export function NewTaskForm({
     setSubmitError(null);
     setSubmitting(start ? "start" : "queue");
 
-    const body = {
-      repoId,
-      title,
-      description,
-      priority,
-      requireHumanCodeReview,
-      ...(isEdit ? {} : { start }),
-    };
-    const response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
-      method: isEdit ? "PATCH" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let response: Response;
+    if (pendingFiles.length > 0) {
+      // Only switch to `FormData` once a file is picked, so the JSON-only
+      // request the server already handles stays untouched otherwise.
+      const form = new FormData();
+      form.set("repoId", repoId);
+      form.set("title", title);
+      form.set("description", description);
+      form.set("priority", priority);
+      form.set("requireHumanCodeReview", String(requireHumanCodeReview));
+      if (!isEdit) form.set("start", String(start));
+      for (const file of pendingFiles) form.append("attachments", file);
+
+      response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
+        method: isEdit ? "PATCH" : "POST",
+        body: form,
+      });
+    } else {
+      const body = {
+        repoId,
+        title,
+        description,
+        priority,
+        requireHumanCodeReview,
+        ...(isEdit ? {} : { start }),
+      };
+      response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
+        method: isEdit ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
 
     const payload = (await response.json().catch(() => ({}))) as {
       task?: { id: string };
@@ -118,6 +160,32 @@ export function NewTaskForm({
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     void submit(false);
+  }
+
+  function addFiles(fileList: FileList | null) {
+    if (!fileList) return;
+    setPendingFiles((prev) => [...prev, ...Array.from(fileList)]);
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  /** Removes an already-uploaded attachment without a full page reload. */
+  async function removeExistingAttachment(attachmentId: string) {
+    setAttachmentError(null);
+    setRemovingId(attachmentId);
+    const response = await fetch(`/api/tasks/${taskId}/attachments/${attachmentId}`, {
+      method: "DELETE",
+    });
+    setRemovingId(null);
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      setAttachmentError(payload.error ?? "Could not remove the attachment.");
+      return;
+    }
+    setExistingAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
   }
 
   return (
@@ -174,6 +242,72 @@ export function NewTaskForm({
                 required
               />
             </Field>
+
+            <Field
+              label="Attachments"
+              htmlFor="attachments"
+              hint="Images, PDF, JSON, or XML files that add context to the description. Select more than one at once."
+            >
+              <input
+                id="attachments"
+                type="file"
+                multiple
+                accept={ATTACHMENT_ACCEPT}
+                onChange={(event) => {
+                  addFiles(event.target.files);
+                  event.target.value = "";
+                }}
+                className="text-xs text-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-surface file:px-2 file:py-1 file:text-xs file:text-foreground"
+              />
+            </Field>
+
+            {existingAttachments.length > 0 ? (
+              <ul className="flex flex-col gap-1.5">
+                {existingAttachments.map((attachment) => (
+                  <li
+                    key={attachment.id}
+                    className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs"
+                  >
+                    <span className="truncate">
+                      {attachment.filename}{" "}
+                      <span className="text-muted">({formatBytes(attachment.sizeBytes)})</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void removeExistingAttachment(attachment.id)}
+                      disabled={removingId === attachment.id}
+                      className="shrink-0 text-danger hover:underline disabled:opacity-50"
+                    >
+                      {removingId === attachment.id ? "Removing…" : "Remove"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
+            {pendingFiles.length > 0 ? (
+              <ul className="flex flex-col gap-1.5">
+                {pendingFiles.map((file, index) => (
+                  <li
+                    key={`${file.name}-${index}`}
+                    className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs"
+                  >
+                    <span className="truncate">
+                      {file.name} <span className="text-muted">({formatBytes(file.size)})</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removePendingFile(index)}
+                      className="shrink-0 text-danger hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
+            {attachmentError ? <p className="text-xs text-danger">{attachmentError}</p> : null}
 
             <Field label="Priority" htmlFor="priority">
               <Select

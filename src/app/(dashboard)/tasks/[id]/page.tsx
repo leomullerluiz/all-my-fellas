@@ -7,7 +7,7 @@ import { RunStatusBadge, StageBadge, StatusBadge } from "@/components/stage-badg
 import { GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
+import { formatBytes, formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
 import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
 import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
@@ -15,6 +15,7 @@ import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import {
   getTaskWithRepo,
   listApprovals,
+  listAttachments,
   listLatestArtifacts,
   listStageRuns,
   totalCostForTask,
@@ -33,6 +34,7 @@ export default async function TaskDetailPage(props: {
   const runs = listStageRuns(id);
   const artifacts = listLatestArtifacts(id);
   const approvals = listApprovals(id);
+  const attachments = listAttachments(id);
   const cost = totalCostForTask(id);
   const slots = capacity();
   const notStarted = task.currentStage === "CREATED";
@@ -164,6 +166,34 @@ export default async function TaskDetailPage(props: {
               <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted">
                 {task.description}
               </p>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Attachments</CardTitle>
+            </CardHeader>
+            <CardBody>
+              {attachments.length === 0 ? (
+                <p className="text-xs text-muted">No files attached to this task.</p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {attachments.map((attachment) => (
+                    <li key={attachment.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate">{attachment.filename}</span>
+                      <span className="flex shrink-0 items-center gap-2 text-muted">
+                        <span>{formatBytes(attachment.sizeBytes)}</span>
+                        <a
+                          href={`/api/tasks/${task.id}/attachments/${attachment.id}`}
+                          className="text-accent underline-offset-2 hover:underline"
+                        >
+                          Download
+                        </a>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </CardBody>
           </Card>
 
