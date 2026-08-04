@@ -7,6 +7,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/field";
+import { capacityBlockedReason } from "@/lib/capacity";
 import { GATE_ALLOWED_DECISIONS, type Gate, type TaskStatus } from "@/server/pipeline/stages";
 
 /** Human gate approval plus the retry / cancel controls. */
@@ -164,10 +165,7 @@ export function TaskControls({
   const canCancel = !notStarted && ["running", "awaiting_gate"].includes(status);
   const canRetry = status === "failed";
 
-  const blockedReason = capacity.slotAvailable
-    ? null
-    : `Limit of ${capacity.limit} task${capacity.limit === 1 ? "" : "s"} in progress reached` +
-      (capacity.blocking[0] ? ` — ${capacity.blocking[0].title} is still running.` : ".");
+  const blockedReason = capacityBlockedReason(capacity);
 
   async function call(action: string, url: string, method = "POST") {
     setBusy(action);

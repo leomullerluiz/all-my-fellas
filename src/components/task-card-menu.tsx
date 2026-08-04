@@ -4,6 +4,7 @@ import { MoreVertical } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import { capacityBlockedReason } from "@/lib/capacity";
 import { cn } from "@/lib/utils";
 
 /**
@@ -115,10 +116,7 @@ export function TaskCardMenu({
     void call("delete", `/api/tasks/${taskId}`, "DELETE");
   }
 
-  const blockedReason = capacity.slotAvailable
-    ? null
-    : `Limit of ${capacity.limit} task${capacity.limit === 1 ? "" : "s"} in progress reached` +
-      (capacity.blocking[0] ? ` — ${capacity.blocking[0].title} is still running.` : ".");
+  const blockedReason = capacityBlockedReason(capacity);
 
   return (
     <div ref={containerRef} className="relative shrink-0">
