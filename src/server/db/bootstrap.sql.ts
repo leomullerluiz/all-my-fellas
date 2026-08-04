@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS artifacts_task_type_idx ON artifacts(task_id, type);
 
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
+
 CREATE TABLE IF NOT EXISTS agent_runs (
   id TEXT PRIMARY KEY,
   stage_run_id TEXT NOT NULL REFERENCES stage_runs(id) ON DELETE CASCADE,
