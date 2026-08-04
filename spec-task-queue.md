@@ -85,7 +85,7 @@ No new stage and no new task status.
 | Stage | Task status | Meaning | Menu shown |
 |---|---|---|---|
 | `CREATED` | `queued` | Written up, not started. **Newly reachable and persistent.** | Start · Edit · Delete |
-| `STAKEHOLDER_REFINEMENT` … `DELIVERY` | `running` / `awaiting_gate` | In flight, holding a slot | — |
+| `STAKEHOLDER_REFINEMENT` … `DELIVERY` | `running` (holding a slot) / `awaiting_gate` (slot released, see §8.4) | In flight | — |
 | terminal | `completed` / `rejected` / `failed` / `cancelled` | Finished, slot released | — |
 
 `statusForStage("CREATED")` already returns `queued`, so
@@ -323,8 +323,8 @@ started work that is not running.
 > A task may be **started** only if the number of **active** tasks is below
 > `MAX_PARALLEL_TASKS`.
 >
-> **Active** = started and not terminal, i.e. task status is `running` **or**
-> `awaiting_gate`.
+> **Active** = task status is `running`. A task `awaiting_gate` does not count
+> — see §8.4.
 
 Because only active tasks can own jobs, capping admission at N caps concurrent
 jobs at N. The worker never has to queue, so `running` is always truthful. The
@@ -337,7 +337,7 @@ now be unreachable, and a test should assert that.
 // src/server/pipeline/orchestrator.ts (sketch)
 export function startTaskWithAdmission(taskId: string): Transition {
   return db.transaction((tx) => {
-    const active = countActiveTasks(tx);              // status IN ('running','awaiting_gate')
+    const active = countActiveTasks(tx);              // status = 'running'
     if (active >= getSettings().maxParallelTasks) {
       throw new CapacityError(active, blockingTaskTitles(tx));
     }
@@ -355,33 +355,38 @@ concurrent requests both observe `active = 0` and both start.
 |---|---|
 | Start a `CREATED` task | **Takes** a slot — admission-checked |
 | Retry a `failed` task | **Takes** a slot — `failed` is terminal, so a retry is a re-admission and **must be admission-checked too** |
-| Task reaches a gate | **Keeps** its slot (see below) |
-| Gate approved / rejected | No change / releases on rejection |
-| Task reaches any terminal stage | **Releases** its slot |
+| Task reaches a gate | **Releases** its slot — see §8.4 |
+| Gate approved, or `request_changes` that resumes the task | **Takes** a slot — admission-checked, exactly like a start or retry |
+| Gate rejected, or `request_changes` that exhausts the rework budget | No slot to take — terminal, already released at the gate |
+| Task reaches any other terminal stage | **Releases** its slot |
 | Cancel a task | **Releases** its slot |
 
-The retry case is easy to miss: `retryTask` currently moves a terminal task back
-into the pipeline with no capacity check, which would break the invariant.
+The retry case is easy to miss: `retryTask` moves a terminal task back into the
+pipeline, which needs its own capacity check just like a fresh start.
 
-### 8.4 Gated tasks hold their slot — accepted cost
+### 8.4 Gated tasks do not hold a slot
 
-A task parked at `PLAN_GATE` or `STAKEHOLDER_GATE` is not executing, but it
-counts as active. With `MAX_PARALLEL_TASKS = 1`, a task waiting for your
-approval blocks you from starting anything else.
+A task parked at `PLAN_GATE`, `HUMAN_CODE_REVIEW` or `STAKEHOLDER_GATE` is not
+executing, and it does **not** count as active. With `MAX_PARALLEL_TASKS = 1`,
+a task waiting for your approval no longer blocks you from starting or
+retrying something else — you can work another task while a gate sits open.
 
-This is deliberate. Counting only `running` would break the invariant: approving
-a gate would resume a task while another one runs, the worker would serialise
-them, and the badge would lie again — exactly what this section exists to
-prevent. A gated task also still holds a workspace on disk, so "in flight" is
-the honest description.
+The naive version of this rule would break the invariant in §8.1: if gated
+tasks release their slot unconditionally, approving one can resume it into
+`running` while another task is *already* running, and the badge lies again.
+The fix is that **resuming** a gated task is itself admission-checked: `decideGate`
+computes the transition first, and only calls the same `assertSlotAvailable`
+guard that `startTask`/`retryTask` use when the outcome is a `run` transition
+(an `approve`, or a `request_changes` that has budget left). `reject` and an
+exhausted `request_changes` are terminal and need no check — they release
+whatever slot the task was going to need, they never take one.
 
-The cost is real, and the mitigation is to make the block self-explanatory
-rather than to weaken the rule: the disabled **Start** item names the task
-holding the slot and links to it, so the path forward ("go approve that gate")
-is one click away. Gates are the user's own turn — a blocked Start is a nudge to
-take it, not an obstacle.
-
-An escape hatch is listed in §12 in case this proves too strict in practice.
+This means approving a gate can itself now return a 409: if another task took
+the freed slot while this one waited for a decision, the approver sees the
+same `CapacityError` a blocked `start` would, naming the task to resolve
+first. The gate decision (and any request-changes comment) is not recorded in
+that case — the check and the resume share one transaction, so a refused
+approval leaves the task exactly as it was, free to retry once a slot opens.
 
 ### 8.5 Freeing a slot does not auto-start anything
 
@@ -515,11 +520,13 @@ Deletion logs nothing — the events cascade away with the task.
 - `createTask` alone leaves the task at `CREATED` with no job enqueued.
 - `startTask` moves `CREATED → STAKEHOLDER_REFINEMENT` and enqueues one job.
 - A second `startTask` on the same task throws `InvalidTransitionError`.
-- With `MAX_PARALLEL_TASKS = 1` and one active task, starting a second throws
-  `CapacityError` — parameterised over the blocking task being `running` **and**
-  `awaiting_gate`.
+- With `MAX_PARALLEL_TASKS = 1` and one `running` task, starting a second throws
+  `CapacityError`; the same setup with the first task `awaiting_gate` instead
+  does **not** throw.
 - Cancelling or completing the active task frees the slot.
 - `retryTask` on a `failed` task is refused when no slot is free.
+- `decideGate` resuming a task into `run` is refused when no slot is free, and
+  the gate decision is not recorded; `reject` never needs a free slot.
 - **Concurrency:** two `startTaskWithAdmission` calls racing for the last slot
   produce exactly one start and one `CapacityError`.
 - **Invariant:** with admission control on, `claimNextJob` never has to reject a
@@ -550,19 +557,21 @@ Deletion logs nothing — the events cascade away with the task.
 - Queue four tasks, start one, confirm the other three show Start disabled with
   the reason. Cancel the running one, confirm Start re-enables within one
   refresh tick.
-- Take a task to `PLAN_GATE`, confirm Start is still blocked, approve the gate,
-  confirm the task resumes and no second task ever showed a false running dot.
+- Take a task to `PLAN_GATE`, confirm Start is now **enabled** for another
+  `CREATED` card, and starting it lets both sit on the board at once — one
+  `awaiting_gate`, one genuinely `running`. Approve the gate; confirm it either
+  resumes (slot free) or is refused with a `CapacityError` naming the running
+  task (slot taken), and no second task ever showed a false running dot.
 
 ---
 
 ## 13. Open questions
 
-1. **Should gated tasks release their slot?** §8.4 says no, and explains why.
-   If waiting on approvals proves to block work too often in practice, the
-   escape hatch is a setting (`gatesHoldSlot`, default `true`). Turning it off
-   trades the truthful-badge invariant for throughput, and would require
-   reinstating a "waiting for a slot" indicator for the narrow overshoot case.
-   **Do not build the setting until the strict rule has been used for a while.**
+1. ~~**Should gated tasks release their slot?**~~ **Settled: yes**, unconditionally
+   — see §8.4. Waiting on approvals blocking all other work proved too costly
+   in practice, so there is no `gatesHoldSlot` toggle; releasing the slot is
+   simply the behavior now, kept honest by admission-checking the gate's
+   resume rather than by holding the slot.
 2. **Delete beyond `CREATED`.** Finished tasks accumulate on the board forever.
    Deleting them needs workspace cleanup (§7.2) and loses the cost history that
    feeds `/usage`. An **Archive** flag that hides a task from the board while
