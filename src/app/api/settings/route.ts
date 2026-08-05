@@ -1,4 +1,5 @@
 import { hasGithubToken, resolveProviderAuth } from "@/server/config/env";
+import { resolveAllLlmCredentials } from "@/server/config/llm-providers";
 import { conventionalEnvVars } from "@/server/git/credentials";
 import { PROVIDERS } from "@/server/git/providers";
 import { json, parseBody, serverError } from "@/server/http/respond";
@@ -12,6 +13,8 @@ export async function GET() {
     return json({
       settings: getSettings(),
       provider: { mode: auth.mode, label: auth.label },
+      /** Credential status for every selectable LLM provider, by provider id. */
+      llmCredentials: resolveAllLlmCredentials(),
       credentials: conventionalEnvVars(PROVIDERS),
       /** @deprecated Superseded by `credentials`; kept for one release. */
       githubTokenPresent: hasGithubToken(),

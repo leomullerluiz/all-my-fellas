@@ -1,14 +1,21 @@
 # Multi-Agent Delivery Pipeline - All My Fellas
 
-A local application that runs a software delivery pipeline staffed entirely by
-Claude agents. You describe a feature; the task walks a pipeline that simulates
-a full team — **Stakeholder → Product Owner → Architect → Developer → Code
+A local application that runs a software delivery pipeline staffed by LLM
+agents. You describe a feature; the task walks a pipeline that simulates a
+full team — **Stakeholder → Product Owner → Architect → Developer → Code
 Review → QA → Homologation** — and the result arrives as a branch and an open
 pull request (a *merge request*, on GitLab) against a real repository: GitHub,
 GitLab, Bitbucket, Azure DevOps, or any plain git server.
 
+Each role can run against **Claude** (Anthropic), **ChatGPT** (OpenAI), or
+**Gemini** (Google) — picked per role from Settings. Claude is the default for
+every role and needs no configuration change; see
+[`docs/llm-providers.md`](docs/llm-providers.md) for how to set up each one.
+
 Built with Next.js (UI + API), a separate Node worker process, SQLite, and the
-[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk).
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), [OpenAI
+SDK](https://github.com/openai/openai-node), and [Google Gen AI
+SDK](https://github.com/googleapis/js-genai).
 
 ---
 
@@ -97,7 +104,8 @@ hand.
 
 - Node.js ≥ 20.9
 - `git` on `PATH`
-- A Claude credential (see below)
+- A Claude credential (see below) — the default provider, no other LLM
+  credential is required
 - A token for whichever git host you use (see below)
 
 No provider CLI is needed. `gh`, `glab` and `az` used to be optional
@@ -128,6 +136,21 @@ the Agent SDK picks up whichever is present, and Settings shows the active mode.
 > sustained runs; switching to an API key is an environment-variable change.
 > This design assumes personal use with your own subscription — offering
 > "log in with Claude" to other people requires approval from Anthropic.
+
+### ChatGPT and Gemini credentials (optional)
+
+Claude is the default provider for every role; nothing below is required for
+an existing or a fresh install to keep working. Set these only if you want to
+switch a role to ChatGPT or Gemini from Settings.
+
+| Provider | Variable | Where to get it |
+|---|---|---|
+| ChatGPT (OpenAI) | `OPENAI_API_KEY` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| Gemini (Google) | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+
+Full setup steps, how to select a provider per role, and the known behavior
+differences between providers (cost reporting, tool-execution maturity, event
+granularity) are in [`docs/llm-providers.md`](docs/llm-providers.md).
 
 ### Repository credentials
 
@@ -283,10 +306,12 @@ src/
 │  ├─ http/             route-handler helpers
 │  ├─ jobs/             SQLite-backed job queue
 │  ├─ pipeline/         state machine, stage execution, artifacts, guardrails
+│  │  └─ providers/     one module per LLM backend: claude, chatgpt, gemini
 │  ├─ settings/         runtime settings store
 │  ├─ tasks/            data access
 │  └─ validation/       Zod schemas shared by API and forms
 └─ worker/index.ts      the long-running orchestrator
+docs/                   llm-providers.md — per-provider setup
 prompts/                role system prompts
 workspaces/             one clone per task (gitignored)
 data/                   SQLite file (gitignored)
@@ -327,7 +352,7 @@ which is what makes two writer processes on one file safe.
 | `POST /api/tasks/:id/cancel` | Cancel |
 | `GET / POST /api/repos` | List connections, or register one (provider detected, access verified) |
 | `GET / DELETE /api/repos/:id` | Connection detail with a live access check; delete if unused |
-| `GET / PATCH /api/settings` | Models per role, turn ceilings, limits |
+| `GET / PATCH /api/settings` | Provider and model per role, turn ceilings, limits |
 | `GET /api/usage?days=&taskId=` | Token and cost aggregates |
 
 ## Configuration
@@ -337,8 +362,10 @@ worker re-reads them at the start of every job.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | — | Subscription credential |
-| `ANTHROPIC_API_KEY` | — | Pay-per-use alternative |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | Claude subscription credential (default provider) |
+| `ANTHROPIC_API_KEY` | — | Claude pay-per-use alternative |
+| `OPENAI_API_KEY` | — | ChatGPT credential; only needed if a role's provider is set to ChatGPT |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | — | Gemini credential; only needed if a role's provider is set to Gemini |
 | `GITHUB_TOKEN` | — | GitHub PAT, worker only |
 | `GITLAB_TOKEN` | — | GitLab token, worker only |
 | `BITBUCKET_TOKEN` | — | Bitbucket Cloud token, worker only |
@@ -374,5 +401,10 @@ clone URL, a log line or a browser link.
 - Auto-detection covers the public hosts only, and of the self-hosted editions
   only GitLab has an API integration. GitHub Enterprise Server, Bitbucket Data
   Center and Azure DevOps Server run as generic connections.
-- Cost figures come from the Agent SDK's own `total_cost_usd`; in subscription
-  mode they are an estimate of equivalent API spend, not a bill.
+- Cost figures for Claude come from the Agent SDK's own `total_cost_usd`; in
+  subscription mode they are an estimate of equivalent API spend, not a bill.
+  For ChatGPT and Gemini, cost is computed locally from a static price table
+  (`src/server/pipeline/providers/pricing.ts`) since neither API reports a
+  dollar figure — treat it as an estimate, not a bill, and expect it to drift
+  as providers reprice. See [`docs/llm-providers.md`](docs/llm-providers.md)
+  for the full list of behavior differences between providers.

@@ -127,6 +127,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
   const settings = getSettings();
   const model = settings.models[run.stage];
   const maxTurns = run.maxTurns ?? settings.maxTurns[run.stage];
+  const provider = settings.providers[run.stage];
 
   markStageRunStatus(stageRunId, "running");
   appendEvent(task.id, stageRunId, {
@@ -134,6 +135,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     stage: run.stage,
     attempt: run.attempt,
     model,
+    provider,
   });
 
   // The workspace is created lazily on the first stage that needs it, and
@@ -189,7 +191,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
 
   let result;
   try {
-    result = await runStage({
+    result = await runStage(provider, {
       role,
       model,
       maxTurns,

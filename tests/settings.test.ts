@@ -30,6 +30,7 @@ afterAll(async () => {
 beforeEach(() => {
   store.updateSettings({
     theme: "system",
+    providers: store.defaultSettings().providers,
     quotaLimits: {
       subscription: { limitUsd: null, cadence: "daily" },
       api_key: { limitUsd: null, cadence: "daily" },
@@ -84,6 +85,74 @@ describe("theme setting", () => {
 
     store.updateSettings({ theme: "dark" });
     expect(store.getSettings().theme).toBe("dark");
+  });
+});
+
+describe("LLM provider per role (S3)", () => {
+  it("defaults every stage to claude", () => {
+    const defaults = store.defaultSettings();
+    for (const stage of Object.keys(defaults.providers) as Array<keyof typeof defaults.providers>) {
+      expect(defaults.providers[stage]).toBe("claude");
+    }
+  });
+
+  it("GET exposes providers alongside models and maxTurns", async () => {
+    const response = await settingsRoute.GET();
+    const payload = (await response.json()) as {
+      settings: { providers: Record<string, string>; models: Record<string, string> };
+    };
+    expect(payload.settings.providers.PO_REFINEMENT).toBe("claude");
+    expect(payload.settings.models.PO_REFINEMENT).toBeTruthy();
+  });
+
+  it("PATCH updates one stage's provider without touching the others", async () => {
+    const response = await patch({ providers: { PO_REFINEMENT: "chatgpt" } });
+    expect(response.status).toBe(200);
+
+    const settingsNow = store.getSettings();
+    expect(settingsNow.providers.PO_REFINEMENT).toBe("chatgpt");
+    expect(settingsNow.providers.DEVELOPMENT).toBe("claude");
+  });
+
+  it("PATCH rejects an unknown provider id", async () => {
+    const response = await patch({ providers: { PO_REFINEMENT: "bard" } });
+    expect(response.status).toBe(400);
+  });
+
+  it("PATCH accepts a provider selection with no credential configured", async () => {
+    const originalKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    try {
+      const response = await patch({ providers: { PO_REFINEMENT: "chatgpt" } });
+      expect(response.status).toBe(200);
+
+      const getResponse = await settingsRoute.GET();
+      const payload = (await getResponse.json()) as {
+        llmCredentials: Record<string, { mode: string }>;
+      };
+      expect(payload.llmCredentials.chatgpt.mode).toBe("missing");
+    } finally {
+      if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalKey;
+    }
+  });
+
+  it("defaults a settings row stored before `providers` existed to claude on every stage", async () => {
+    const { db } = await import("@/server/db/client");
+    const { settings: settingsTable } = await import("@/server/db/schema");
+
+    // Simulate a pre-migration row: a stored blob with no `providers` key at all.
+    const legacyBlob = JSON.stringify({ theme: "dark", models: { PO_REFINEMENT: "claude-sonnet-5" } });
+    db.insert(settingsTable)
+      .values({ key: "app", value: legacyBlob })
+      .onConflictDoUpdate({ target: settingsTable.key, set: { value: legacyBlob } })
+      .run();
+
+    const effective = store.getSettings();
+    for (const stage of Object.keys(effective.providers) as Array<keyof typeof effective.providers>) {
+      expect(effective.providers[stage]).toBe("claude");
+    }
   });
 });
 
