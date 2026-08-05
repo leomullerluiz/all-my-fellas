@@ -392,6 +392,49 @@ describe("decideGate is admission controlled on resume", () => {
     expect(statuses.filter((s) => s === "running")).toHaveLength(1);
     expect(statuses.filter((s) => s === "gate_queued")).toHaveLength(1);
   });
+
+  it("rejects a second decision on a gate that is already queued, instead of recording or overriding it", () => {
+    const gated = create("Gated");
+    orchestrator.startTask(gated.id);
+    service.setTaskStage(gated.id, "PLAN_GATE");
+
+    const running = create("Running");
+    orchestrator.startTask(running.id);
+
+    const first = orchestrator.decideGate({
+      taskId: gated.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+    expect(first.queued).toBe(true);
+
+    // A stale tab, a double click, or a retried request re-submitting a
+    // decision for the same gate — including a *different*, conflicting one
+    // — must not be accepted while the first decision is still pending.
+    expect(() =>
+      orchestrator.decideGate({
+        taskId: gated.id,
+        gate: "PLAN_GATE",
+        decision: "reject",
+      }),
+    ).toThrow(orchestrator.GateError);
+
+    // Neither the recorded approval nor the queued status changed.
+    expect(orchestrator.approvalHistory(gated.id)).toHaveLength(1);
+    expect(orchestrator.approvalHistory(gated.id)[0]).toMatchObject({
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+    const after = service.getTask(gated.id)!;
+    expect(after.status).toBe("gate_queued");
+    expect(after.currentStage).toBe("PLAN_GATE");
+
+    // The originally queued decision still resumes normally once the slot
+    // frees, unaffected by the rejected duplicate.
+    orchestrator.cancelTask(running.id);
+    const resumed = service.getTask(gated.id)!;
+    expect(resumed.status).toBe("running");
+  });
 });
 
 describe("editing and deleting a not-started task", () => {

@@ -486,7 +486,14 @@ export class StaleQueueEntryError extends Error {
  * Records a human gate decision and resumes the pipeline.
  *
  * Rejects when the task is not parked on that gate, so a stale browser tab
- * cannot approve a stage twice.
+ * cannot approve a stage twice. This includes a task already `gate_queued`
+ * on that same gate: `currentStage` deliberately stays put while a decision
+ * is queued (so `resumeGatedTask` has something to replay), so `currentStage
+ * !== input.gate` alone can no longer tell a fresh decision apart from a
+ * duplicate one — a double click, a second tab, or a retried request landing
+ * after the first decision was already accepted and queued must not record a
+ * second, possibly conflicting `approvals` row or silently override the
+ * pending one.
  *
  * The decision itself — the `approvals` row, the `gate_decided` event, and
  * any `request_changes` review artifact — is always persisted, regardless of
@@ -511,6 +518,11 @@ export function decideGate(input: {
     if (task.currentStage !== input.gate) {
       throw new GateError(
         `Task is at ${task.currentStage}, not waiting on ${input.gate}.`,
+      );
+    }
+    if (task.status === "gate_queued") {
+      throw new GateError(
+        `Task already has a queued decision on ${input.gate}; it is waiting for a slot to resume.`,
       );
     }
     if (!GATE_ALLOWED_DECISIONS[input.gate].includes(input.decision)) {
