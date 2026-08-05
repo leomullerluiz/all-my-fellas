@@ -481,6 +481,23 @@ export function totalCostForTask(taskId: string): number {
   return row?.total ?? 0;
 }
 
+/**
+ * Total cost across every task for stage runs that started at or after
+ * `sinceMs`, falling back to `created_at` for a run that never reached
+ * `running` (so a pending/failed-to-start run is not silently excluded from
+ * "today's spend").
+ */
+export function costSince(sinceMs: number): number {
+  const row = db
+    .select({
+      total: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
+    })
+    .from(stageRuns)
+    .where(sql`coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) >= ${sinceMs}`)
+    .get();
+  return row?.total ?? 0;
+}
+
 export type TaskCostSummary = {
   taskId: string;
   title: string;
