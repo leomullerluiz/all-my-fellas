@@ -23,5 +23,5 @@ const badgeVariants = cva(
 export type BadgeProps = HTMLAttributes<HTMLSpanElement> & VariantProps<typeof badgeVariants>;
 
 export function Badge({ className, tone, ...props }: BadgeProps) {
-  return <span className={cn(badgeVariants({ tone }), className)} {...props} />;
+  return <span data-slot="badge" className={cn(badgeVariants({ tone }), className)} {...props} />;
 }

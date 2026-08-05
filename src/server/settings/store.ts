@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 
-import { resolveLimits, resolveModels } from "../config/env";
+import { type QuotaConfig, resolveLimits, resolveModels, resolveQuota } from "../config/env";
 import { db } from "../db/client";
 import { settings } from "../db/schema";
 import type { AgentStage } from "../pipeline/stages";
@@ -36,6 +36,12 @@ export type AppSettings = {
   workspaceRetentionDays: number;
   /** Dark/Light/System palette for the dashboard UI. */
   theme: Theme;
+  /**
+   * User-entered usage quota per Claude auth mode, shown by the dashboard's
+   * usage bar. There is no API to read the real Pro/Max or pay-per-use quota,
+   * so this is always a configured value, never a fetched one.
+   */
+  quotaLimits: QuotaConfig;
 };
 
 export function defaultSettings(): AppSettings {
@@ -70,6 +76,7 @@ export function defaultSettings(): AppSettings {
     },
     workspaceRetentionDays: limits.workspaceRetentionDays,
     theme: "system",
+    quotaLimits: resolveQuota(),
   };
 }
 
@@ -92,16 +99,22 @@ export function getSettings(): AppSettings {
     ...stored,
     models: { ...base.models, ...(stored.models ?? {}) },
     maxTurns: { ...base.maxTurns, ...(stored.maxTurns ?? {}) },
+    quotaLimits: {
+      ...base.quotaLimits,
+      ...(stored.quotaLimits ?? {}),
+    },
   };
 }
 
 /**
- * A partial update. The two record fields are themselves partial so a caller
- * can change one role's model without resending the whole map.
+ * A partial update. The record fields are themselves partial so a caller can
+ * change one role's model (or one auth mode's quota) without resending the
+ * whole map.
  */
-export type SettingsPatch = Partial<Omit<AppSettings, "models" | "maxTurns">> & {
+export type SettingsPatch = Partial<Omit<AppSettings, "models" | "maxTurns" | "quotaLimits">> & {
   models?: Partial<Record<AgentStage, string>>;
   maxTurns?: Partial<Record<AgentStage, number>>;
+  quotaLimits?: Partial<QuotaConfig>;
 };
 
 /** Merges `patch` into the stored overrides and returns the new effective settings. */
@@ -112,6 +125,10 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
     ...patch,
     models: { ...current.models, ...(patch.models ?? {}) },
     maxTurns: { ...current.maxTurns, ...(patch.maxTurns ?? {}) },
+    quotaLimits: {
+      ...current.quotaLimits,
+      ...(patch.quotaLimits ?? {}),
+    },
   };
 
   db.insert(settings)

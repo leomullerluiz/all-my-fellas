@@ -38,7 +38,7 @@ export default async function TaskDetailPage(props: {
   const cost = totalCostForTask(id);
   const slots = capacity();
   const notStarted = task.currentStage === "CREATED";
-  const live = ["running", "awaiting_gate"].includes(task.status);
+  const live = ["running", "awaiting_gate", "gate_queued"].includes(task.status);
 
   // Only read the workspace when a diff can actually exist; on the gate the
   // summary tells the reviewer how big the review is before they open it.
@@ -119,7 +119,11 @@ export default async function TaskDetailPage(props: {
         ) : null}
       </header>
 
-      {isGate(task.currentStage) ? (
+      {/* Gated on `status`, not `isGate(currentStage)`: a `gate_queued` task
+          is still sitting on the gate stage, but its decision has already
+          been recorded — re-offering the form would invite a second, stale
+          decision. */}
+      {task.status === "awaiting_gate" && isGate(task.currentStage) ? (
         <GatePanel taskId={task.id} gate={task.currentStage} diffSummary={diffSummary} />
       ) : null}
 

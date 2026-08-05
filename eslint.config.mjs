@@ -17,6 +17,11 @@ const eslintConfig = defineConfig([
     "workspaces/**",
     // The landing page is a separate app; it lints itself with its own config.
     "site/**",
+    // Vendored verbatim from the Animate UI registry so it stays diffable
+    // against upstream. Lint it on their terms, not ours.
+    "src/components/animate-ui/**",
+    "src/hooks/**",
+    "src/lib/get-strict-context.tsx",
   ]),
 ]);
 
