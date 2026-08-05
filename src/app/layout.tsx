@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
 import { MotionProvider } from "@/components/motion-provider";
+import { ToastProvider } from "@/components/toast-provider";
 import { getSettings } from "@/server/settings/store";
 
 import "./globals.css";
@@ -38,6 +39,9 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <MotionProvider>{children}</MotionProvider>
+        {/* Outside `MotionProvider`: react-toastify animates with its own CSS,
+            so it has nothing to read from `MotionConfig`. */}
+        <ToastProvider />
       </body>
     </html>
   );

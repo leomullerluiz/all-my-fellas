@@ -2,8 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "react-toastify";
 
-import { ErrorMessage } from "@/components/error-message";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
@@ -21,8 +21,6 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   function setModel(stage: AgentStage, value: string) {
     setSettings((current) => ({
@@ -54,8 +52,6 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setNotice(null);
-    setError(null);
 
     const response = await fetch("/api/settings", {
       method: "PATCH",
@@ -67,11 +63,11 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
 
     if (!response.ok) {
       const payload = (await response.json()) as { error?: string };
-      setError(payload.error ?? "Could not save the settings.");
+      toast.error(payload.error ?? "Could not save the settings.");
       return;
     }
 
-    setNotice("Saved. The worker picks the new values up on its next job.");
+    toast.success("Saved. The worker picks the new values up on its next job.");
     router.refresh();
   }
 
@@ -292,8 +288,6 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
         <Button type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save settings"}
         </Button>
-        {notice ? <span className="text-xs text-success">{notice}</span> : null}
-        <ErrorMessage message={error} />
       </div>
     </form>
   );
