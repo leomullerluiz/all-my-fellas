@@ -76,6 +76,11 @@ export async function POST(request: Request) {
     if (unknownDependency) {
       return badRequest(`Prerequisite task ${unknownDependency} does not exist.`);
     }
+    const completedDependency = fields.dependsOn.find((id) => getTask(id)?.status === "completed");
+    if (completedDependency) {
+      const dependency = getTask(completedDependency)!;
+      return badRequest(`"${dependency.title}" is already completed and cannot be a prerequisite.`);
+    }
 
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;

@@ -107,6 +107,23 @@ export function listTasks(filter?: { status?: string }): TaskWithRepo[] {
   return rows.map((row) => ({ ...row.task, repo: row.repo }));
 }
 
+/** A task offered as a selectable prerequisite in the "Depends on" picker. */
+export type DependencyOption = { id: string; title: string; repoName: string };
+
+/**
+ * Candidates for the "Depends on" picker: every task except `excludeId`
+ * (the task being edited cannot depend on itself) and every task already
+ * `completed` (a finished task is not a meaningful prerequisite).
+ *
+ * Relies on `tasks.status` staying in lockstep with `currentStage` — enforced
+ * by convention in `setTaskStage`/`statusForStage`, not by a constraint.
+ */
+export function listDependencyOptions(excludeId?: string): DependencyOption[] {
+  return listTasks()
+    .filter((task) => task.status !== "completed" && task.id !== excludeId)
+    .map((task) => ({ id: task.id, title: task.title, repoName: task.repo.name }));
+}
+
 /** A file ready to persist: already read into memory and validated. */
 export type NewAttachment = {
   filename: string;

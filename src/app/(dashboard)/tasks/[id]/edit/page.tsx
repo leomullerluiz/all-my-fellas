@@ -1,7 +1,13 @@
 import { notFound, redirect } from "next/navigation";
 
 import { NewTaskForm } from "@/components/new-task-form";
-import { getTask, listAttachments, listDependencies, listRepos, listTasks } from "@/server/tasks/service";
+import {
+  getTask,
+  listAttachments,
+  listDependencies,
+  listDependencyOptions,
+  listRepos,
+} from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
 
@@ -24,10 +30,9 @@ export default async function EditTaskPage(props: { params: Promise<{ id: string
     defaultBranch: repo.defaultBranch,
   }));
 
-  // A task cannot depend on itself, so it is excluded from its own options.
-  const dependencyOptions = listTasks()
-    .filter((other) => other.id !== task.id)
-    .map((other) => ({ id: other.id, title: other.title, repoName: other.repo.name }));
+  // Excludes the task itself and any already-completed task; see
+  // `listDependencyOptions`.
+  const dependencyOptions = listDependencyOptions(task.id);
 
   return (
     <NewTaskForm
