@@ -1,5 +1,6 @@
 import { and, asc, eq, gt, sql } from "drizzle-orm";
 
+import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { events } from "../db/schema";
 import type { Stage } from "../pipeline/stages";
@@ -16,7 +17,7 @@ export type PipelineEvent =
   | { type: "task_started" }
   /** Field names only — the current values already live on the task row. */
   | { type: "task_edited"; fields: string[] }
-  | { type: "stage_started"; stage: Stage; attempt: number; model?: string }
+  | { type: "stage_started"; stage: Stage; attempt: number; model?: string; provider?: LlmProviderId }
   | { type: "stage_finished"; stage: Stage; attempt: number; costUsd: number }
   | { type: "stage_failed"; stage: Stage; attempt: number; error: string }
   | { type: "agent_text"; text: string }

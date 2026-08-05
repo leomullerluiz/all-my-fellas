@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { resolveLimits, resolveModels } from "../config/env";
+import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { settings } from "../db/schema";
 import type { AgentStage } from "../pipeline/stages";
@@ -21,6 +22,12 @@ export type Theme = (typeof THEMES)[number];
 export type AppSettings = {
   /** Model id per agent stage. */
   models: Record<AgentStage, string>;
+  /**
+   * LLM backend per agent stage. Defaults to `"claude"` everywhere, which is
+   * what keeps an install that has never touched this field behaving exactly
+   * as it did before ChatGPT/Gemini support existed.
+   */
+  providers: Record<AgentStage, LlmProviderId>;
   maxParallelTasks: number;
   /**
    * Maximum rework cycles, shared by every reviewer that can send work back to
@@ -50,6 +57,15 @@ export function defaultSettings(): AppSettings {
       CODE_REVIEW: models.default,
       QA: models.default,
       PO_HOMOLOGATION: models.light,
+    },
+    providers: {
+      STAKEHOLDER_REFINEMENT: "claude",
+      PO_REFINEMENT: "claude",
+      ARCHITECTURE: "claude",
+      DEVELOPMENT: "claude",
+      CODE_REVIEW: "claude",
+      QA: "claude",
+      PO_HOMOLOGATION: "claude",
     },
     maxParallelTasks: limits.maxParallelTasks,
     reworkMaxCycles: limits.reworkMaxCycles,
@@ -91,16 +107,21 @@ export function getSettings(): AppSettings {
     ...base,
     ...stored,
     models: { ...base.models, ...(stored.models ?? {}) },
+    // A settings row saved before `providers` existed has no such key, so the
+    // merge falls all the way back to `base` (every stage on `"claude"`) —
+    // this is the one line backward compatibility hinges on.
+    providers: { ...base.providers, ...(stored.providers ?? {}) },
     maxTurns: { ...base.maxTurns, ...(stored.maxTurns ?? {}) },
   };
 }
 
 /**
- * A partial update. The two record fields are themselves partial so a caller
- * can change one role's model without resending the whole map.
+ * A partial update. The record fields are themselves partial so a caller can
+ * change one role's model/provider without resending the whole map.
  */
-export type SettingsPatch = Partial<Omit<AppSettings, "models" | "maxTurns">> & {
+export type SettingsPatch = Partial<Omit<AppSettings, "models" | "providers" | "maxTurns">> & {
   models?: Partial<Record<AgentStage, string>>;
+  providers?: Partial<Record<AgentStage, LlmProviderId>>;
   maxTurns?: Partial<Record<AgentStage, number>>;
 };
 
@@ -111,6 +132,7 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
     ...current,
     ...patch,
     models: { ...current.models, ...(patch.models ?? {}) },
+    providers: { ...current.providers, ...(patch.providers ?? {}) },
     maxTurns: { ...current.maxTurns, ...(patch.maxTurns ?? {}) },
   };
 

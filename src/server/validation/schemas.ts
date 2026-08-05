@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { LLM_PROVIDER_IDS } from "../config/llm-providers";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
 import { AGENT_STAGES, GATES, GATE_DECISIONS, PRIORITIES, TASK_STATUSES } from "../pipeline/stages";
@@ -140,9 +141,11 @@ export type CreateRepoInput = z.infer<typeof createRepoSchema>;
 
 const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.string().trim().min(1));
 const turnsMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.number().int().min(1).max(500));
+const providersMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.enum(LLM_PROVIDER_IDS));
 
 export const updateSettingsSchema = z.object({
   models: modelMapSchema.optional(),
+  providers: providersMapSchema.optional(),
   maxTurns: turnsMapSchema.optional(),
   maxParallelTasks: z.number().int().min(1).max(8).optional(),
   qaMaxCycles: z.number().int().min(0).max(10).optional(),
