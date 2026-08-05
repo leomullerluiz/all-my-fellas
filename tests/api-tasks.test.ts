@@ -157,6 +157,23 @@ describe("POST /api/tasks", () => {
     expect(service.getTask(payload.task.id)!.currentStage).toBe("CREATED");
   });
 
+  it("returns 409 but still creates the task when start: true and a dependency is incomplete", async () => {
+    const prereq = seed({ title: "Prereq" });
+
+    const response = await post({ ...VALID_BODY, repoId, start: true, dependsOn: [prereq.id] });
+    expect(response.status).toBe(409);
+
+    const payload = (await response.json()) as {
+      task: { id: string };
+      started: boolean;
+      error: string;
+    };
+    expect(payload.started).toBe(false);
+    expect(payload.error).toContain("Prereq");
+    // The work is not lost: the task exists at CREATED and can be started later.
+    expect(service.getTask(payload.task.id)!.currentStage).toBe("CREATED");
+  });
+
   it("starts with 201 even while another task is awaiting_gate", async () => {
     gated("Awaiting approval");
 
