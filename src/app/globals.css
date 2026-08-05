@@ -95,6 +95,11 @@
   --color-muted-foreground: var(--muted);
   --color-input: var(--border);
   --color-ring: var(--accent);
+  /* shadcn's `calendar`/`popover` components (task-filter-bar.tsx) assume a
+     `primary` token distinct from `accent`; this app only has one accent
+     color, so both alias onto it. */
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-foreground);
 }
 
 body {
