@@ -63,6 +63,11 @@ export function isMultipartRequest(request: Request): boolean {
  * with `getAll`, while every other field is coerced ("true"/"false" strings
  * to booleans, since HTML form values are always strings) and validated the
  * same way a JSON body would be.
+ *
+ * A key that appears more than once (e.g. `dependsOn` appended once per
+ * selected id) is accumulated into an array rather than overwritten by the
+ * last value — a key that appears exactly once stays a plain scalar, so
+ * every existing single-value field is unaffected.
  */
 export async function parseMultipartFields<T>(
   request: Request,
@@ -81,7 +86,13 @@ export async function parseMultipartFields<T>(
   const raw: Record<string, unknown> = {};
   for (const [key, value] of formData.entries()) {
     if (value instanceof File) continue;
-    raw[key] = value === "true" ? true : value === "false" ? false : value;
+    const coerced = value === "true" ? true : value === "false" ? false : value;
+    if (key in raw) {
+      const existing = raw[key];
+      raw[key] = Array.isArray(existing) ? [...existing, coerced] : [existing, coerced];
+    } else {
+      raw[key] = coerced;
+    }
   }
 
   const result = schema.safeParse(raw);

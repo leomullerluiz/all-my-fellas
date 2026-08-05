@@ -14,6 +14,7 @@ import {
 } from "@/components/animate-ui/components/radix/dropdown-menu";
 import { ErrorMessage } from "@/components/error-message";
 import { capacityBlockedReason } from "@/lib/capacity";
+import { dependencyBlockedReason } from "@/lib/dependencies";
 import { cn } from "@/lib/utils";
 import type { TaskStatus } from "@/server/pipeline/stages";
 
@@ -39,6 +40,9 @@ export type CardMenuCapacity = {
   blocking: Array<{ id: string; title: string }>;
 };
 
+/** A prerequisite task, only as much as the block-reason copy needs. */
+export type CardMenuDependency = { id: string; title: string; status: string };
+
 type Action = "start" | "cancel" | "delete" | null;
 
 const dropdownMenuItemClassName = cn(
@@ -52,12 +56,15 @@ export function TaskCardMenu({
   taskTitle,
   status,
   capacity,
+  dependsOn = [],
 }: {
   taskId: string;
   taskTitle: string;
   /** Only `on_queue` changes this menu — it adds a Cancel item (S3). */
   status: TaskStatus;
   capacity: CardMenuCapacity;
+  /** This task's prerequisites, so Start can be disabled independently of capacity. */
+  dependsOn?: CardMenuDependency[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -85,7 +92,7 @@ export function TaskCardMenu({
   }
 
   function onStart() {
-    if (pending !== null || !capacity.slotAvailable) return;
+    if (pending !== null || startDisabled) return;
     void call("start", `/api/tasks/${taskId}/start`, "POST");
   }
 
@@ -103,7 +110,12 @@ export function TaskCardMenu({
     void call("delete", `/api/tasks/${taskId}`, "DELETE");
   }
 
-  const blockedReason = capacityBlockedReason(capacity);
+  const dependencyReason = dependencyBlockedReason(dependsOn);
+  const capacityReason = capacityBlockedReason(capacity);
+  // The dependency gate is hard and unconditional, so it takes precedence
+  // when both are true — see `stories.md` S2.
+  const blockedReason = dependencyReason ?? capacityReason;
+  const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
 
   return (
     <div className="relative shrink-0">
@@ -124,7 +136,7 @@ export function TaskCardMenu({
           className="w-52 border-border bg-surface-raised p-1 text-xs"
         >
           <DropdownMenuItem
-            disabled={!capacity.slotAvailable}
+            disabled={startDisabled}
             title={blockedReason ?? undefined}
             onSelect={(event) => {
               event.preventDefault();
@@ -132,7 +144,7 @@ export function TaskCardMenu({
             }}
             className={cn(
               dropdownMenuItemClassName,
-              capacity.slotAvailable ? "hover:bg-border/40" : "cursor-not-allowed",
+              startDisabled ? "cursor-not-allowed text-muted/60" : "hover:bg-border/40",
             )}
           >
             {pending === "start" ? "Starting…" : "Start"}

@@ -77,6 +77,44 @@ describe("TaskCardMenu start item vs. capacity", () => {
   });
 });
 
+describe("TaskCardMenu start item vs. dependencies", () => {
+  it("disables Start and names the incomplete prerequisite, distinct from a capacity message", async () => {
+    render(
+      <TaskCardMenu
+        taskId="task_8"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ id: "task_prereq", title: "Design the schema", status: "queued" }]}
+      />,
+    );
+
+    await openMenu();
+
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText(/Design the schema/)).toBeTruthy();
+    expect(screen.queryByText(/Limit of/)).toBeNull();
+  });
+
+  it("enables Start once every prerequisite is completed", async () => {
+    render(
+      <TaskCardMenu
+        taskId="task_9"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ id: "task_prereq", title: "Design the schema", status: "completed" }]}
+      />,
+    );
+
+    await openMenu();
+
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.hasAttribute("aria-disabled")).toBe(false);
+  });
+});
+
 describe("TaskCardMenu Edit item", () => {
   it("links to the task's edit page", async () => {
     render(

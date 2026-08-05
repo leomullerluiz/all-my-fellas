@@ -5,6 +5,7 @@ import { appendEvent } from "../events/store";
 import { cancelPendingJobs, enqueueJob } from "../jobs/queue";
 import { getSettings } from "../settings/store";
 import {
+  type DependencySummary,
   type EditableTaskFields,
   type NewAttachment,
   activeTasks,
@@ -14,8 +15,10 @@ import {
   deleteTask,
   gateQueuedTasks,
   getTask,
+  incompleteDependencies,
   insertAttachments,
   listApprovals,
+  listDependencies,
   listStageRuns,
   queuedTasks,
   recordApproval,
@@ -198,16 +201,50 @@ export function capacity(): {
 }
 
 /**
+ * Raised when starting a task would leave one of its prerequisites unmet.
+ *
+ * Independent of {@link CapacityError}: this fires even when a slot is free,
+ * and a slot-free, dependency-clear task can still be refused by capacity —
+ * see `stories.md`'s S2 acceptance criterion on the two gates' independence.
+ */
+export class DependencyError extends Error {
+  constructor(readonly incomplete: DependencySummary[]) {
+    const names = incomplete.map((task) => `"${task.title}"`).join(", ");
+    super(
+      `Waiting on prerequisite task${incomplete.length === 1 ? "" : "s"}` +
+        (names ? `: ${names}.` : "."),
+    );
+    this.name = "DependencyError";
+  }
+}
+
+/**
+ * Throws unless every prerequisite of `taskId` has reached `COMPLETED`.
+ *
+ * "Complete" means `currentStage === "COMPLETED"` — `queued`, `on_queue`,
+ * `running`, `awaiting_gate`, `failed`, `rejected` and `cancelled` all keep
+ * the dependent blocked, with no override.
+ */
+function assertPrerequisitesMet(taskId: string): void {
+  const incomplete = incompleteDependencies(taskId);
+  if (incomplete.length > 0) throw new DependencyError(incomplete);
+}
+
+/**
  * Enters the pipeline, subject to admission control.
  *
  * The capacity check and the transition share one transaction so the invariant
- * "at most `MAX_PARALLEL_TASKS` tasks are in flight" cannot be raced.
+ * "at most `MAX_PARALLEL_TASKS` tasks are in flight" cannot be raced. The
+ * dependency check runs first: it is a hard, unconditional gate that must
+ * win even when a slot happens to be free.
  *
+ * @throws {DependencyError} when a prerequisite has not reached `COMPLETED`.
  * @throws {CapacityError} when no slot is free.
  * @throws {InvalidTransitionError} when the task is not at `CREATED`.
  */
 export function startTask(taskId: string): Transition {
   return db.transaction(() => {
+    assertPrerequisitesMet(taskId);
     assertSlotAvailable();
     const transition = advanceTask(taskId, { kind: "start" });
     appendEvent(taskId, null, { type: "task_started" });
@@ -249,12 +286,14 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
 }
 
 /**
- * Starts or resumes the highest-priority queued task, if a slot is free.
+ * Starts or resumes the highest-priority eligible queued task, if a slot is
+ * free.
  *
  * Two kinds of task wait in the queue: `on_queue` (a `CREATED` task that lost
- * the capacity race on start — `startTasksBatch`) and `gate_queued` (a gated
- * task whose approval already resolved to `run` but lost the capacity race
- * on resume — `decideGate`). Both are ranked together through the same
+ * the capacity race on start, or whose prerequisites were unmet —
+ * `startTasksBatch`) and `gate_queued` (a gated task whose approval already
+ * resolved to `run` but lost the capacity race on resume — `decideGate`).
+ * Both are ranked together through the same
  * {@link sortByPriorityThenDifficulty}, first ordered oldest-queued-first so
  * equal-priority tasks resume in the order they were queued (§8.5 / the
  * approval-queue spec's FIFO requirement), then dispatched to {@link startTask}
@@ -266,14 +305,18 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
  * most one task, since one transition frees at most one slot; each
  * subsequent slot-freeing transition calls this again.
  *
- * `CapacityError` (no free slot after all), `InvalidTransitionError` /
- * `TaskNotFoundError` (an `on_queue` task was cancelled/deleted/started
- * elsewhere in the same instant), and `StaleQueueEntryError` (the
- * `gate_queued` equivalent) are expected races and are swallowed: the caller
- * here is always a transition that already succeeded, and the next
- * slot-freeing event will retry against the current queue lists. Anything
- * else is an unanticipated failure that would otherwise strand the task in
- * the queue with zero signal, so it is logged rather than swallowed.
+ * A `CapacityError` stops the loop outright — every remaining candidate would
+ * fail the same admission check, so trying them is wasted work. The
+ * per-candidate races — `DependencyError`, `InvalidTransitionError` (the task
+ * was started elsewhere in the same instant), `TaskNotFoundError`
+ * (cancelled/deleted meanwhile) and `StaleQueueEntryError` (the `gate_queued`
+ * equivalent) — say nothing about the rest of the queue, so the loop moves on
+ * to the next candidate. Skipping a `DependencyError` candidate is also the
+ * mechanism behind "dependencies are considered while a task sits in the On
+ * Queue column" (`stories.md` S2): a free slot goes to the next eligible task
+ * rather than idling. Anything else is an unanticipated failure that would
+ * otherwise strand a task in the queue with zero signal, so it is logged, and
+ * the loop still moves on rather than leaving the rest of the queue stalled.
  *
  * MUST NOT be called from inside an open `db.transaction()` — it calls
  * {@link startTask} or {@link resumeGatedTask}, both of which open their own.
@@ -283,25 +326,30 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
  * just happen" would silently miss it.
  */
 export function promoteQueue(): void {
-  const candidates = [...queuedTasks(), ...gateQueuedTasks()].sort(
-    (a, b) => a.updatedAt - b.updatedAt,
+  const candidates = sortByPriorityThenDifficulty(
+    [...queuedTasks(), ...gateQueuedTasks()].sort((a, b) => a.updatedAt - b.updatedAt),
   );
-  const [next] = sortByPriorityThenDifficulty(candidates);
-  if (!next) return;
-  try {
-    if (next.status === "gate_queued") {
-      resumeGatedTask(next.id);
-    } else {
-      startTask(next.id);
-    }
-  } catch (error) {
-    const expected =
-      error instanceof CapacityError ||
-      error instanceof InvalidTransitionError ||
-      error instanceof TaskNotFoundError ||
-      error instanceof StaleQueueEntryError;
-    if (!expected) {
-      console.error("[promoteQueue]", error instanceof Error ? error.message : error);
+
+  for (const candidate of candidates) {
+    try {
+      if (candidate.status === "gate_queued") {
+        resumeGatedTask(candidate.id);
+      } else {
+        startTask(candidate.id);
+      }
+      return;
+    } catch (error) {
+      if (error instanceof CapacityError) return;
+
+      const expected =
+        error instanceof DependencyError ||
+        error instanceof InvalidTransitionError ||
+        error instanceof TaskNotFoundError ||
+        error instanceof StaleQueueEntryError;
+      if (!expected) {
+        console.error("[promoteQueue]", error instanceof Error ? error.message : error);
+      }
+      // Try the next candidate rather than giving up on the whole queue.
     }
   }
 }
@@ -365,6 +413,20 @@ export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
         });
         continue;
       }
+      if (error instanceof DependencyError) {
+        // Parked at `on_queue` exactly like a capacity refusal: `promoteQueue`
+        // is what re-checks this task once its prerequisites (or a slot)
+        // change, rather than requiring a second manual start.
+        updateTask(task.id, { status: "on_queue" });
+        results.push({
+          taskId: task.id,
+          title: task.title,
+          started: false,
+          queued: true,
+          reason: error.message,
+        });
+        continue;
+      }
       const reason =
         error instanceof InvalidTransitionError
           ? "This task has already been started."
@@ -400,16 +462,30 @@ export function editTask(
     );
   }
 
-  const changed = (Object.keys(fields) as Array<keyof EditableTaskFields>).filter(
-    (key) => task[key] !== fields[key],
+  const { dependsOn, ...taskFields } = fields;
+  const changed = (Object.keys(taskFields) as Array<keyof typeof taskFields>).filter(
+    (key) => task[key] !== taskFields[key],
   );
+
+  // `dependsOn` is not a column on `tasks`, so it cannot go through the same
+  // `task[key] !== fields[key]` comparison as the rest of the fields.
+  const currentDependsOn = listDependencies(taskId)
+    .map((dependency) => dependency.id)
+    .sort();
+  const nextDependsOn = [...dependsOn].sort();
+  const dependenciesChanged =
+    currentDependsOn.length !== nextDependsOn.length ||
+    currentDependsOn.some((id, index) => id !== nextDependsOn[index]);
 
   updateTaskFields(taskId, fields);
   if (newAttachments.length > 0) {
     insertAttachments(taskId, newAttachments);
   }
-  if (changed.length > 0 || newAttachments.length > 0) {
-    appendEvent(taskId, null, { type: "task_edited", fields: changed });
+  if (changed.length > 0 || dependenciesChanged || newAttachments.length > 0) {
+    appendEvent(taskId, null, {
+      type: "task_edited",
+      fields: dependenciesChanged ? [...changed, "dependsOn"] : changed,
+    });
   }
 }
 

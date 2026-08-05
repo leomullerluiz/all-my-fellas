@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/field";
 import { capacityBlockedReason } from "@/lib/capacity";
+import { dependencyBlockedReason } from "@/lib/dependencies";
 import { GATE_ALLOWED_DECISIONS, type Gate, type TaskStatus } from "@/server/pipeline/stages";
 
 /** Human gate approval plus the retry / cancel controls. */
@@ -181,12 +182,15 @@ export function TaskControls({
   status,
   notStarted,
   capacity,
+  dependsOn = [],
 }: {
   taskId: string;
   taskTitle: string;
   status: TaskStatus;
   notStarted: boolean;
   capacity: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
+  /** This task's prerequisites, so Start can be disabled independently of capacity. */
+  dependsOn?: Array<{ title: string; status: string }>;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -194,7 +198,11 @@ export function TaskControls({
   const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
   const canRetry = status === "failed";
 
-  const blockedReason = capacityBlockedReason(capacity);
+  const dependencyReason = dependencyBlockedReason(dependsOn);
+  // The dependency gate is hard and unconditional, so it takes precedence
+  // when both are true — see `stories.md` S2.
+  const blockedReason = dependencyReason ?? capacityBlockedReason(capacity);
+  const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
 
   async function call(action: string, url: string, method = "POST") {
     setBusy(action);
@@ -227,7 +235,7 @@ export function TaskControls({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          disabled={busy !== null || !capacity.slotAvailable}
+          disabled={busy !== null || startDisabled}
           title={blockedReason ?? undefined}
           onClick={() => call("start", `/api/tasks/${taskId}/start`)}
         >
