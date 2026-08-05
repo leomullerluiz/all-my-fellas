@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { TaskSelectCheckbox } from "@/components/batch-start";
+import { PulseDot } from "@/components/pulse-dot";
 import { TaskCardMenu, type CardMenuCapacity } from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
 import { formatCost } from "@/lib/utils";
@@ -57,8 +58,8 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
             />
           </div>
         ) : isRunning ? (
-          <span
-            className="mt-1 inline-block size-2 shrink-0 rounded-full bg-accent animate-pipeline-pulse"
+          <PulseDot
+            className="mt-1"
             title="An agent is running"
             aria-label="An agent is running"
           />
