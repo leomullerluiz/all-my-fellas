@@ -36,6 +36,7 @@ const STATUS_TONES: Record<TaskStatus, NonNullable<BadgeProps["tone"]>> = {
   on_queue: "neutral",
   running: "accent",
   awaiting_gate: "warning",
+  gate_queued: "neutral",
   completed: "success",
   rejected: "danger",
   failed: "danger",
@@ -51,6 +52,10 @@ const STATUS_LABELS: Record<TaskStatus, string> = {
   on_queue: "On queue",
   running: "Running",
   awaiting_gate: "Awaiting approval",
+  // Distinct from both `awaiting_gate` (the decision has already been made)
+  // and `running` (execution has not resumed yet) — the approval queue's
+  // equivalent of `on_queue`, but for a gate resume instead of a start.
+  gate_queued: "Approved · waiting for a slot",
   completed: "Completed",
   rejected: "Rejected",
   failed: "Failed",

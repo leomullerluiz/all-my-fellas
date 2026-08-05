@@ -145,11 +145,12 @@ export function GatePanel({
  * cancelling from `CREATED` produces a terminal `CANCELLED` row that can never
  * be started, edited or removed — see `spec-task-queue.md` §10.
  *
- * The one exception is `on_queue`: a task parked there by "Start selected"
- * has already committed to running, so — per S3 — it also gets Cancel, the
- * same as an in-flight task. Removing it that way is what lets the rest of
- * the queue keep advancing (`promoteQueue` re-reads the `on_queue` list on
- * the next slot-freeing transition, unaffected by the removal).
+ * The exceptions are `on_queue` and `gate_queued`: a task parked at either
+ * has already committed to running, so — per S3, and the approval-queue
+ * equivalent for gate resumes — it also gets Cancel, the same as an
+ * in-flight task. Removing it that way is what lets the rest of the queue
+ * keep advancing (`promoteQueue` re-reads both queue lists on the next
+ * slot-freeing transition, unaffected by the removal).
  */
 export function TaskControls({
   taskId,
@@ -168,7 +169,7 @@ export function TaskControls({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canCancel = ["running", "awaiting_gate", "on_queue"].includes(status);
+  const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
   const canRetry = status === "failed";
 
   const blockedReason = capacityBlockedReason(capacity);
@@ -262,6 +263,11 @@ export function TaskControls({
         </Button>
       ) : null}
       {error ? <span className="text-xs text-danger">{error}</span> : null}
+      {/* The approval already succeeded — this is not an error state, just
+          an explanation of why the task hasn't resumed yet (S2). */}
+      {!error && status === "gate_queued" && blockedReason ? (
+        <span className="text-xs text-muted">{blockedReason}</span>
+      ) : null}
     </div>
   );
 }
