@@ -81,6 +81,20 @@
   --color-info: var(--info);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /*
+   * Aliases for the shadcn/animate-ui token names that vendored components
+   * under src/components/animate-ui/** assume (bg-popover, text-destructive,
+   * etc). These map onto the existing palette above instead of introducing a
+   * second, competing set of color variables — keep this block in sync with
+   * whatever tokens newly-added shadcn/animate-ui components reference.
+   */
+  --color-popover: var(--surface-raised);
+  --color-popover-foreground: var(--foreground);
+  --color-destructive: var(--danger);
+  --color-muted-foreground: var(--muted);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
 }
 
 body {
