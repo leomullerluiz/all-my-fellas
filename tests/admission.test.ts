@@ -269,7 +269,7 @@ describe("retry is admission controlled", () => {
 });
 
 describe("decideGate is admission controlled on resume", () => {
-  it("throws CapacityError when approving would resume into a taken slot, leaving the gate untouched", () => {
+  it("queues instead of throwing when approving would resume into a taken slot", () => {
     const gated = create("Gated");
     orchestrator.startTask(gated.id);
     service.setTaskStage(gated.id, "PLAN_GATE");
@@ -278,15 +278,27 @@ describe("decideGate is admission controlled on resume", () => {
     const running = create("Running");
     orchestrator.startTask(running.id);
 
-    expect(() =>
-      orchestrator.decideGate({ taskId: gated.id, gate: "PLAN_GATE", decision: "approve" }),
-    ).toThrow(orchestrator.CapacityError);
+    const result = orchestrator.decideGate({
+      taskId: gated.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
 
-    // No partial state: the gate decision itself must not be recorded either,
-    // since the check and the resume share one transaction.
-    expect(service.getTask(gated.id)!.currentStage).toBe("PLAN_GATE");
-    expect(service.getTask(gated.id)!.status).toBe("awaiting_gate");
-    expect(orchestrator.approvalHistory(gated.id)).toHaveLength(0);
+    // The decision itself is recorded exactly as it would be with a free
+    // slot; only its effect is deferred.
+    expect(result.queued).toBe(true);
+    expect(result.transition).toMatchObject({ type: "run" });
+    expect(orchestrator.approvalHistory(gated.id)).toHaveLength(1);
+    expect(orchestrator.approvalHistory(gated.id)[0]).toMatchObject({
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+
+    // Distinguishable "waiting for a slot" status, not the unchanged
+    // `awaiting_gate` — the decision has already been made.
+    const after = service.getTask(gated.id)!;
+    expect(after.status).toBe("gate_queued");
+    expect(after.currentStage).toBe("PLAN_GATE");
   });
 
   it("succeeds once the slot frees", () => {
@@ -298,9 +310,12 @@ describe("decideGate is admission controlled on resume", () => {
     orchestrator.startTask(running.id);
     orchestrator.cancelTask(running.id);
 
-    expect(() =>
-      orchestrator.decideGate({ taskId: gated.id, gate: "PLAN_GATE", decision: "approve" }),
-    ).not.toThrow();
+    const result = orchestrator.decideGate({
+      taskId: gated.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+    expect(result.queued).toBe(false);
     expect(service.getTask(gated.id)!.status).toBe("running");
   });
 
@@ -312,10 +327,70 @@ describe("decideGate is admission controlled on resume", () => {
     const running = create("Running");
     orchestrator.startTask(running.id);
 
-    expect(() =>
-      orchestrator.decideGate({ taskId: gated.id, gate: "PLAN_GATE", decision: "reject" }),
-    ).not.toThrow();
+    const result = orchestrator.decideGate({
+      taskId: gated.id,
+      gate: "PLAN_GATE",
+      decision: "reject",
+    });
+    expect(result.queued).toBe(false);
     expect(service.getTask(gated.id)!.status).toBe("rejected");
+  });
+
+  it("resumes automatically once the blocking task finishes", () => {
+    const gated = create("Gated");
+    orchestrator.startTask(gated.id);
+    service.setTaskStage(gated.id, "PLAN_GATE");
+
+    const running = create("Running");
+    orchestrator.startTask(running.id);
+
+    const result = orchestrator.decideGate({
+      taskId: gated.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+    expect(result.queued).toBe(true);
+    expect(service.getTask(gated.id)!.status).toBe("gate_queued");
+
+    // The blocking task reaches a terminal stage, freeing the slot the
+    // queued approval is waiting on.
+    orchestrator.cancelTask(running.id);
+
+    const resumed = service.getTask(gated.id)!;
+    expect(resumed.status).toBe("running");
+    expect(resumed.currentStage).toBe("DEVELOPMENT");
+  });
+
+  it("resolves exactly one of two racing gate approvals into the last slot", () => {
+    const first = create("First gated");
+    const second = create("Second gated");
+    orchestrator.startTask(first.id);
+    service.setTaskStage(first.id, "PLAN_GATE");
+    service.setTaskStage(second.id, "PLAN_GATE");
+
+    // Both gates hold no slot, so both approvals compute a `run` transition
+    // against the same, single free slot. `decideGate` is fully synchronous
+    // (see the risk note in `techplan.md`), so calling it twice in a row here
+    // exercises the same non-interleaved guarantee two concurrent HTTP
+    // requests would rely on.
+    const firstResult = orchestrator.decideGate({
+      taskId: first.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+    const secondResult = orchestrator.decideGate({
+      taskId: second.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+    });
+
+    const results = [firstResult, secondResult];
+    expect(results.filter((r) => !r.queued)).toHaveLength(1);
+    expect(results.filter((r) => r.queued)).toHaveLength(1);
+
+    const statuses = [service.getTask(first.id)!.status, service.getTask(second.id)!.status];
+    expect(statuses.filter((s) => s === "running")).toHaveLength(1);
+    expect(statuses.filter((s) => s === "gate_queued")).toHaveLength(1);
   });
 });
 
