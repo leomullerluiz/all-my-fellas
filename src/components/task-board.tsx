@@ -3,12 +3,14 @@
 import Link from "next/link";
 
 import { TaskSelectCheckbox } from "@/components/batch-start";
+import { PulseDot } from "@/components/pulse-dot";
 import {
   TaskCardMenu,
   type CardMenuCapacity,
   type CardMenuDependency,
 } from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
+import { capacityBlockedReason } from "@/lib/capacity";
 import { formatCost } from "@/lib/utils";
 import { BOARD_STAGES, STAGE_LABELS, type Stage } from "@/server/pipeline/stages";
 import type { TaskWithRepo } from "@/server/tasks/service";
@@ -34,7 +36,12 @@ const PRIORITY_TONE = {
 function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapacity }) {
   const isRunning = task.status === "running";
   const needsAttention = task.status === "awaiting_gate";
+  const isGateQueued = task.status === "gate_queued";
   const notStarted = task.currentStage === "CREATED";
+  // On-queue tasks share `currentStage === "CREATED"` with freshly-created
+  // ones (see the board-splitting comment below), but they're already queued
+  // and shouldn't be selectable for a batch start.
+  const showCheckbox = notStarted && task.status !== "on_queue";
 
   return (
     <div className="rounded-md border border-border bg-surface-raised p-2.5 transition-colors focus-within:border-accent/60 hover:border-accent/60">
@@ -52,7 +59,9 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
 
         {notStarted ? (
           <div className="flex shrink-0 items-start gap-1">
-            <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
+            {showCheckbox ? (
+              <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
+            ) : null}
             <TaskCardMenu
               taskId={task.id}
               taskTitle={task.title}
@@ -62,8 +71,8 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
             />
           </div>
         ) : isRunning ? (
-          <span
-            className="mt-1 inline-block size-2 shrink-0 rounded-full bg-accent animate-pipeline-pulse"
+          <PulseDot
+            className="mt-1"
             title="An agent is running"
             aria-label="An agent is running"
           />
@@ -72,6 +81,12 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-warning"
             title="Waiting for your approval"
             aria-label="Waiting for your approval"
+          />
+        ) : isGateQueued ? (
+          <span
+            className="mt-1 inline-block size-2 shrink-0 rounded-full bg-muted"
+            title={capacityBlockedReason(capacity) ?? "Approved, waiting for a slot to free up"}
+            aria-label="Approved, waiting for a slot to free up"
           />
         ) : null}
       </div>

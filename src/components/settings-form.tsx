@@ -2,20 +2,25 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "react-toastify";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, Input } from "@/components/ui/field";
+import { Field, Input, Select } from "@/components/ui/field";
+import type { Cadence } from "@/server/config/env";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
 import type { AppSettings } from "@/server/settings/store";
+
+const QUOTA_MODES = [
+  { mode: "subscription" as const, label: "Claude subscription" },
+  { mode: "api_key" as const, label: "Anthropic API key" },
+];
 
 /** Editable runtime settings: models, turn ceilings and pipeline limits. */
 export function SettingsForm({ initial }: { initial: AppSettings }) {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   function setModel(stage: AgentStage, value: string) {
     setSettings((current) => ({
@@ -31,11 +36,22 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
     }));
   }
 
+  function setQuota(
+    mode: "subscription" | "api_key",
+    patch: Partial<{ limitUsd: number | null; cadence: Cadence }>,
+  ) {
+    setSettings((current) => ({
+      ...current,
+      quotaLimits: {
+        ...current.quotaLimits,
+        [mode]: { ...current.quotaLimits[mode], ...patch },
+      },
+    }));
+  }
+
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setNotice(null);
-    setError(null);
 
     const response = await fetch("/api/settings", {
       method: "PATCH",
@@ -47,11 +63,11 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
 
     if (!response.ok) {
       const payload = (await response.json()) as { error?: string };
-      setError(payload.error ?? "Could not save the settings.");
+      toast.error(payload.error ?? "Could not save the settings.");
       return;
     }
 
-    setNotice("Saved. The worker picks the new values up on its next job.");
+    toast.success("Saved. The worker picks the new values up on its next job.");
     router.refresh();
   }
 
@@ -218,12 +234,60 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
         </CardBody>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage quota</CardTitle>
+          <CardDescription>
+            Neither Claude subscription nor API-key quota is exposed by an API the pipeline can
+            read, so this is a limit you type in yourself. The dashboard usage bar compares
+            actual spend against it and warns as usage approaches it. Leave the limit blank to
+            turn the quota display off for that mode.
+          </CardDescription>
+        </CardHeader>
+        <CardBody>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {QUOTA_MODES.map(({ mode, label }) => (
+              <div key={mode} className="flex flex-col gap-3 rounded-md border border-border p-3">
+                <span className="text-xs font-medium">{label}</span>
+                <Field
+                  label="Limit (USD)"
+                  htmlFor={`quota-limit-${mode}`}
+                  hint="Blank disables the quota display for this mode."
+                >
+                  <Input
+                    id={`quota-limit-${mode}`}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={settings.quotaLimits[mode].limitUsd ?? ""}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      setQuota(mode, { limitUsd: raw === "" ? null : Number(raw) });
+                    }}
+                  />
+                </Field>
+                <Field label="Resets" htmlFor={`quota-cadence-${mode}`}>
+                  <Select
+                    id={`quota-cadence-${mode}`}
+                    value={settings.quotaLimits[mode].cadence}
+                    onChange={(event) =>
+                      setQuota(mode, { cadence: event.target.value as Cadence })
+                    }
+                  >
+                    <option value="daily">Daily</option>
+                    <option value="hourly">Hourly</option>
+                  </Select>
+                </Field>
+              </div>
+            ))}
+          </div>
+        </CardBody>
+      </Card>
+
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save settings"}
         </Button>
-        {notice ? <span className="text-xs text-success">{notice}</span> : null}
-        {error ? <span className="text-xs text-danger">{error}</span> : null}
       </div>
     </form>
   );

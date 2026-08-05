@@ -28,7 +28,13 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  store.updateSettings({ theme: "system" });
+  store.updateSettings({
+    theme: "system",
+    quotaLimits: {
+      subscription: { limitUsd: null, cadence: "daily" },
+      api_key: { limitUsd: null, cadence: "daily" },
+    },
+  });
 });
 
 function patch(body: unknown) {
@@ -78,5 +84,54 @@ describe("theme setting", () => {
 
     store.updateSettings({ theme: "dark" });
     expect(store.getSettings().theme).toBe("dark");
+  });
+});
+
+describe("quota limits setting", () => {
+  it("defaults to unset limits with a daily cadence", () => {
+    const defaults = store.defaultSettings().quotaLimits;
+    expect(defaults.subscription).toEqual({ limitUsd: null, cadence: "daily" });
+    expect(defaults.api_key).toEqual({ limitUsd: null, cadence: "daily" });
+  });
+
+  it("PATCH persists one mode's limit without dropping the other's", async () => {
+    const response = await patch({
+      quotaLimits: { subscription: { limitUsd: 25, cadence: "hourly" } },
+    });
+    expect(response.status).toBe(200);
+
+    const settings = store.getSettings();
+    expect(settings.quotaLimits.subscription).toEqual({ limitUsd: 25, cadence: "hourly" });
+    expect(settings.quotaLimits.api_key).toEqual({ limitUsd: null, cadence: "daily" });
+  });
+
+  it("PATCH accepts a null limitUsd to clear a configured quota", async () => {
+    await patch({ quotaLimits: { api_key: { limitUsd: 10, cadence: "daily" } } });
+    const response = await patch({
+      quotaLimits: { api_key: { limitUsd: null, cadence: "daily" } },
+    });
+    expect(response.status).toBe(200);
+    expect(store.getSettings().quotaLimits.api_key.limitUsd).toBeNull();
+  });
+
+  it("PATCH rejects an invalid cadence and leaves the stored value untouched", async () => {
+    await patch({ quotaLimits: { subscription: { limitUsd: 5, cadence: "daily" } } });
+
+    const response = await patch({
+      quotaLimits: { subscription: { limitUsd: 5, cadence: "weekly" } },
+    });
+    expect(response.status).toBe(400);
+
+    expect(store.getSettings().quotaLimits.subscription).toEqual({
+      limitUsd: 5,
+      cadence: "daily",
+    });
+  });
+
+  it("PATCH rejects a negative limit", async () => {
+    const response = await patch({
+      quotaLimits: { subscription: { limitUsd: -1, cadence: "daily" } },
+    });
+    expect(response.status).toBe(400);
   });
 });

@@ -148,4 +148,18 @@ describe("TaskBoard column split", () => {
     expect(countIn("Created")).toBe("2");
     expect(countIn("On Queue")).toBe("1");
   });
+
+  it("shows no checkbox on an on_queue card, but keeps its 'On Queue' count and actions menu", () => {
+    renderBoard([
+      makeTask({ id: "task_queued", title: "Waiting its turn", status: "on_queue" }),
+    ]);
+
+    const onQueueColumn = column("On Queue");
+    expect(
+      within(onQueueColumn).queryByRole("checkbox", { name: /Waiting its turn/ }),
+    ).toBeNull();
+    expect(within(onQueueColumn).getByRole("link", { name: "Waiting its turn" })).toBeTruthy();
+    expect(within(onQueueColumn).getByRole("button", { name: "Task actions" })).toBeTruthy();
+    expect(countIn("On Queue")).toBe("1");
+  });
 });

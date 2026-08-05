@@ -86,10 +86,31 @@ describe("checkbox visibility", () => {
         currentStage: "COMPLETED",
         status: "completed",
       }),
+      makeTask({
+        id: "task_on_queue",
+        title: "Parked",
+        currentStage: "CREATED",
+        status: "on_queue",
+      }),
     ]);
 
     expect(screen.getAllByRole("checkbox")).toHaveLength(1);
     expect(screen.getByRole("checkbox", { name: /Not started/ })).toBeTruthy();
+  });
+
+  it("shows no checkbox on an on_queue card but keeps its title link and actions menu", () => {
+    renderBoard([
+      makeTask({
+        id: "task_on_queue",
+        title: "Parked",
+        currentStage: "CREATED",
+        status: "on_queue",
+      }),
+    ]);
+
+    expect(screen.queryByRole("checkbox", { name: /Parked/ })).toBeNull();
+    expect(screen.getByRole("link", { name: "Parked" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Task actions" })).toBeTruthy();
   });
 });
 
@@ -256,5 +277,39 @@ describe("selection reset when the board reloads", () => {
 
     expect(screen.getByRole("checkbox", { name: /Task A/ })).toHaveProperty("checked", true);
     expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+  });
+
+  it("hides then reshows the checkbox as status flips between on_queue and queued", () => {
+    const queued = makeTask({ id: "task_a", title: "Task A", status: "queued" });
+
+    const { rerender } = render(
+      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+        <BatchStartButton />
+        <TaskBoard tasks={[queued]} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.getByRole("checkbox", { name: /Task A/ })).toBeTruthy();
+
+    // Loses the capacity race and gets parked on queue: same stage, new status.
+    const onQueue = makeTask({ id: "task_a", title: "Task A", status: "on_queue" });
+    rerender(
+      <BatchSelectionProvider boardVersion="task_a:CREATED:on_queue">
+        <BatchStartButton />
+        <TaskBoard tasks={[onQueue]} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.queryByRole("checkbox", { name: /Task A/ })).toBeNull();
+
+    // The orchestrator promotes it back off the queue: checkbox reappears.
+    rerender(
+      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+        <BatchStartButton />
+        <TaskBoard tasks={[queued]} capacity={CAPACITY} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.getByRole("checkbox", { name: /Task A/ })).toBeTruthy();
   });
 });

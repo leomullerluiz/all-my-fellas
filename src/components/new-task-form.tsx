@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import { toast } from "react-toastify";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,7 +77,6 @@ export function NewTaskForm({
   );
   const [dependsOn, setDependsOn] = useState<string[]>(initial?.dependsOn ?? []);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
 
   // Files picked but not yet uploaded (create and edit).
@@ -86,7 +86,6 @@ export function NewTaskForm({
     initial?.attachments ?? [],
   );
   const [removingId, setRemovingId] = useState<string | null>(null);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const selectedRepo = repos.find((repo) => repo.id === repoId);
   const isEdit = mode === "edit";
@@ -98,7 +97,6 @@ export function NewTaskForm({
 
   async function submit(start: boolean) {
     setErrors({});
-    setSubmitError(null);
     setSubmitting(start ? "start" : "queue");
 
     let response: Response;
@@ -146,7 +144,7 @@ export function NewTaskForm({
 
     if (!response.ok) {
       setErrors(payload.details ?? {});
-      setSubmitError(
+      toast.error(
         payload.error ?? (isEdit ? "Could not save the task." : "Could not create the task."),
       );
       // A capacity refusal on "Start now" still created the task, so send the
@@ -160,6 +158,7 @@ export function NewTaskForm({
       return;
     }
 
+    toast.success(isEdit ? "Task saved." : start ? "Task created." : "Task queued.");
     const destination =
       isEdit || start ? `/tasks/${taskId ?? payload.task!.id}` : "/";
     startTransition(() => {
@@ -188,7 +187,6 @@ export function NewTaskForm({
 
   /** Removes an already-uploaded attachment without a full page reload. */
   async function removeExistingAttachment(attachmentId: string) {
-    setAttachmentError(null);
     setRemovingId(attachmentId);
     const response = await fetch(`/api/tasks/${taskId}/attachments/${attachmentId}`, {
       method: "DELETE",
@@ -197,9 +195,10 @@ export function NewTaskForm({
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      setAttachmentError(payload.error ?? "Could not remove the attachment.");
+      toast.error(payload.error ?? "Could not remove the attachment.");
       return;
     }
+    toast.success("Attachment removed.");
     setExistingAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
   }
 
@@ -322,8 +321,6 @@ export function NewTaskForm({
               </ul>
             ) : null}
 
-            {attachmentError ? <p className="text-xs text-danger">{attachmentError}</p> : null}
-
             <Field label="Priority" htmlFor="priority">
               <Select
                 id="priority"
@@ -386,8 +383,6 @@ export function NewTaskForm({
                 </span>
               </span>
             </label>
-
-            {submitError ? <p className="text-xs text-danger">{submitError}</p> : null}
 
             {isEdit ? (
               <div className="flex flex-wrap items-center gap-2">

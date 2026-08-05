@@ -73,16 +73,25 @@ export function isGate(stage: Stage): stage is Gate {
 
 /**
  * Coarse task status shown on the board, derived from the current stage —
- * except `on_queue`, which is set explicitly by `startTasksBatch` on a
- * `CREATED` task that lost the capacity race. `currentStage` stays `CREATED`
- * for those, so `statusForStage` never produces `on_queue` itself; only
- * `orchestrator.ts`'s batch/promotion path does.
+ * except `on_queue` and `gate_queued`, which are set explicitly by the
+ * orchestrator rather than derived from `currentStage`:
+ *
+ * - `on_queue`: set by `startTasksBatch` on a `CREATED` task that lost the
+ *   capacity race. `currentStage` stays `CREATED`.
+ * - `gate_queued`: set by `decideGate` on a gated task whose approved
+ *   decision resolves to `run` but no slot is free. `currentStage` stays the
+ *   gate it was already on — the decision is recorded, but its effect is
+ *   deferred until `promoteQueue` resumes it.
+ *
+ * `statusForStage` never produces either itself; only `orchestrator.ts`'s
+ * batch/decision/promotion paths do.
  */
 export const TASK_STATUSES = [
   "queued",
   "on_queue",
   "running",
   "awaiting_gate",
+  "gate_queued",
   "completed",
   "rejected",
   "failed",

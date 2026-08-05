@@ -88,3 +88,27 @@ describe("TaskControls start button vs. dependencies", () => {
     expect(startButton.hasAttribute("disabled")).toBe(false);
   });
 });
+
+describe("TaskControls gate_queued status (S2)", () => {
+  it("shows the queued reason and Cancel, with no error state", () => {
+    render(
+      <TaskControls
+        taskId="task_5"
+        taskTitle="Approved task"
+        status="gate_queued"
+        notStarted={false}
+        capacity={{
+          slotAvailable: false,
+          limit: 1,
+          blocking: [{ title: "Running task" }],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Cancel task" })).toBeTruthy();
+    expect(screen.getByText(/Limit of 1 task in progress reached/)).toBeTruthy();
+    expect(screen.getByText(/Running task is still running\./)).toBeTruthy();
+    // Not an error state: the decision was accepted, not refused.
+    expect(screen.queryByText("Could not cancel the task.")).toBeNull();
+  });
+});
