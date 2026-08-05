@@ -92,8 +92,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (unknownDependency) {
       return badRequest(`Prerequisite task ${unknownDependency} does not exist.`);
     }
-    if (wouldCreateCycle(id, fields.dependsOn)) {
-      return badRequest("That dependency would create a circular chain.");
+    // Identify which selected id closes the loop, so the 400 names the cycle
+    // rather than just reporting that one exists somewhere in the set.
+    const cycleCause = fields.dependsOn.find((dependencyId) => wouldCreateCycle(id, [dependencyId]));
+    if (cycleCause) {
+      const task = getTask(id)!;
+      const dependency = getTask(cycleCause)!;
+      return badRequest(
+        `"${dependency.title}" already depends on "${task.title}" (directly or transitively) — ` +
+          `making it a prerequisite here would create a circular chain.`,
+      );
     }
 
     const validatedAttachments = await validateAttachmentFiles(files);

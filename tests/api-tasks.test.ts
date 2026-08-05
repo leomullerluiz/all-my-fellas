@@ -392,14 +392,38 @@ describe("PATCH /api/tasks/:id", () => {
     expect(response.status).toBe(400);
   });
 
-  it("rejects a direct two-hop cycle", async () => {
-    const a = seed({ title: "A" });
-    const b = seed({ title: "B" });
+  it("rejects a direct two-hop cycle, naming the tasks in the cycle", async () => {
+    const a = seed({ title: "Task Alpha" });
+    const b = seed({ title: "Task Beta" });
     // b depends on a
-    await patch(b.id, { ...VALID_BODY, title: "B", repoId, dependsOn: [a.id] });
+    await patch(b.id, { ...VALID_BODY, title: "Task Beta", repoId, dependsOn: [a.id] });
 
     // now try to make a depend on b, closing the cycle
-    const response = await patch(a.id, { ...VALID_BODY, title: "A", repoId, dependsOn: [b.id] });
+    const response = await patch(a.id, {
+      ...VALID_BODY,
+      title: "Task Alpha",
+      repoId,
+      dependsOn: [b.id],
+    });
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("Task Alpha");
+    expect(payload.error).toContain("Task Beta");
+  });
+
+  it("rejects a transitive three-hop cycle (A -> B -> C -> A)", async () => {
+    const a = seed({ title: "Task Alpha" });
+    const b = seed({ title: "Task Beta" });
+    const c = seed({ title: "Task Gamma" });
+    await patch(b.id, { ...VALID_BODY, title: "Task Beta", repoId, dependsOn: [a.id] });
+    await patch(c.id, { ...VALID_BODY, title: "Task Gamma", repoId, dependsOn: [b.id] });
+
+    const response = await patch(a.id, {
+      ...VALID_BODY,
+      title: "Task Alpha",
+      repoId,
+      dependsOn: [c.id],
+    });
     expect(response.status).toBe(400);
   });
 
