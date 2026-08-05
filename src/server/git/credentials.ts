@@ -19,6 +19,9 @@ import type { GitCredential, ProviderId, RepositoryProvider } from "./providers/
 const RESERVED_ENV_VARS = new Set([
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
   "DATABASE_URL",
   "WORKSPACES_DIR",
   "PATH",

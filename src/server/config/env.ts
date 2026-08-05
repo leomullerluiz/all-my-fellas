@@ -68,6 +68,36 @@ export function resolveProviderAuth(): ProviderAuth {
   return { mode: "missing", label: "No Claude credential configured" };
 }
 
+/**
+ * Decides which OpenAI credential the ChatGPT provider will pick up.
+ *
+ * Mirrors {@link resolveProviderAuth}'s shape so the Settings screen and the
+ * `assertProviderConfigured` family can treat every LLM provider uniformly.
+ */
+export function resolveOpenAiAuth(): ProviderAuth {
+  if (str("OPENAI_API_KEY", "") !== "") {
+    return { mode: "api_key", label: "OpenAI API key (pay per use)" };
+  }
+  return { mode: "missing", label: "No OpenAI credential configured" };
+}
+
+/**
+ * Decides which Gemini credential the Gemini provider will pick up.
+ *
+ * `GOOGLE_API_KEY` is accepted as an alias: it is the variable name Google's
+ * own docs use in some SDKs, and the underlying `@google/genai` SDK already
+ * reads either one itself, with `GOOGLE_API_KEY` winning if both are set.
+ */
+export function resolveGeminiAuth(): ProviderAuth {
+  if (str("GOOGLE_API_KEY", "") !== "") {
+    return { mode: "api_key", label: "Gemini API key (via GOOGLE_API_KEY)" };
+  }
+  if (str("GEMINI_API_KEY", "") !== "") {
+    return { mode: "api_key", label: "Gemini API key (pay per use)" };
+  }
+  return { mode: "missing", label: "No Gemini credential configured" };
+}
+
 export function hasGithubToken(): boolean {
   return str("GITHUB_TOKEN", "") !== "";
 }
