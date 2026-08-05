@@ -5,6 +5,7 @@ import Link from "next/link";
 import { TaskSelectCheckbox } from "@/components/batch-start";
 import { TaskCardMenu, type CardMenuCapacity } from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
+import { capacityBlockedReason } from "@/lib/capacity";
 import { formatCost } from "@/lib/utils";
 import { BOARD_STAGES, STAGE_LABELS, type Stage } from "@/server/pipeline/stages";
 import type { TaskWithRepo } from "@/server/tasks/service";
@@ -30,6 +31,7 @@ const PRIORITY_TONE = {
 function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapacity }) {
   const isRunning = task.status === "running";
   const needsAttention = task.status === "awaiting_gate";
+  const isGateQueued = task.status === "gate_queued";
   const notStarted = task.currentStage === "CREATED";
   // On-queue tasks share `currentStage === "CREATED"` with freshly-created
   // ones (see the board-splitting comment below), but they're already queued
@@ -73,6 +75,12 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-warning"
             title="Waiting for your approval"
             aria-label="Waiting for your approval"
+          />
+        ) : isGateQueued ? (
+          <span
+            className="mt-1 inline-block size-2 shrink-0 rounded-full bg-muted"
+            title={capacityBlockedReason(capacity) ?? "Approved, waiting for a slot to free up"}
+            aria-label="Approved, waiting for a slot to free up"
           />
         ) : null}
       </div>
