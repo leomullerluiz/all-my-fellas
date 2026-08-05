@@ -39,9 +39,9 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <MotionProvider>{children}</MotionProvider>
-        {/* Outside `MotionProvider`: react-toastify animates with its own CSS,
+        {/* Outside `MotionProvider`: Sonner animates with its own CSS,
             so it has nothing to read from `MotionConfig`. */}
-        <ToastProvider />
+        <ToastProvider theme={theme} />
       </body>
     </html>
   );
