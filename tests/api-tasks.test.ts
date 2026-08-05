@@ -226,6 +226,17 @@ describe("POST /api/tasks", () => {
     expect(service.listTasks()).toHaveLength(0);
   });
 
+  it("rejects a dependency on an already-completed task", async () => {
+    const done = seed({ title: "Already shipped" });
+    service.setTaskStage(done.id, "COMPLETED");
+
+    const response = await post({ ...VALID_BODY, repoId, dependsOn: [done.id] });
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("Already shipped");
+    expect(service.listTasks()).toHaveLength(1); // only `done`, nothing new created
+  });
+
   it("accepts multiple attachments in one multipart submission", async () => {
     const image = new File([new Uint8Array([1, 2, 3])], "diagram.png", { type: "image/png" });
     const config = new File(['{"a":1}'], "config.json", { type: "application/json" });
@@ -401,6 +412,17 @@ describe("PATCH /api/tasks/:id", () => {
     const task = seed();
     const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: ["task_missing"] });
     expect(response.status).toBe(400);
+  });
+
+  it("rejects a dependency on an already-completed task", async () => {
+    const done = seed({ title: "Already shipped" });
+    service.setTaskStage(done.id, "COMPLETED");
+    const task = seed({ title: "Editing this one" });
+
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: [done.id] });
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("Already shipped");
   });
 
   it("rejects a self-reference", async () => {

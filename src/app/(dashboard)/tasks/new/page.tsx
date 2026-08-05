@@ -4,7 +4,7 @@ import { NewTaskForm } from "@/components/new-task-form";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { capacity } from "@/server/pipeline/orchestrator";
-import { listRepos, listTasks } from "@/server/tasks/service";
+import { listDependencyOptions, listRepos } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
 
@@ -29,11 +29,7 @@ export default async function NewTaskPage() {
     );
   }
 
-  const dependencyOptions = listTasks().map((task) => ({
-    id: task.id,
-    title: task.title,
-    repoName: task.repo.name,
-  }));
+  const dependencyOptions = listDependencyOptions();
 
   return <NewTaskForm repos={repos} capacity={capacity()} dependencyOptions={dependencyOptions} />;
 }

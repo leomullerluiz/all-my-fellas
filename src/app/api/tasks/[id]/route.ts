@@ -92,6 +92,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (unknownDependency) {
       return badRequest(`Prerequisite task ${unknownDependency} does not exist.`);
     }
+    const completedDependency = fields.dependsOn.find(
+      (dependencyId) => getTask(dependencyId)?.status === "completed",
+    );
+    if (completedDependency) {
+      const dependency = getTask(completedDependency)!;
+      return badRequest(`"${dependency.title}" is already completed and cannot be a prerequisite.`);
+    }
     // Identify which selected id closes the loop, so the 400 names the cycle
     // rather than just reporting that one exists somewhere in the set.
     const cycleCause = fields.dependsOn.find((dependencyId) => wouldCreateCycle(id, [dependencyId]));
