@@ -12,6 +12,7 @@ import {
   createStageRun,
   deleteAttachment,
   deleteTask,
+  gateQueuedTasks,
   getTask,
   insertAttachments,
   listApprovals,
@@ -38,6 +39,7 @@ import {
   type GateDecision,
   type Stage,
   isAgentStage,
+  isGate,
 } from "./stages";
 
 /**
@@ -247,38 +249,57 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
 }
 
 /**
- * Starts the highest-priority `on_queue` task, if a slot is free.
+ * Starts or resumes the highest-priority queued task, if a slot is free.
+ *
+ * Two kinds of task wait in the queue: `on_queue` (a `CREATED` task that lost
+ * the capacity race on start — `startTasksBatch`) and `gate_queued` (a gated
+ * task whose approval already resolved to `run` but lost the capacity race
+ * on resume — `decideGate`). Both are ranked together through the same
+ * {@link sortByPriorityThenDifficulty}, first ordered oldest-queued-first so
+ * equal-priority tasks resume in the order they were queued (§8.5 / the
+ * approval-queue spec's FIFO requirement), then dispatched to {@link startTask}
+ * or {@link resumeGatedTask} by status.
  *
  * Called after any transition that frees a concurrency slot (a terminal
- * outcome or a gate) so a "Start selected" batch keeps draining without a
- * poller. One call promotes at most one task, since one transition frees at
- * most one slot; each subsequent slot-freeing transition calls this again.
+ * outcome or a gate) so a "Start selected" batch, or a run of gate approvals
+ * made at capacity, keeps draining without a poller. One call promotes at
+ * most one task, since one transition frees at most one slot; each
+ * subsequent slot-freeing transition calls this again.
  *
- * `CapacityError` (no free slot after all) and `InvalidTransitionError` /
- * `TaskNotFoundError` (the task was cancelled/deleted/started elsewhere in
- * the same instant) are expected races and are swallowed: the caller here is
- * always a transition that already succeeded, and the next slot-freeing
- * event will retry against the current `on_queue` list. Anything else is an
- * unanticipated failure that would otherwise strand the task at `on_queue`
- * with zero signal, so it is logged rather than swallowed.
+ * `CapacityError` (no free slot after all), `InvalidTransitionError` /
+ * `TaskNotFoundError` (an `on_queue` task was cancelled/deleted/started
+ * elsewhere in the same instant), and `StaleQueueEntryError` (the
+ * `gate_queued` equivalent) are expected races and are swallowed: the caller
+ * here is always a transition that already succeeded, and the next
+ * slot-freeing event will retry against the current queue lists. Anything
+ * else is an unanticipated failure that would otherwise strand the task in
+ * the queue with zero signal, so it is logged rather than swallowed.
  *
  * MUST NOT be called from inside an open `db.transaction()` — it calls
- * {@link startTask}, which opens its own. `advanceTask` is safe (no caller
- * wraps it in a transaction); `decideGate` calls this only after its own
- * transaction has committed. A future call site that adds a transition
- * inside a transaction and expects promotion "to just happen" would
- * silently miss it.
+ * {@link startTask} or {@link resumeGatedTask}, both of which open their own.
+ * `advanceTask` is safe (no caller wraps it in a transaction); `decideGate`
+ * calls this only after its own transaction has committed. A future call
+ * site that adds a transition inside a transaction and expects promotion "to
+ * just happen" would silently miss it.
  */
 export function promoteQueue(): void {
-  const [next] = sortByPriorityThenDifficulty(queuedTasks());
+  const candidates = [...queuedTasks(), ...gateQueuedTasks()].sort(
+    (a, b) => a.updatedAt - b.updatedAt,
+  );
+  const [next] = sortByPriorityThenDifficulty(candidates);
   if (!next) return;
   try {
-    startTask(next.id);
+    if (next.status === "gate_queued") {
+      resumeGatedTask(next.id);
+    } else {
+      startTask(next.id);
+    }
   } catch (error) {
     const expected =
       error instanceof CapacityError ||
       error instanceof InvalidTransitionError ||
-      error instanceof TaskNotFoundError;
+      error instanceof TaskNotFoundError ||
+      error instanceof StaleQueueEntryError;
     if (!expected) {
       console.error("[promoteQueue]", error instanceof Error ? error.message : error);
     }
@@ -449,18 +470,42 @@ export class GateError extends Error {
 }
 
 /**
+ * Raised when a `gate_queued` task no longer matches what `promoteQueue`
+ * expected it to be — e.g. cancelled, deleted, or already resumed by a
+ * concurrent call. An expected race, not a bug: the next slot-freeing event
+ * will simply re-rank whatever is left in the queue.
+ */
+export class StaleQueueEntryError extends Error {
+  constructor(taskId: string, detail: string) {
+    super(`Task ${taskId} is no longer a valid gate-queued entry: ${detail}.`);
+    this.name = "StaleQueueEntryError";
+  }
+}
+
+/**
  * Records a human gate decision and resumes the pipeline.
  *
  * Rejects when the task is not parked on that gate, so a stale browser tab
  * cannot approve a stage twice.
+ *
+ * The decision itself — the `approvals` row, the `gate_decided` event, and
+ * any `request_changes` review artifact — is always persisted, regardless of
+ * capacity. Gated tasks no longer hold a slot (§8.2), so resuming one back
+ * into `run` is itself a re-admission: another task may have taken the slot
+ * while this one waited for approval. When that happens the decision is
+ * *not* rejected — the task is parked at `gate_queued` instead, and
+ * `promoteQueue` resumes it automatically once a slot frees (mirrors
+ * `on_queue` for a capacity-blocked start). `reject` and an exhausted
+ * `request_changes` are terminal and release a slot instead, so only the
+ * `run` outcome ever needs the check.
  */
 export function decideGate(input: {
   taskId: string;
   gate: Gate;
   decision: GateDecision;
   comment?: string;
-}): Transition {
-  const transition = db.transaction(() => {
+}): { transition: Transition; queued: boolean } {
+  const { transition, queued } = db.transaction(() => {
     const task = getTask(input.taskId);
     if (!task) throw new TaskNotFoundError(input.taskId);
     if (task.currentStage !== input.gate) {
@@ -503,11 +548,6 @@ export function decideGate(input: {
       });
     }
 
-    // Gated tasks no longer hold a slot (§8.2), so resuming one back into
-    // `run` is itself a re-admission: another task may have taken the slot
-    // while this one waited for approval. `reject` and an exhausted
-    // `request_changes` are terminal and release a slot instead, so only the
-    // `run` outcome needs the check — mirrors `retryTask`'s re-admission.
     const signal: PipelineSignal = {
       kind: "gate_decided",
       gate: input.gate,
@@ -515,21 +555,82 @@ export function decideGate(input: {
       comment: input.comment,
     };
     const transition = nextTransition(task.currentStage, signal, contextFor(task));
-    if (transition.type === "run") {
-      assertSlotAvailable();
+
+    if (transition.type === "run" && !capacity().slotAvailable) {
+      // The decision is kept; only its effect is deferred. `currentStage`
+      // stays on the gate, so this same row is what `resumeGatedTask` replays.
+      updateTask(input.taskId, { status: "gate_queued" });
+      return { transition, queued: true };
     }
+
     applyTransition(input.taskId, transition);
-    return transition;
+    return { transition, queued: false };
   });
 
   // Outside the transaction: `reject` and an exhausted `request_changes` are
   // terminal and free this task's slot, which is exactly when the next
-  // `on_queue` task can take it. `promoteQueue` opens its own transaction via
-  // `startTask`, so it must run after this one has committed.
+  // queued task — `on_queue` or `gate_queued` — can take it. `promoteQueue`
+  // opens its own transaction, so it must run after this one has committed.
+  // Queuing itself (the branch above) frees no slot, so it does not call
+  // `promoteQueue`.
   if (transition.type === "terminal") {
     promoteQueue();
   }
-  return transition;
+  return { transition, queued };
+}
+
+/**
+ * Resumes a task parked at `gate_queued` once a slot has freed.
+ *
+ * Replays the most recently recorded approval for the gate the task is still
+ * sitting on. That row is unambiguously the pending decision because a
+ * `gate_queued` task's `currentStage` never changes while parked — nothing
+ * else touches it until this function (or a cancellation) does. Re-evaluates
+ * `nextTransition` against *current* settings, the same narrow gap
+ * `techplan.md` notes for `reworkMaxCycles` on a re-admitted `request_changes`.
+ *
+ * Admission-checked inside its own transaction, the same shape `startTask`
+ * uses, so two `promoteQueue` calls racing for the last slot cannot both
+ * resume a task.
+ *
+ * @throws {StaleQueueEntryError} when the task no longer exists, is no
+ * longer `gate_queued`, or is no longer sitting on a gate — expected races,
+ * not bugs.
+ * @throws {GateError} when no approval row exists for the gate — a real bug,
+ * since a `gate_queued` task can only exist after `decideGate` recorded one.
+ * @throws {CapacityError} when no slot is free after all.
+ */
+export function resumeGatedTask(taskId: string): Transition {
+  return db.transaction(() => {
+    const task = getTask(taskId);
+    if (!task) throw new StaleQueueEntryError(taskId, "the task no longer exists");
+    if (task.status !== "gate_queued") {
+      throw new StaleQueueEntryError(taskId, `status is now ${task.status}`);
+    }
+    if (!isGate(task.currentStage)) {
+      throw new StaleQueueEntryError(taskId, `current stage ${task.currentStage} is not a gate`);
+    }
+    const gate = task.currentStage;
+
+    const approval = listApprovals(taskId)
+      .filter((row) => row.gate === gate)
+      .at(-1);
+    if (!approval) {
+      throw new GateError(`Task ${taskId} is gate_queued on ${gate} with no recorded approval.`);
+    }
+
+    assertSlotAvailable();
+
+    const signal: PipelineSignal = {
+      kind: "gate_decided",
+      gate,
+      decision: approval.decision,
+      comment: approval.comment ?? undefined,
+    };
+    const transition = nextTransition(task.currentStage, signal, contextFor(task));
+    applyTransition(taskId, transition);
+    return transition;
+  });
 }
 
 /**

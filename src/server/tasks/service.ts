@@ -248,6 +248,14 @@ export function queuedTasks(): TaskRow[] {
 }
 
 /**
+ * Tasks parked at `gate_queued` by `decideGate`, whose approved decision is
+ * waiting for `orchestrator.promoteQueue` to resume them as slots free up.
+ */
+export function gateQueuedTasks(): TaskRow[] {
+  return db.select().from(tasks).where(eq(tasks.status, "gate_queued")).all();
+}
+
+/**
  * Fields a user may change while a task has not started yet.
  *
  * `requireHumanCodeReview` is here rather than on a started task because
