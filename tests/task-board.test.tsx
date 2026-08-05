@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BatchSelectionProvider } from "@/components/batch-start";
@@ -122,7 +123,7 @@ describe("TaskBoard column split", () => {
     expect(within(column("Created")).queryByText("Now running")).toBeNull();
   });
 
-  it("threads dependsOn through to the card menu, disabling Start on an incomplete prerequisite", () => {
+  it("threads dependsOn through to the card menu, disabling Start on an incomplete prerequisite", async () => {
     renderBoard([
       makeTask({
         id: "task_blocked",
@@ -132,7 +133,10 @@ describe("TaskBoard column split", () => {
       }),
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Task actions" }));
+    // Radix's trigger opens on `pointerdown`, which `fireEvent.click` never
+    // dispatches in jsdom — `userEvent` synthesizes the full pointer sequence.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Task actions" }));
 
     const startItem = screen.getByRole("menuitem", { name: "Start" });
     expect(startItem.getAttribute("aria-disabled")).toBe("true");
