@@ -3,14 +3,18 @@
 import Link from "next/link";
 
 import { TaskSelectCheckbox } from "@/components/batch-start";
-import { TaskCardMenu, type CardMenuCapacity } from "@/components/task-card-menu";
+import {
+  TaskCardMenu,
+  type CardMenuCapacity,
+  type CardMenuDependency,
+} from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
 import { formatCost } from "@/lib/utils";
 import { BOARD_STAGES, STAGE_LABELS, type Stage } from "@/server/pipeline/stages";
 import type { TaskWithRepo } from "@/server/tasks/service";
 
 /** One card on the board. */
-export type BoardTask = TaskWithRepo & { costUsd: number };
+export type BoardTask = TaskWithRepo & { costUsd: number; dependsOn: CardMenuDependency[] };
 
 const PRIORITY_TONE = {
   low: "neutral",
@@ -54,6 +58,7 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
               taskTitle={task.title}
               status={task.status}
               capacity={capacity}
+              dependsOn={task.dependsOn}
             />
           </div>
         ) : isRunning ? (

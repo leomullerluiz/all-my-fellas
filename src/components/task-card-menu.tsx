@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { capacityBlockedReason } from "@/lib/capacity";
+import { dependencyBlockedReason } from "@/lib/dependencies";
 import { cn } from "@/lib/utils";
 import type { TaskStatus } from "@/server/pipeline/stages";
 
@@ -25,6 +26,9 @@ export type CardMenuCapacity = {
   blocking: Array<{ id: string; title: string }>;
 };
 
+/** A prerequisite task, only as much as the block-reason copy needs. */
+export type CardMenuDependency = { id: string; title: string; status: string };
+
 type Action = "start" | "cancel" | "delete" | null;
 
 export function TaskCardMenu({
@@ -32,12 +36,15 @@ export function TaskCardMenu({
   taskTitle,
   status,
   capacity,
+  dependsOn = [],
 }: {
   taskId: string;
   taskTitle: string;
   /** Only `on_queue` changes this menu — it adds a Cancel item (S3). */
   status: TaskStatus;
   capacity: CardMenuCapacity;
+  /** This task's prerequisites, so Start can be disabled independently of capacity. */
+  dependsOn?: CardMenuDependency[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -111,7 +118,7 @@ export function TaskCardMenu({
   }
 
   function onStart() {
-    if (!capacity.slotAvailable) return;
+    if (!capacity.slotAvailable || dependencyReason) return;
     void call("start", `/api/tasks/${taskId}/start`, "POST");
   }
 
@@ -127,7 +134,12 @@ export function TaskCardMenu({
     void call("delete", `/api/tasks/${taskId}`, "DELETE");
   }
 
-  const blockedReason = capacityBlockedReason(capacity);
+  const dependencyReason = dependencyBlockedReason(dependsOn);
+  const capacityReason = capacityBlockedReason(capacity);
+  // The dependency gate is hard and unconditional, so it takes precedence
+  // when both are true — see `stories.md` S2.
+  const blockedReason = dependencyReason ?? capacityReason;
+  const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
 
   return (
     <div ref={containerRef} className="relative shrink-0">
@@ -158,13 +170,11 @@ export function TaskCardMenu({
             role="menuitem"
             onClick={onStart}
             disabled={pending !== null}
-            aria-disabled={!capacity.slotAvailable || undefined}
+            aria-disabled={startDisabled || undefined}
             title={blockedReason ?? undefined}
             className={cn(
               "block w-full px-3 py-2 text-left text-xs transition-colors",
-              capacity.slotAvailable
-                ? "hover:bg-border/40"
-                : "cursor-not-allowed text-muted/60",
+              startDisabled ? "cursor-not-allowed text-muted/60" : "hover:bg-border/40",
             )}
           >
             {pending === "start" ? "Starting…" : "Start"}

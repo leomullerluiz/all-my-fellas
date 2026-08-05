@@ -330,6 +330,7 @@ describe("editing and deleting a not-started task", () => {
       description: "A different description, still long enough to validate.",
       priority: "urgent",
       requireHumanCodeReview: false,
+      dependsOn: [],
     });
 
     const updated = service.getTask(task.id)!;
@@ -354,6 +355,7 @@ describe("editing and deleting a not-started task", () => {
       description: task.description,
       priority: task.priority,
       requireHumanCodeReview: false,
+      dependsOn: [],
     });
 
     expect(events.readEvents(task.id).some((e) => e.type === "task_edited")).toBe(false);
@@ -370,6 +372,7 @@ describe("editing and deleting a not-started task", () => {
         description: "A description long enough to pass validation upstream.",
         priority: "low",
         requireHumanCodeReview: false,
+        dependsOn: [],
       }),
     ).toThrow(orchestrator.GateError);
   });

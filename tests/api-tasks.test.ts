@@ -181,6 +181,34 @@ describe("POST /api/tasks", () => {
     expect(response.status).toBe(400);
   });
 
+  it("creates a task with no dependencies when dependsOn is omitted", async () => {
+    const response = await post({ ...VALID_BODY, repoId });
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as { task: { id: string } };
+    const detail = await taskRoute.GET(new Request("http://test"), params(payload.task.id));
+    const detailPayload = (await detail.json()) as { dependsOn: unknown[] };
+    expect(detailPayload.dependsOn).toEqual([]);
+  });
+
+  it("creates a task with a valid dependency", async () => {
+    const prereq = seed({ title: "Prereq" });
+
+    const response = await post({ ...VALID_BODY, repoId, dependsOn: [prereq.id] });
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as { task: { id: string } };
+    const detail = await taskRoute.GET(new Request("http://test"), params(payload.task.id));
+    const detailPayload = (await detail.json()) as { dependsOn: Array<{ id: string }> };
+    expect(detailPayload.dependsOn.map((d) => d.id)).toEqual([prereq.id]);
+  });
+
+  it("rejects an unknown dependency id", async () => {
+    const response = await post({ ...VALID_BODY, repoId, dependsOn: ["task_missing"] });
+    expect(response.status).toBe(400);
+    expect(service.listTasks()).toHaveLength(0);
+  });
+
   it("accepts multiple attachments in one multipart submission", async () => {
     const image = new File([new Uint8Array([1, 2, 3])], "diagram.png", { type: "image/png" });
     const config = new File(['{"a":1}'], "config.json", { type: "application/json" });
@@ -273,6 +301,27 @@ describe("POST /api/tasks/:id/start", () => {
     expect(response.status).toBe(200);
     expect(service.getTask(task.id)!.status).toBe("running");
   });
+
+  it("returns 409 naming an incomplete prerequisite", async () => {
+    const prereq = seed({ title: "Design the schema" });
+    const task = seed({ title: "Depends on schema" });
+    service.replaceDependencies(task.id, [prereq.id]);
+
+    const response = await startRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { error: string }).error).toContain("Design the schema");
+    expect(service.getTask(task.id)!.currentStage).toBe("CREATED");
+  });
+
+  it("starts once the prerequisite is COMPLETED", async () => {
+    const prereq = seed({ title: "Design the schema" });
+    service.setTaskStage(prereq.id, "COMPLETED");
+    const task = seed({ title: "Depends on schema" });
+    service.replaceDependencies(task.id, [prereq.id]);
+
+    const response = await startRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(200);
+  });
 });
 
 describe("PATCH /api/tasks/:id", () => {
@@ -316,6 +365,41 @@ describe("PATCH /api/tasks/:id", () => {
   it("validates the payload", async () => {
     const task = seed();
     const response = await patch(task.id, { repoId, title: "x", description: "short" });
+    expect(response.status).toBe(400);
+  });
+
+  it("replaces the stored dependency set and round-trips it through GET", async () => {
+    const prereq = seed({ title: "Prereq" });
+    const task = seed();
+
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: [prereq.id] });
+    expect(response.status).toBe(200);
+
+    const detail = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await detail.json()) as { dependsOn: Array<{ id: string }> };
+    expect(payload.dependsOn.map((d) => d.id)).toEqual([prereq.id]);
+  });
+
+  it("rejects an unknown dependency id", async () => {
+    const task = seed();
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: ["task_missing"] });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a self-reference", async () => {
+    const task = seed();
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: [task.id] });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a direct two-hop cycle", async () => {
+    const a = seed({ title: "A" });
+    const b = seed({ title: "B" });
+    // b depends on a
+    await patch(b.id, { ...VALID_BODY, title: "B", repoId, dependsOn: [a.id] });
+
+    // now try to make a depend on b, closing the cycle
+    const response = await patch(a.id, { ...VALID_BODY, title: "A", repoId, dependsOn: [b.id] });
     expect(response.status).toBe(400);
   });
 

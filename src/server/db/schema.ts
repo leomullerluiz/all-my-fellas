@@ -198,6 +198,34 @@ export const approvals = sqliteTable(
   (table) => [index("approvals_task_idx").on(table.taskId)],
 );
 
+/**
+ * `taskId` may not be started until every task it references here is
+ * `COMPLETED` — see `assertPrerequisitesMet` in `../pipeline/orchestrator`.
+ *
+ * Both columns cascade: a deleted task can only ever be a still-`CREATED`
+ * one (`deleteCreatedTask`'s restriction), so dropping either side of the
+ * edge along with the row is safe — see `techplan.md`'s "Deleting a
+ * prerequisite" risk note.
+ */
+export const taskDependencies = sqliteTable(
+  "task_dependencies",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    dependsOnTaskId: text("depends_on_task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (table) => [
+    uniqueIndex("task_dependencies_pair_idx").on(table.taskId, table.dependsOnTaskId),
+    index("task_dependencies_task_idx").on(table.taskId),
+    index("task_dependencies_depends_on_idx").on(table.dependsOnTaskId),
+  ],
+);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -234,6 +262,7 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type StageRunRow = typeof stageRuns.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type AttachmentRow = typeof attachments.$inferSelect;
+export type TaskDependencyRow = typeof taskDependencies.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;

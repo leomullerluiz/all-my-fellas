@@ -132,6 +132,25 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds the task_dependencies table to a database created before it existed", () => {
+    // Same story as attachments above: a new table needs only the bootstrap's
+    // `CREATE TABLE IF NOT EXISTS`, not a `migrations.ts` entry.
+    const preDependenciesSql = BOOTSTRAP_SQL.replace(
+      /CREATE TABLE IF NOT EXISTS task_dependencies[\s\S]*?task_dependencies_depends_on_idx ON task_dependencies\(depends_on_task_id\);/,
+      "",
+    );
+    expect(preDependenciesSql).not.toContain("task_dependencies");
+
+    const sqlite = new Database(path.join(tempDir, "pre-dependencies.db"));
+    sqlite.exec(preDependenciesSql);
+    expect(tableExists(sqlite, "task_dependencies")).toBe(false);
+
+    sqlite.exec(BOOTSTRAP_SQL);
+
+    expect(tableExists(sqlite, "task_dependencies")).toBe(true);
+    sqlite.close();
+  });
+
   it("re-running a migration on a half-applied database is harmless", () => {
     // Simulates a crash between the ALTER and the version bump.
     const sqlite = freshDatabase("half.db");

@@ -22,6 +22,18 @@ export const taskFieldsSchema = z.object({
   priority: z.enum(PRIORITIES).default("medium"),
   /** Park at HUMAN_CODE_REVIEW before delivery. Not changeable after start. */
   requireHumanCodeReview: z.boolean().default(false),
+  /**
+   * Ids of tasks that must reach `COMPLETED` before this one can be started.
+   *
+   * A `multipart/form-data` submission repeats the `dependsOn` field once per
+   * selected id rather than sending a JSON array, so a single selection
+   * arrives as a bare string — the `preprocess` normalizes both shapes (and
+   * an omitted field) to an array before the length/content checks run.
+   */
+  dependsOn: z.preprocess(
+    (value) => (value === undefined ? [] : Array.isArray(value) ? value : [value]),
+    z.array(z.string().min(1)).max(50),
+  ),
 });
 
 export const createTaskSchema = taskFieldsSchema.extend({

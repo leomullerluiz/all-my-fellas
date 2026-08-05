@@ -10,7 +10,7 @@ import { resolveProviderAuth } from "@/server/config/env";
 import { credentialSource } from "@/server/git/credentials";
 import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
-import { listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
+import { listDependencies, listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
 
 // The board reflects worker state that changes between requests, so it must be
 // rendered per request rather than prerendered at build time.
@@ -62,6 +62,7 @@ export default async function DashboardPage() {
   const tasks: BoardTask[] = listTasks().map((task) => ({
     ...task,
     costUsd: totalCostForTask(task.id),
+    dependsOn: listDependencies(task.id),
   }));
 
   const slots = capacity();

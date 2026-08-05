@@ -50,6 +50,7 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     updatedAt: 0,
     repo: REPO,
     costUsd: 0,
+    dependsOn: [],
     ...overrides,
   };
 }

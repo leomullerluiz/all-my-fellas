@@ -20,9 +20,11 @@ import {
   getTaskWithRepo,
   listApprovals,
   listAttachments,
+  listDependencies,
   listLatestArtifacts,
   listStageRuns,
   totalCostForTask,
+  wouldCreateCycle,
 } from "@/server/tasks/service";
 import { validateAttachmentFiles } from "@/server/validation/attachments";
 import { type UpdateTaskInput, updateTaskSchema } from "@/server/validation/schemas";
@@ -44,6 +46,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         url: `/api/tasks/${id}/attachments/${attachment.id}`,
       })),
       costUsd: totalCostForTask(id),
+      dependsOn: listDependencies(id),
     });
   } catch (error) {
     return serverError(error);
@@ -80,6 +83,17 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
     if (!getRepo(fields.repoId)) {
       return badRequest("That repository connection no longer exists.");
+    }
+
+    if (fields.dependsOn.includes(id)) {
+      return badRequest("A task cannot depend on itself.");
+    }
+    const unknownDependency = fields.dependsOn.find((dependencyId) => !getTask(dependencyId));
+    if (unknownDependency) {
+      return badRequest(`Prerequisite task ${unknownDependency} does not exist.`);
+    }
+    if (wouldCreateCycle(id, fields.dependsOn)) {
+      return badRequest("That dependency would create a circular chain.");
     }
 
     const validatedAttachments = await validateAttachmentFiles(files);
