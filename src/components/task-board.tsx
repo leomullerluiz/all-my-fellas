@@ -31,6 +31,10 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
   const isRunning = task.status === "running";
   const needsAttention = task.status === "awaiting_gate";
   const notStarted = task.currentStage === "CREATED";
+  // On-queue tasks share `currentStage === "CREATED"` with freshly-created
+  // ones (see the board-splitting comment below), but they're already queued
+  // and shouldn't be selectable for a batch start.
+  const showCheckbox = notStarted && task.status !== "on_queue";
 
   return (
     <div className="rounded-md border border-border bg-surface-raised p-2.5 transition-colors focus-within:border-accent/60 hover:border-accent/60">
@@ -48,7 +52,9 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
 
         {notStarted ? (
           <div className="flex shrink-0 items-start gap-1">
-            <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
+            {showCheckbox ? (
+              <TaskSelectCheckbox taskId={task.id} taskTitle={task.title} />
+            ) : null}
             <TaskCardMenu
               taskId={task.id}
               taskTitle={task.title}
