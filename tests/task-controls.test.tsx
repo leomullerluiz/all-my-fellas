@@ -52,3 +52,39 @@ describe("TaskControls start button vs. capacity", () => {
     expect(screen.getByText(/Running task is still running\./)).toBeTruthy();
   });
 });
+
+describe("TaskControls start button vs. dependencies", () => {
+  it("disables Start and names the incomplete prerequisite, distinct from a capacity message", () => {
+    render(
+      <TaskControls
+        taskId="task_3"
+        taskTitle="New task"
+        status="queued"
+        notStarted
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ title: "Design the schema", status: "queued" }]}
+      />,
+    );
+
+    const startButton = screen.getByRole("button", { name: "Start" });
+    expect(startButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/Design the schema/)).toBeTruthy();
+    expect(screen.queryByText(/Limit of/)).toBeNull();
+  });
+
+  it("enables Start once every prerequisite is completed", () => {
+    render(
+      <TaskControls
+        taskId="task_4"
+        taskTitle="New task"
+        status="queued"
+        notStarted
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ title: "Design the schema", status: "completed" }]}
+      />,
+    );
+
+    const startButton = screen.getByRole("button", { name: "Start" });
+    expect(startButton.hasAttribute("disabled")).toBe(false);
+  });
+});

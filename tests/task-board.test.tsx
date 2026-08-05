@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BatchSelectionProvider } from "@/components/batch-start";
@@ -120,6 +120,22 @@ describe("TaskBoard column split", () => {
     expect(within(column("Stakeholder")).getByText("Now running")).toBeTruthy();
     expect(within(column("On Queue")).queryByText("Now running")).toBeNull();
     expect(within(column("Created")).queryByText("Now running")).toBeNull();
+  });
+
+  it("threads dependsOn through to the card menu, disabling Start on an incomplete prerequisite", () => {
+    renderBoard([
+      makeTask({
+        id: "task_blocked",
+        title: "Blocked card",
+        status: "queued",
+        dependsOn: [{ id: "task_prereq", title: "Prereq", status: "queued" }],
+      }),
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Task actions" }));
+
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.getAttribute("aria-disabled")).toBe("true");
   });
 
   it("keeps the 'Created' and 'On Queue' header counts from double-counting either task", () => {

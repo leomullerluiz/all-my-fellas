@@ -11,6 +11,9 @@ import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
 export type RepoOption = { id: string; name: string; defaultBranch: string };
 
+/** A task selectable as a prerequisite: title plus its repo name for context. */
+export type DependencyOption = { id: string; title: string; repoName: string };
+
 /** Accepted by both the picker's `accept` attribute and server-side validation. */
 export const ATTACHMENT_ACCEPT =
   "image/png,image/jpeg,image/gif,image/webp,application/pdf,application/json,application/xml,text/xml";
@@ -30,6 +33,8 @@ export type TaskFormValues = {
   requireHumanCodeReview: boolean;
   /** Existing attachments, only meaningful in `edit` mode. */
   attachments: AttachmentMeta[];
+  /** Ids of tasks that must reach COMPLETED before this one can be started. */
+  dependsOn: string[];
 };
 
 export type TaskFormProps = {
@@ -40,6 +45,8 @@ export type TaskFormProps = {
   initial?: Partial<TaskFormValues>;
   /** Whether a concurrency slot is free, for the "Start now" button. */
   capacity?: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
+  /** Every other task, selectable as a prerequisite (self already excluded by the caller). */
+  dependencyOptions?: DependencyOption[];
 };
 
 /**
@@ -55,6 +62,7 @@ export function NewTaskForm({
   taskId,
   initial,
   capacity = { slotAvailable: true, limit: 1, blocking: [] },
+  dependencyOptions = [],
 }: TaskFormProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -66,6 +74,7 @@ export function NewTaskForm({
   const [requireHumanCodeReview, setRequireHumanCodeReview] = useState(
     initial?.requireHumanCodeReview ?? false,
   );
+  const [dependsOn, setDependsOn] = useState<string[]>(initial?.dependsOn ?? []);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
@@ -104,6 +113,7 @@ export function NewTaskForm({
       form.set("requireHumanCodeReview", String(requireHumanCodeReview));
       if (!isEdit) form.set("start", String(start));
       for (const file of pendingFiles) form.append("attachments", file);
+      for (const dependencyId of dependsOn) form.append("dependsOn", dependencyId);
 
       response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
         method: isEdit ? "PATCH" : "POST",
@@ -116,6 +126,7 @@ export function NewTaskForm({
         description,
         priority,
         requireHumanCodeReview,
+        dependsOn,
         ...(isEdit ? {} : { start }),
       };
       response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
@@ -169,6 +180,10 @@ export function NewTaskForm({
 
   function removePendingFile(index: number) {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function toggleDependency(id: string, checked: boolean) {
+    setDependsOn((prev) => (checked ? [...prev, id] : prev.filter((value) => value !== id)));
   }
 
   /** Removes an already-uploaded attachment without a full page reload. */
@@ -322,6 +337,36 @@ export function NewTaskForm({
                 ))}
               </Select>
             </Field>
+
+            {dependencyOptions.length > 0 ? (
+              <Field
+                label="Depends on"
+                htmlFor="dependsOn"
+                error={errors.dependsOn}
+                hint="This task cannot be started until every selected task reaches Completed."
+              >
+                <ul
+                  id="dependsOn"
+                  className="flex max-h-40 flex-col gap-1 overflow-auto rounded-md border border-border bg-surface px-2.5 py-1.5"
+                >
+                  {dependencyOptions.map((option) => (
+                    <li key={option.id}>
+                      <label className="flex items-center gap-2 py-0.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={dependsOn.includes(option.id)}
+                          onChange={(event) => toggleDependency(option.id, event.target.checked)}
+                        />
+                        <span className="truncate">
+                          {option.title}{" "}
+                          <span className="text-muted">({option.repoName})</span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </Field>
+            ) : null}
 
             {/* A process choice, so it sits with priority rather than with the
                 description, which is the request itself. */}

@@ -60,6 +60,44 @@ describe("TaskCardMenu start item vs. capacity", () => {
   });
 });
 
+describe("TaskCardMenu start item vs. dependencies", () => {
+  it("disables Start and names the incomplete prerequisite, distinct from a capacity message", () => {
+    render(
+      <TaskCardMenu
+        taskId="task_5"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ id: "task_prereq", title: "Design the schema", status: "queued" }]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Task actions" }));
+
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText(/Design the schema/)).toBeTruthy();
+    expect(screen.queryByText(/Limit of/)).toBeNull();
+  });
+
+  it("enables Start once every prerequisite is completed", () => {
+    render(
+      <TaskCardMenu
+        taskId="task_6"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ id: "task_prereq", title: "Design the schema", status: "completed" }]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Task actions" }));
+
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.hasAttribute("aria-disabled")).toBe(false);
+  });
+});
+
 describe("TaskCardMenu Cancel item (on_queue only)", () => {
   it("does not show Cancel for a plain queued Created task", () => {
     render(
