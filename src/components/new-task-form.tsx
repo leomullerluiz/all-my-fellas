@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
+import { ErrorMessage } from "@/components/error-message";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
@@ -307,7 +308,7 @@ export function NewTaskForm({
               </ul>
             ) : null}
 
-            {attachmentError ? <p className="text-xs text-danger">{attachmentError}</p> : null}
+            <ErrorMessage message={attachmentError} />
 
             <Field label="Priority" htmlFor="priority">
               <Select
@@ -342,7 +343,7 @@ export function NewTaskForm({
               </span>
             </label>
 
-            {submitError ? <p className="text-xs text-danger">{submitError}</p> : null}
+            <ErrorMessage message={submitError} />
 
             {isEdit ? (
               <div className="flex flex-wrap items-center gap-2">

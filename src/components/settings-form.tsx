@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ErrorMessage } from "@/components/error-message";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input } from "@/components/ui/field";
@@ -223,7 +224,7 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
           {busy ? "Saving…" : "Save settings"}
         </Button>
         {notice ? <span className="text-xs text-success">{notice}</span> : null}
-        {error ? <span className="text-xs text-danger">{error}</span> : null}
+        <ErrorMessage message={error} />
       </div>
     </form>
   );

@@ -81,6 +81,20 @@
   --color-info: var(--info);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /*
+   * Aliases for the shadcn/animate-ui token names that vendored components
+   * under src/components/animate-ui/** assume (bg-popover, text-destructive,
+   * etc). These map onto the existing palette above instead of introducing a
+   * second, competing set of color variables — keep this block in sync with
+   * whatever tokens newly-added shadcn/animate-ui components reference.
+   */
+  --color-popover: var(--surface-raised);
+  --color-popover-foreground: var(--foreground);
+  --color-destructive: var(--danger);
+  --color-muted-foreground: var(--muted);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
 }
 
 body {
@@ -89,28 +103,14 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
-/* Pulsing dot on cards whose agent is currently running. */
-@keyframes pipeline-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.82);
-  }
-}
-
-.animate-pipeline-pulse {
-  animation: pipeline-pulse 1.4s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-pipeline-pulse {
-    animation: none;
-  }
-}
+/*
+ * The running-task pulse indicator used to live here as a CSS @keyframes
+ * animation (see git history). It is now `PulseDot`
+ * (src/components/pulse-dot.tsx), a Motion component driven by the same
+ * `MotionProvider` that reduces every other new animation in this app under
+ * `prefers-reduced-motion: reduce`, so a second, CSS-only reduced-motion
+ * mechanism is no longer needed here.
+ */
 
 /* Readable rendering for the raw Markdown artifact viewer. */
 .artifact-body {
