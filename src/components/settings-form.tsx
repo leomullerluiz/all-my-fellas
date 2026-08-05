@@ -6,9 +6,15 @@ import { useState } from "react";
 import { ErrorMessage } from "@/components/error-message";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, Input } from "@/components/ui/field";
+import { Field, Input, Select } from "@/components/ui/field";
+import type { Cadence } from "@/server/config/env";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
 import type { AppSettings } from "@/server/settings/store";
+
+const QUOTA_MODES = [
+  { mode: "subscription" as const, label: "Claude subscription" },
+  { mode: "api_key" as const, label: "Anthropic API key" },
+];
 
 /** Editable runtime settings: models, turn ceilings and pipeline limits. */
 export function SettingsForm({ initial }: { initial: AppSettings }) {
@@ -29,6 +35,19 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
     setSettings((current) => ({
       ...current,
       maxTurns: { ...current.maxTurns, [stage]: value },
+    }));
+  }
+
+  function setQuota(
+    mode: "subscription" | "api_key",
+    patch: Partial<{ limitUsd: number | null; cadence: Cadence }>,
+  ) {
+    setSettings((current) => ({
+      ...current,
+      quotaLimits: {
+        ...current.quotaLimits,
+        [mode]: { ...current.quotaLimits[mode], ...patch },
+      },
     }));
   }
 
@@ -215,6 +234,56 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
                 </span>
               </label>
             </div>
+          </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage quota</CardTitle>
+          <CardDescription>
+            Neither Claude subscription nor API-key quota is exposed by an API the pipeline can
+            read, so this is a limit you type in yourself. The dashboard usage bar compares
+            actual spend against it and warns as usage approaches it. Leave the limit blank to
+            turn the quota display off for that mode.
+          </CardDescription>
+        </CardHeader>
+        <CardBody>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {QUOTA_MODES.map(({ mode, label }) => (
+              <div key={mode} className="flex flex-col gap-3 rounded-md border border-border p-3">
+                <span className="text-xs font-medium">{label}</span>
+                <Field
+                  label="Limit (USD)"
+                  htmlFor={`quota-limit-${mode}`}
+                  hint="Blank disables the quota display for this mode."
+                >
+                  <Input
+                    id={`quota-limit-${mode}`}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={settings.quotaLimits[mode].limitUsd ?? ""}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      setQuota(mode, { limitUsd: raw === "" ? null : Number(raw) });
+                    }}
+                  />
+                </Field>
+                <Field label="Resets" htmlFor={`quota-cadence-${mode}`}>
+                  <Select
+                    id={`quota-cadence-${mode}`}
+                    value={settings.quotaLimits[mode].cadence}
+                    onChange={(event) =>
+                      setQuota(mode, { cadence: event.target.value as Cadence })
+                    }
+                  >
+                    <option value="daily">Daily</option>
+                    <option value="hourly">Hourly</option>
+                  </Select>
+                </Field>
+              </div>
+            ))}
           </div>
         </CardBody>
       </Card>
