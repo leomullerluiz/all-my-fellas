@@ -3,9 +3,11 @@ import Link from "next/link";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-start";
 import { TaskBoard, type BoardTask } from "@/components/task-board";
+import { TaskFilterBar } from "@/components/task-filter-bar";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { UsageBar } from "@/components/usage-bar";
+import { defaultDateRange, filterBoardTasks, parseDateRangeParams } from "@/lib/task-filter";
 import { formatCost } from "@/lib/utils";
 import { resolveProviderAuth } from "@/server/config/env";
 import { credentialSource } from "@/server/git/credentials";
@@ -59,13 +61,28 @@ function SetupNotice() {
   );
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage(props: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const search = await props.searchParams;
+  const rawStart = Array.isArray(search.start) ? search.start[0] : search.start;
+  const rawEnd = Array.isArray(search.end) ? search.end[0] : search.end;
+  // An invalid or missing range falls back to S1's default ("today" —
+  // see `defaultDateRange`) rather than 400ing: this filter is a view
+  // convenience, not an API contract worth failing a page load over.
+  const customRange = parseDateRangeParams(rawStart, rawEnd);
+  const range = customRange ?? defaultDateRange();
+
   const repos = listRepos();
-  const tasks: BoardTask[] = listTasks().map((task) => ({
+  const allTasks: BoardTask[] = listTasks().map((task) => ({
     ...task,
     costUsd: totalCostForTask(task.id),
     dependsOn: listDependencies(task.id),
   }));
+  // S1/S2: today's tasks (or the applied custom range) plus every open/active
+  // task regardless of date — see `filterBoardTasks`. The header counters
+  // below are derived from this filtered set, not `allTasks`, per S1's AC.
+  const tasks = filterBoardTasks(allTasks, range);
 
   const slots = capacity();
   const notStarted = tasks.filter((task) => task.currentStage === "CREATED").length;
@@ -105,6 +122,11 @@ export default async function DashboardPage() {
         </div>
       </div>
 
+      <TaskFilterBar
+        initialStart={customRange ? rawStart : undefined}
+        initialEnd={customRange ? rawEnd : undefined}
+      />
+
       <SetupNotice />
 
       {repos.length === 0 ? (
@@ -117,7 +139,7 @@ export default async function DashboardPage() {
             </Link>
           }
         />
-      ) : tasks.length === 0 ? (
+      ) : allTasks.length === 0 ? (
         <EmptyState
           title="No tasks yet"
           description="Describe a feature and the pipeline will refine it, plan it, build it, review it, and open a pull request. Nothing starts until you say so."
