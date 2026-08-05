@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +11,9 @@ import { formatBytes } from "@/lib/utils";
 import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
 export type RepoOption = { id: string; name: string; defaultBranch: string };
+
+/** A task selectable as a prerequisite: title plus its repo name for context. */
+export type DependencyOption = { id: string; title: string; repoName: string };
 
 /** Accepted by both the picker's `accept` attribute and server-side validation. */
 export const ATTACHMENT_ACCEPT =
@@ -30,6 +34,8 @@ export type TaskFormValues = {
   requireHumanCodeReview: boolean;
   /** Existing attachments, only meaningful in `edit` mode. */
   attachments: AttachmentMeta[];
+  /** Ids of tasks that must reach COMPLETED before this one can be started. */
+  dependsOn: string[];
 };
 
 export type TaskFormProps = {
@@ -40,6 +46,8 @@ export type TaskFormProps = {
   initial?: Partial<TaskFormValues>;
   /** Whether a concurrency slot is free, for the "Start now" button. */
   capacity?: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
+  /** Every other task, selectable as a prerequisite (self already excluded by the caller). */
+  dependencyOptions?: DependencyOption[];
 };
 
 /**
@@ -55,6 +63,7 @@ export function NewTaskForm({
   taskId,
   initial,
   capacity = { slotAvailable: true, limit: 1, blocking: [] },
+  dependencyOptions = [],
 }: TaskFormProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -66,8 +75,8 @@ export function NewTaskForm({
   const [requireHumanCodeReview, setRequireHumanCodeReview] = useState(
     initial?.requireHumanCodeReview ?? false,
   );
+  const [dependsOn, setDependsOn] = useState<string[]>(initial?.dependsOn ?? []);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
 
   // Files picked but not yet uploaded (create and edit).
@@ -77,7 +86,6 @@ export function NewTaskForm({
     initial?.attachments ?? [],
   );
   const [removingId, setRemovingId] = useState<string | null>(null);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const selectedRepo = repos.find((repo) => repo.id === repoId);
   const isEdit = mode === "edit";
@@ -89,7 +97,6 @@ export function NewTaskForm({
 
   async function submit(start: boolean) {
     setErrors({});
-    setSubmitError(null);
     setSubmitting(start ? "start" : "queue");
 
     let response: Response;
@@ -104,6 +111,7 @@ export function NewTaskForm({
       form.set("requireHumanCodeReview", String(requireHumanCodeReview));
       if (!isEdit) form.set("start", String(start));
       for (const file of pendingFiles) form.append("attachments", file);
+      for (const dependencyId of dependsOn) form.append("dependsOn", dependencyId);
 
       response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
         method: isEdit ? "PATCH" : "POST",
@@ -116,6 +124,7 @@ export function NewTaskForm({
         description,
         priority,
         requireHumanCodeReview,
+        dependsOn,
         ...(isEdit ? {} : { start }),
       };
       response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
@@ -135,7 +144,7 @@ export function NewTaskForm({
 
     if (!response.ok) {
       setErrors(payload.details ?? {});
-      setSubmitError(
+      toast.error(
         payload.error ?? (isEdit ? "Could not save the task." : "Could not create the task."),
       );
       // A capacity refusal on "Start now" still created the task, so send the
@@ -149,6 +158,7 @@ export function NewTaskForm({
       return;
     }
 
+    toast.success(isEdit ? "Task saved." : start ? "Task created." : "Task queued.");
     const destination =
       isEdit || start ? `/tasks/${taskId ?? payload.task!.id}` : "/";
     startTransition(() => {
@@ -171,9 +181,12 @@ export function NewTaskForm({
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function toggleDependency(id: string, checked: boolean) {
+    setDependsOn((prev) => (checked ? [...prev, id] : prev.filter((value) => value !== id)));
+  }
+
   /** Removes an already-uploaded attachment without a full page reload. */
   async function removeExistingAttachment(attachmentId: string) {
-    setAttachmentError(null);
     setRemovingId(attachmentId);
     const response = await fetch(`/api/tasks/${taskId}/attachments/${attachmentId}`, {
       method: "DELETE",
@@ -182,9 +195,10 @@ export function NewTaskForm({
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      setAttachmentError(payload.error ?? "Could not remove the attachment.");
+      toast.error(payload.error ?? "Could not remove the attachment.");
       return;
     }
+    toast.success("Attachment removed.");
     setExistingAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
   }
 
@@ -307,8 +321,6 @@ export function NewTaskForm({
               </ul>
             ) : null}
 
-            {attachmentError ? <p className="text-xs text-danger">{attachmentError}</p> : null}
-
             <Field label="Priority" htmlFor="priority">
               <Select
                 id="priority"
@@ -322,6 +334,36 @@ export function NewTaskForm({
                 ))}
               </Select>
             </Field>
+
+            {dependencyOptions.length > 0 ? (
+              <Field
+                label="Depends on"
+                htmlFor="dependsOn"
+                error={errors.dependsOn}
+                hint="This task cannot be started until every selected task reaches Completed."
+              >
+                <ul
+                  id="dependsOn"
+                  className="flex max-h-40 flex-col gap-1 overflow-auto rounded-md border border-border bg-surface px-2.5 py-1.5"
+                >
+                  {dependencyOptions.map((option) => (
+                    <li key={option.id}>
+                      <label className="flex items-center gap-2 py-0.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={dependsOn.includes(option.id)}
+                          onChange={(event) => toggleDependency(option.id, event.target.checked)}
+                        />
+                        <span className="truncate">
+                          {option.title}{" "}
+                          <span className="text-muted">({option.repoName})</span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </Field>
+            ) : null}
 
             {/* A process choice, so it sits with priority rather than with the
                 description, which is the request itself. */}
@@ -341,8 +383,6 @@ export function NewTaskForm({
                 </span>
               </span>
             </label>
-
-            {submitError ? <p className="text-xs text-danger">{submitError}</p> : null}
 
             {isEdit ? (
               <div className="flex flex-wrap items-center gap-2">

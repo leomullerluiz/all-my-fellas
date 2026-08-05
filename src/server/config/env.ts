@@ -21,6 +21,13 @@ function int(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function floatOrNull(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return null;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
  * Turns `DATABASE_URL` into an absolute filesystem path. Accepts both the
  * `file:./data/pipeline.db` URL form and a bare relative/absolute path.
@@ -143,5 +150,42 @@ export function resolveLimits(): RuntimeLimits {
     // keep working.
     reworkMaxCycles: Math.max(0, int("REWORK_MAX_CYCLES", int("QA_MAX_CYCLES", 2))),
     workspaceRetentionDays: Math.max(0, int("WORKSPACE_RETENTION_DAYS", 7)),
+  };
+}
+
+/** How often a configured quota limit is expected to reset. */
+export type Cadence = "daily" | "hourly";
+
+function cadence(name: string): Cadence {
+  return str(name, "daily") === "hourly" ? "hourly" : "daily";
+}
+
+export type QuotaLimit = {
+  /** `null` means "not configured" — the dashboard shows no usage figure. */
+  limitUsd: number | null;
+  cadence: Cadence;
+};
+
+export type QuotaConfig = Record<"subscription" | "api_key", QuotaLimit>;
+
+/**
+ * Default quota limits, seeded from `.env` and used as the base that
+ * `AppSettings.quotaLimits` overrides — same relationship as
+ * `resolveModels()`/`resolveLimits()` have with their Settings counterparts.
+ *
+ * There is no API that reports the real Pro/Max or pay-per-use quota, so this
+ * is always a user-entered number, never a fetched one (see
+ * `spec-cost-forecast.md` §2 and the "limit shart" stories' Out of Scope).
+ */
+export function resolveQuota(): QuotaConfig {
+  return {
+    subscription: {
+      limitUsd: floatOrNull("QUOTA_SUBSCRIPTION_LIMIT_USD"),
+      cadence: cadence("QUOTA_SUBSCRIPTION_CADENCE"),
+    },
+    api_key: {
+      limitUsd: floatOrNull("QUOTA_API_KEY_LIMIT_USD"),
+      cadence: cadence("QUOTA_API_KEY_CADENCE"),
+    },
   };
 }

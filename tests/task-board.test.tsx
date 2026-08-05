@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BatchSelectionProvider } from "@/components/batch-start";
@@ -50,6 +51,7 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     updatedAt: 0,
     repo: REPO,
     costUsd: 0,
+    dependsOn: [],
     ...overrides,
   };
 }
@@ -121,6 +123,25 @@ describe("TaskBoard column split", () => {
     expect(within(column("Created")).queryByText("Now running")).toBeNull();
   });
 
+  it("threads dependsOn through to the card menu, disabling Start on an incomplete prerequisite", async () => {
+    renderBoard([
+      makeTask({
+        id: "task_blocked",
+        title: "Blocked card",
+        status: "queued",
+        dependsOn: [{ id: "task_prereq", title: "Prereq", status: "queued" }],
+      }),
+    ]);
+
+    // Radix's trigger opens on `pointerdown`, which `fireEvent.click` never
+    // dispatches in jsdom — `userEvent` synthesizes the full pointer sequence.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Task actions" }));
+
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.getAttribute("aria-disabled")).toBe("true");
+  });
+
   it("keeps the 'Created' and 'On Queue' header counts from double-counting either task", () => {
     renderBoard([
       makeTask({ id: "task_a", title: "Created A", status: "queued" }),
@@ -129,6 +150,20 @@ describe("TaskBoard column split", () => {
     ]);
 
     expect(countIn("Created")).toBe("2");
+    expect(countIn("On Queue")).toBe("1");
+  });
+
+  it("shows no checkbox on an on_queue card, but keeps its 'On Queue' count and actions menu", () => {
+    renderBoard([
+      makeTask({ id: "task_queued", title: "Waiting its turn", status: "on_queue" }),
+    ]);
+
+    const onQueueColumn = column("On Queue");
+    expect(
+      within(onQueueColumn).queryByRole("checkbox", { name: /Waiting its turn/ }),
+    ).toBeNull();
+    expect(within(onQueueColumn).getByRole("link", { name: "Waiting its turn" })).toBeTruthy();
+    expect(within(onQueueColumn).getByRole("button", { name: "Task actions" })).toBeTruthy();
     expect(countIn("On Queue")).toBe("1");
   });
 });

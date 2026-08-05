@@ -225,6 +225,26 @@ describe("POST /api/tasks/batch-start", () => {
     expect(real?.started).toBe(true);
   });
 
+  it("skips a task with an incomplete prerequisite, naming it, and continues the batch", async () => {
+    settings.updateSettings({ maxParallelTasks: 5 });
+    const prereq = seed({ title: "Prereq" });
+    const blocked = seed({ title: "Blocked" });
+    service.replaceDependencies(blocked.id, [prereq.id]);
+    const clear = seed({ title: "Clear" });
+
+    const response = await post([blocked.id, clear.id]);
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as { results: Result[] };
+    const blockedResult = payload.results.find((r) => r.taskId === blocked.id)!;
+    expect(blockedResult.started).toBe(false);
+    expect(blockedResult.reason).toContain("Prereq");
+
+    const clearResult = payload.results.find((r) => r.taskId === clear.id)!;
+    expect(clearResult.started).toBe(true);
+    expect(service.getTask(clear.id)!.currentStage).toBe("STAKEHOLDER_REFINEMENT");
+  });
+
   it("starting a single selected task matches the single-task Start action", async () => {
     settings.updateSettings({ maxParallelTasks: 5 });
     const task = seed();

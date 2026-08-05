@@ -16,6 +16,7 @@ import {
   getTaskWithRepo,
   listApprovals,
   listAttachments,
+  listDependencies,
   listLatestArtifacts,
   listStageRuns,
   totalCostForTask,
@@ -35,10 +36,11 @@ export default async function TaskDetailPage(props: {
   const artifacts = listLatestArtifacts(id);
   const approvals = listApprovals(id);
   const attachments = listAttachments(id);
+  const dependsOn = listDependencies(id);
   const cost = totalCostForTask(id);
   const slots = capacity();
   const notStarted = task.currentStage === "CREATED";
-  const live = ["running", "awaiting_gate"].includes(task.status);
+  const live = ["running", "awaiting_gate", "gate_queued"].includes(task.status);
 
   // Only read the workspace when a diff can actually exist; on the gate the
   // summary tells the reviewer how big the review is before they open it.
@@ -72,6 +74,7 @@ export default async function TaskDetailPage(props: {
             status={task.status}
             notStarted={notStarted}
             capacity={slots}
+            dependsOn={dependsOn}
           />
         </div>
 
@@ -119,7 +122,11 @@ export default async function TaskDetailPage(props: {
         ) : null}
       </header>
 
-      {isGate(task.currentStage) ? (
+      {/* Gated on `status`, not `isGate(currentStage)`: a `gate_queued` task
+          is still sitting on the gate stage, but its decision has already
+          been recorded — re-offering the form would invite a second, stale
+          decision. */}
+      {task.status === "awaiting_gate" && isGate(task.currentStage) ? (
         <GatePanel taskId={task.id} gate={task.currentStage} diffSummary={diffSummary} />
       ) : null}
 
@@ -157,6 +164,32 @@ export default async function TaskDetailPage(props: {
               )}
             </CardBody>
           </Card>
+
+          {dependsOn.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Prerequisites</CardTitle>
+              </CardHeader>
+              <CardBody>
+                <ul className="flex flex-col gap-2">
+                  {dependsOn.map((dependency) => (
+                    <li
+                      key={dependency.id}
+                      className="flex items-center justify-between gap-2 text-xs"
+                    >
+                      <Link
+                        href={`/tasks/${dependency.id}`}
+                        className="truncate text-accent underline-offset-2 hover:underline"
+                      >
+                        {dependency.title}
+                      </Link>
+                      <StatusBadge status={dependency.status} />
+                    </li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+          ) : null}
 
           <Card>
             <CardHeader>

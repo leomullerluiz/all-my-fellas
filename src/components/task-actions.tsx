@@ -3,37 +3,51 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/field";
 import { capacityBlockedReason } from "@/lib/capacity";
+import { dependencyBlockedReason } from "@/lib/dependencies";
 import { GATE_ALLOWED_DECISIONS, type Gate, type TaskStatus } from "@/server/pipeline/stages";
 
 /** Human gate approval plus the retry / cancel controls. */
 
-const GATE_COPY: Record<Gate, { title: string; description: string; approve: string }> = {
+const GATE_COPY: Record<
+  Gate,
+  { title: string; description: string; approve: string; approvedToast: string }
+> = {
   PLAN_GATE: {
     title: "Approve the technical plan",
     description:
       "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer.",
     approve: "Approve plan",
+    approvedToast: "Plan approved",
   },
   HUMAN_CODE_REVIEW: {
     title: "Review the code",
     description:
       "Code review and QA have passed. Read the diff before this ships. Requesting changes sends the work back to the Developer with your comment.",
     approve: "Approve code",
+    approvedToast: "Code approved",
   },
   STAKEHOLDER_GATE: {
     title: "Approve delivery",
     description:
       "QA and homologation are done. Approving pushes the branch and opens a pull request — the merge still happens on GitHub.",
     approve: "Approve and deliver",
+    approvedToast: "Delivery approved",
   },
 };
 
 type Decision = "approve" | "request_changes" | "reject";
+
+/** Everything but "approve" reads the same across gates. */
+const DECISION_TOAST: Record<Exclude<Decision, "approve">, string> = {
+  request_changes: "Changes requested",
+  reject: "Task rejected",
+};
 
 export function GatePanel({
   taskId,
@@ -48,7 +62,9 @@ export function GatePanel({
   const router = useRouter();
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState<Decision | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Pre-submission field validation only (empty comment on "Request changes")
+  // — the request outcome itself is reported via toast, not this state.
+  const [commentError, setCommentError] = useState<string | null>(null);
 
   const copy = GATE_COPY[gate];
   const allowed = GATE_ALLOWED_DECISIONS[gate];
@@ -59,12 +75,12 @@ export function GatePanel({
     // Enforced server-side too; catching it here saves a round trip and keeps
     // the reviewer's text in the box.
     if (decision === "request_changes" && trimmed === "") {
-      setError("Say what needs to change — the Developer only sees this comment.");
+      setCommentError("Say what needs to change — the Developer only sees this comment.");
       return;
     }
 
     setBusy(decision);
-    setError(null);
+    setCommentError(null);
 
     const response = await fetch(`/api/tasks/${taskId}/gates/${gate}`, {
       method: "POST",
@@ -74,11 +90,12 @@ export function GatePanel({
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      setError(payload.error ?? "Could not record the decision.");
+      toast.error(payload.error ?? "Could not record the decision.");
       setBusy(null);
       return;
     }
 
+    toast.success(decision === "approve" ? copy.approvedToast : DECISION_TOAST[decision]);
     setBusy(null);
     setComment("");
     router.refresh();
@@ -115,7 +132,7 @@ export function GatePanel({
           }
           aria-label="Decision comment"
         />
-        {error ? <p className="text-xs text-danger">{error}</p> : null}
+        {commentError ? <p className="text-xs text-danger">{commentError}</p> : null}
 
         <div className="flex flex-wrap gap-2">
           <Button variant="success" disabled={busy !== null} onClick={() => decide("approve")}>
@@ -138,6 +155,13 @@ export function GatePanel({
   );
 }
 
+const ACTION_SUCCESS_TOAST: Record<string, string> = {
+  start: "Task started.",
+  cancel: "Task cancelled.",
+  retry: "Retrying the failed stage.",
+  delete: "Task deleted.",
+};
+
 /**
  * Detail-page controls.
  *
@@ -145,11 +169,12 @@ export function GatePanel({
  * cancelling from `CREATED` produces a terminal `CANCELLED` row that can never
  * be started, edited or removed — see `spec-task-queue.md` §10.
  *
- * The one exception is `on_queue`: a task parked there by "Start selected"
- * has already committed to running, so — per S3 — it also gets Cancel, the
- * same as an in-flight task. Removing it that way is what lets the rest of
- * the queue keep advancing (`promoteQueue` re-reads the `on_queue` list on
- * the next slot-freeing transition, unaffected by the removal).
+ * The exceptions are `on_queue` and `gate_queued`: a task parked at either
+ * has already committed to running, so — per S3, and the approval-queue
+ * equivalent for gate resumes — it also gets Cancel, the same as an
+ * in-flight task. Removing it that way is what lets the rest of the queue
+ * keep advancing (`promoteQueue` re-reads both queue lists on the next
+ * slot-freeing transition, unaffected by the removal).
  */
 export function TaskControls({
   taskId,
@@ -157,34 +182,40 @@ export function TaskControls({
   status,
   notStarted,
   capacity,
+  dependsOn = [],
 }: {
   taskId: string;
   taskTitle: string;
   status: TaskStatus;
   notStarted: boolean;
   capacity: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
+  /** This task's prerequisites, so Start can be disabled independently of capacity. */
+  dependsOn?: Array<{ title: string; status: string }>;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  const canCancel = ["running", "awaiting_gate", "on_queue"].includes(status);
+  const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
   const canRetry = status === "failed";
 
-  const blockedReason = capacityBlockedReason(capacity);
+  const dependencyReason = dependencyBlockedReason(dependsOn);
+  // The dependency gate is hard and unconditional, so it takes precedence
+  // when both are true — see `stories.md` S2.
+  const blockedReason = dependencyReason ?? capacityBlockedReason(capacity);
+  const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
 
   async function call(action: string, url: string, method = "POST") {
     setBusy(action);
-    setError(null);
 
     const response = await fetch(url, { method });
     if (!response.ok) {
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      setError(payload.error ?? `Could not ${action} the task.`);
+      toast.error(payload.error ?? `Could not ${action} the task.`);
       setBusy(null);
       return;
     }
 
+    toast.success(ACTION_SUCCESS_TOAST[action] ?? `Task ${action} succeeded.`);
     setBusy(null);
     if (action === "delete") {
       router.push("/");
@@ -204,7 +235,7 @@ export function TaskControls({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          disabled={busy !== null || !capacity.slotAvailable}
+          disabled={busy !== null || startDisabled}
           title={blockedReason ?? undefined}
           onClick={() => call("start", `/api/tasks/${taskId}/start`)}
         >
@@ -228,10 +259,7 @@ export function TaskControls({
             {busy === "cancel" ? "Cancelling…" : "Cancel"}
           </Button>
         ) : null}
-        {error ? <span className="text-xs text-danger">{error}</span> : null}
-        {!error && blockedReason ? (
-          <span className="text-xs text-muted">{blockedReason}</span>
-        ) : null}
+        {blockedReason ? <span className="text-xs text-muted">{blockedReason}</span> : null}
       </div>
     );
   }
@@ -261,7 +289,12 @@ export function TaskControls({
           {busy === "cancel" ? "Cancelling…" : "Cancel task"}
         </Button>
       ) : null}
-      {error ? <span className="text-xs text-danger">{error}</span> : null}
+      {/* The approval already succeeded — this is not an error state, just
+          an explanation of why the task hasn't resumed yet (S2). Failures are
+          reported by toast, so nothing competes with it for this slot. */}
+      {status === "gate_queued" && blockedReason ? (
+        <span className="text-xs text-muted">{blockedReason}</span>
+      ) : null}
     </div>
   );
 }

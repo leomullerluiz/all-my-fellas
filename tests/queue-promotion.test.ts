@@ -171,6 +171,129 @@ describe("promoteQueue via decideGate", () => {
   });
 });
 
+describe("promoteQueue resumes gate_queued tasks (approval queue)", () => {
+  /**
+   * Parks `task` at `gate_queued`: starts it, moves it to `gate` (freeing its
+   * slot, since a gated task holds none), starts `blocker` to take the now-free
+   * slot, then approves `task`'s gate — which finds no slot free and queues
+   * instead of resuming. Mirrors `tests/admission.test.ts`'s "queues instead
+   * of throwing" setup.
+   */
+  function queueApproval(
+    task: { id: string },
+    blocker: { id: string },
+    gate: "PLAN_GATE" = "PLAN_GATE",
+  ) {
+    orchestrator.startTask(task.id);
+    service.setTaskStage(task.id, gate);
+    orchestrator.startTask(blocker.id);
+    return orchestrator.decideGate({ taskId: task.id, gate, decision: "approve" });
+  }
+
+  it("resumes a gate_queued task once the blocking task reaches a terminal stage", () => {
+    const gated = create("Gated");
+    const blocker = create("Blocker");
+    const result = queueApproval(gated, blocker);
+
+    expect(result.queued).toBe(true);
+    expect(service.getTask(gated.id)!.status).toBe("gate_queued");
+
+    orchestrator.cancelTask(blocker.id);
+
+    expect(service.getTask(gated.id)!.status).toBe("running");
+    expect(service.getTask(gated.id)!.currentStage).toBe("DEVELOPMENT");
+  });
+
+  it("resumes a gate_queued task once the blocking task reaches a gate of its own", () => {
+    const gated = create("Gated");
+    const blocker = create("Blocker");
+    queueApproval(gated, blocker);
+    expect(service.getTask(gated.id)!.status).toBe("gate_queued");
+
+    orchestrator.advanceTask(blocker.id, {
+      kind: "stage_succeeded",
+      stage: "STAKEHOLDER_REFINEMENT",
+    });
+    orchestrator.advanceTask(blocker.id, { kind: "stage_succeeded", stage: "PO_REFINEMENT" });
+    orchestrator.advanceTask(blocker.id, { kind: "stage_succeeded", stage: "ARCHITECTURE" });
+
+    expect(service.getTask(blocker.id)!.status).toBe("awaiting_gate");
+    expect(service.getTask(gated.id)!.status).toBe("running");
+  });
+
+  it("ranks a gate_queued task against an on_queue task through the same priority ordering", () => {
+    const gated = create("Gated");
+    const blocker = create("Blocker");
+    const startQueued = create("Start queued");
+    queueApproval(gated, blocker);
+    park(startQueued);
+    service.updateTask(startQueued.id, { priority: "high" });
+    service.updateTask(gated.id, { priority: "low" });
+
+    orchestrator.cancelTask(blocker.id);
+
+    // Higher priority wins regardless of which queue it came from.
+    expect(service.getTask(startQueued.id)!.status).toBe("running");
+    expect(service.getTask(gated.id)!.status).toBe("gate_queued");
+  });
+});
+
+describe("S3 — two gate-queued tasks resume in a predictable order", () => {
+  it("resumes FIFO by approval order when priority is equal", () => {
+    settings.updateSettings({ maxParallelTasks: 3 });
+    const blocker = create("Blocker");
+    const taskB = create("Task B");
+    const taskC = create("Task C");
+    orchestrator.startTask(blocker.id);
+    orchestrator.startTask(taskB.id);
+    orchestrator.startTask(taskC.id);
+    service.setTaskStage(taskB.id, "PLAN_GATE");
+    service.setTaskStage(taskC.id, "PLAN_GATE");
+
+    // Only the blocker holds a slot now (the gates hold none), so bring the
+    // limit down to 1 to force both approvals to compete for it.
+    settings.updateSettings({ maxParallelTasks: 1 });
+
+    // Approve B first, then C — both lose the capacity race and queue.
+    orchestrator.decideGate({ taskId: taskB.id, gate: "PLAN_GATE", decision: "approve" });
+    orchestrator.decideGate({ taskId: taskC.id, gate: "PLAN_GATE", decision: "approve" });
+    expect(service.getTask(taskB.id)!.status).toBe("gate_queued");
+    expect(service.getTask(taskC.id)!.status).toBe("gate_queued");
+
+    orchestrator.cancelTask(blocker.id);
+
+    // B was approved first, so it resumes before C is given a slot.
+    expect(service.getTask(taskB.id)!.status).toBe("running");
+    expect(service.getTask(taskC.id)!.status).toBe("gate_queued");
+  });
+
+  it("resumes the higher-priority gate-queued task first when priorities differ", () => {
+    settings.updateSettings({ maxParallelTasks: 3 });
+    const blocker = create("Blocker");
+    const low = create("Low priority");
+    const urgent = create("Urgent priority");
+    orchestrator.startTask(blocker.id);
+    orchestrator.startTask(low.id);
+    orchestrator.startTask(urgent.id);
+    service.setTaskStage(low.id, "PLAN_GATE");
+    service.setTaskStage(urgent.id, "PLAN_GATE");
+    service.updateTask(low.id, { priority: "low" });
+    service.updateTask(urgent.id, { priority: "urgent" });
+
+    settings.updateSettings({ maxParallelTasks: 1 });
+
+    // Approve the low-priority task first — it would win a pure FIFO race,
+    // but priority takes precedence, mirroring `on_queue`'s ordering rule.
+    orchestrator.decideGate({ taskId: low.id, gate: "PLAN_GATE", decision: "approve" });
+    orchestrator.decideGate({ taskId: urgent.id, gate: "PLAN_GATE", decision: "approve" });
+
+    orchestrator.cancelTask(blocker.id);
+
+    expect(service.getTask(urgent.id)!.status).toBe("running");
+    expect(service.getTask(low.id)!.status).toBe("gate_queued");
+  });
+});
+
 describe("S3 — queue tolerates cancellation or deletion of a waiting task", () => {
   it("cancels a queued task without starting it, leaving the rest of the queue untouched", () => {
     const active = create("Active");

@@ -15,20 +15,22 @@ const controlClasses =
 
 export function Label({ className, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
   return (
-    <label className={cn("text-xs font-medium text-muted", className)} {...props} />
+    <label data-slot="label" className={cn("text-xs font-medium text-muted", className)} {...props} />
   );
 }
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cn(controlClasses, className)} {...props} />;
+  return <input data-slot="input" className={cn(controlClasses, className)} {...props} />;
 }
 
 export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cn(controlClasses, "resize-y", className)} {...props} />;
+  return (
+    <textarea data-slot="textarea" className={cn(controlClasses, "resize-y", className)} {...props} />
+  );
 }
 
 export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className={cn(controlClasses, "pr-8", className)} {...props} />;
+  return <select data-slot="select" className={cn(controlClasses, "pr-8", className)} {...props} />;
 }
 
 export function Field({

@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 
-import { resolveLimits, resolveModels } from "../config/env";
+import { type QuotaConfig, resolveLimits, resolveModels, resolveQuota } from "../config/env";
 import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { settings } from "../db/schema";
@@ -43,6 +43,12 @@ export type AppSettings = {
   workspaceRetentionDays: number;
   /** Dark/Light/System palette for the dashboard UI. */
   theme: Theme;
+  /**
+   * User-entered usage quota per Claude auth mode, shown by the dashboard's
+   * usage bar. There is no API to read the real Pro/Max or pay-per-use quota,
+   * so this is always a configured value, never a fetched one.
+   */
+  quotaLimits: QuotaConfig;
 };
 
 export function defaultSettings(): AppSettings {
@@ -86,6 +92,7 @@ export function defaultSettings(): AppSettings {
     },
     workspaceRetentionDays: limits.workspaceRetentionDays,
     theme: "system",
+    quotaLimits: resolveQuota(),
   };
 }
 
@@ -112,17 +119,25 @@ export function getSettings(): AppSettings {
     // this is the one line backward compatibility hinges on.
     providers: { ...base.providers, ...(stored.providers ?? {}) },
     maxTurns: { ...base.maxTurns, ...(stored.maxTurns ?? {}) },
+    quotaLimits: {
+      ...base.quotaLimits,
+      ...(stored.quotaLimits ?? {}),
+    },
   };
 }
 
 /**
  * A partial update. The record fields are themselves partial so a caller can
- * change one role's model/provider without resending the whole map.
+ * change one role's model/provider (or one auth mode's quota) without
+ * resending the whole map.
  */
-export type SettingsPatch = Partial<Omit<AppSettings, "models" | "providers" | "maxTurns">> & {
+export type SettingsPatch = Partial<
+  Omit<AppSettings, "models" | "providers" | "maxTurns" | "quotaLimits">
+> & {
   models?: Partial<Record<AgentStage, string>>;
   providers?: Partial<Record<AgentStage, LlmProviderId>>;
   maxTurns?: Partial<Record<AgentStage, number>>;
+  quotaLimits?: Partial<QuotaConfig>;
 };
 
 /** Merges `patch` into the stored overrides and returns the new effective settings. */
@@ -134,6 +149,10 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
     models: { ...current.models, ...(patch.models ?? {}) },
     providers: { ...current.providers, ...(patch.providers ?? {}) },
     maxTurns: { ...current.maxTurns, ...(patch.maxTurns ?? {}) },
+    quotaLimits: {
+      ...current.quotaLimits,
+      ...(patch.quotaLimits ?? {}),
+    },
   };
 
   db.insert(settings)

@@ -52,3 +52,63 @@ describe("TaskControls start button vs. capacity", () => {
     expect(screen.getByText(/Running task is still running\./)).toBeTruthy();
   });
 });
+
+describe("TaskControls start button vs. dependencies", () => {
+  it("disables Start and names the incomplete prerequisite, distinct from a capacity message", () => {
+    render(
+      <TaskControls
+        taskId="task_3"
+        taskTitle="New task"
+        status="queued"
+        notStarted
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ title: "Design the schema", status: "queued" }]}
+      />,
+    );
+
+    const startButton = screen.getByRole("button", { name: "Start" });
+    expect(startButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/Design the schema/)).toBeTruthy();
+    expect(screen.queryByText(/Limit of/)).toBeNull();
+  });
+
+  it("enables Start once every prerequisite is completed", () => {
+    render(
+      <TaskControls
+        taskId="task_4"
+        taskTitle="New task"
+        status="queued"
+        notStarted
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        dependsOn={[{ title: "Design the schema", status: "completed" }]}
+      />,
+    );
+
+    const startButton = screen.getByRole("button", { name: "Start" });
+    expect(startButton.hasAttribute("disabled")).toBe(false);
+  });
+});
+
+describe("TaskControls gate_queued status (S2)", () => {
+  it("shows the queued reason and Cancel, with no error state", () => {
+    render(
+      <TaskControls
+        taskId="task_5"
+        taskTitle="Approved task"
+        status="gate_queued"
+        notStarted={false}
+        capacity={{
+          slotAvailable: false,
+          limit: 1,
+          blocking: [{ title: "Running task" }],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Cancel task" })).toBeTruthy();
+    expect(screen.getByText(/Limit of 1 task in progress reached/)).toBeTruthy();
+    expect(screen.getByText(/Running task is still running\./)).toBeTruthy();
+    // Not an error state: the decision was accepted, not refused.
+    expect(screen.queryByText("Could not cancel the task.")).toBeNull();
+  });
+});

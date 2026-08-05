@@ -15,6 +15,7 @@ import {
   attachments,
   repos,
   stageRuns,
+  taskDependencies,
   tasks,
 } from "../db/schema";
 import { appendEvent } from "../events/store";
@@ -106,6 +107,23 @@ export function listTasks(filter?: { status?: string }): TaskWithRepo[] {
   return rows.map((row) => ({ ...row.task, repo: row.repo }));
 }
 
+/** A task offered as a selectable prerequisite in the "Depends on" picker. */
+export type DependencyOption = { id: string; title: string; repoName: string };
+
+/**
+ * Candidates for the "Depends on" picker: every task except `excludeId`
+ * (the task being edited cannot depend on itself) and every task already
+ * `completed` (a finished task is not a meaningful prerequisite).
+ *
+ * Relies on `tasks.status` staying in lockstep with `currentStage` — enforced
+ * by convention in `setTaskStage`/`statusForStage`, not by a constraint.
+ */
+export function listDependencyOptions(excludeId?: string): DependencyOption[] {
+  return listTasks()
+    .filter((task) => task.status !== "completed" && task.id !== excludeId)
+    .map((task) => ({ id: task.id, title: task.title, repoName: task.repo.name }));
+}
+
 /** A file ready to persist: already read into memory and validated. */
 export type NewAttachment = {
   filename: string;
@@ -129,6 +147,8 @@ export function createTask(input: {
   priority: Priority;
   requireHumanCodeReview?: boolean;
   attachments?: NewAttachment[];
+  /** Task ids that must reach `COMPLETED` before this task can be started. */
+  dependsOn?: string[];
 }): TaskRow {
   const id = newId("task");
   const task = db.transaction(() => {
@@ -149,6 +169,9 @@ export function createTask(input: {
 
     if (input.attachments && input.attachments.length > 0) {
       insertAttachments(created.id, input.attachments);
+    }
+    if (input.dependsOn && input.dependsOn.length > 0) {
+      insertDependencies(created.id, input.dependsOn);
     }
     return created;
   });
@@ -209,6 +232,81 @@ export function deleteAttachment(taskId: string, attachmentId: string): boolean 
   return removed.length > 0;
 }
 
+/** A prerequisite task, with enough of its own state to render a block reason. */
+export type DependencySummary = {
+  id: string;
+  title: string;
+  status: TaskRow["status"];
+  currentStage: Stage;
+};
+
+/** Persists a batch of edges from `taskId` to each id in `dependsOn`. */
+function insertDependencies(taskId: string, dependsOn: string[]): void {
+  for (const dependsOnTaskId of dependsOn) {
+    db.insert(taskDependencies)
+      .values({ id: newId("dep"), taskId, dependsOnTaskId })
+      .run();
+  }
+}
+
+/** The prerequisite tasks `taskId` depends on, in the order they were added. */
+export function listDependencies(taskId: string): DependencySummary[] {
+  return db
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      status: tasks.status,
+      currentStage: tasks.currentStage,
+    })
+    .from(taskDependencies)
+    .innerJoin(tasks, eq(taskDependencies.dependsOnTaskId, tasks.id))
+    .where(eq(taskDependencies.taskId, taskId))
+    .orderBy(taskDependencies.createdAt)
+    .all();
+}
+
+/**
+ * The subset of `taskId`'s prerequisites that have not reached `COMPLETED`.
+ *
+ * Anything else — `queued`, `on_queue`, `running`, `awaiting_gate`, `failed`,
+ * `rejected`, `cancelled` — counts as incomplete; there is no silent skip for
+ * a prerequisite that failed or was cancelled instead of finishing.
+ */
+export function incompleteDependencies(taskId: string): DependencySummary[] {
+  return listDependencies(taskId).filter((dependency) => dependency.currentStage !== "COMPLETED");
+}
+
+/** Replaces `taskId`'s stored prerequisite set with exactly `dependsOn`. */
+export function replaceDependencies(taskId: string, dependsOn: string[]): void {
+  db.transaction(() => {
+    db.delete(taskDependencies).where(eq(taskDependencies.taskId, taskId)).run();
+    insertDependencies(taskId, dependsOn);
+  });
+}
+
+/**
+ * Whether adding an edge from `taskId` to every id in `dependsOn` would close
+ * a cycle — direct (A depends on B, B already depends on A) or transitive
+ * (A -> B -> C -> A).
+ *
+ * Walks each candidate prerequisite's own prerequisites looking for `taskId`;
+ * a self-reference (`taskId` appearing in `dependsOn` itself) is the caller's
+ * responsibility to reject separately, since that is a distinct, simpler 400.
+ */
+export function wouldCreateCycle(taskId: string, dependsOn: string[]): boolean {
+  const visited = new Set<string>();
+  const stack = [...dependsOn];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current === taskId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const dependency of listDependencies(current)) stack.push(dependency.id);
+  }
+  return false;
+}
+
 /**
  * Statuses that occupy a concurrency slot.
  *
@@ -248,6 +346,14 @@ export function queuedTasks(): TaskRow[] {
 }
 
 /**
+ * Tasks parked at `gate_queued` by `decideGate`, whose approved decision is
+ * waiting for `orchestrator.promoteQueue` to resume them as slots free up.
+ */
+export function gateQueuedTasks(): TaskRow[] {
+  return db.select().from(tasks).where(eq(tasks.status, "gate_queued")).all();
+}
+
+/**
  * Fields a user may change while a task has not started yet.
  *
  * `requireHumanCodeReview` is here rather than on a started task because
@@ -260,10 +366,16 @@ export type EditableTaskFields = {
   description: string;
   priority: Priority;
   requireHumanCodeReview: boolean;
+  dependsOn: string[];
 };
 
 export function updateTaskFields(id: string, fields: EditableTaskFields): TaskRow | null {
-  return updateTask(id, fields);
+  const { dependsOn, ...taskColumns } = fields;
+  return db.transaction(() => {
+    const updated = updateTask(id, taskColumns);
+    replaceDependencies(id, dependsOn);
+    return updated;
+  });
 }
 
 /**
@@ -477,6 +589,23 @@ export function totalCostForTask(taskId: string): number {
     .select({ total: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)` })
     .from(stageRuns)
     .where(eq(stageRuns.taskId, taskId))
+    .get();
+  return row?.total ?? 0;
+}
+
+/**
+ * Total cost across every task for stage runs that started at or after
+ * `sinceMs`, falling back to `created_at` for a run that never reached
+ * `running` (so a pending/failed-to-start run is not silently excluded from
+ * "today's spend").
+ */
+export function costSince(sinceMs: number): number {
+  const row = db
+    .select({
+      total: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
+    })
+    .from(stageRuns)
+    .where(sql`coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) >= ${sinceMs}`)
     .get();
   return row?.total ?? 0;
 }

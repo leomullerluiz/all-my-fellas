@@ -157,6 +157,23 @@ describe("POST /api/tasks", () => {
     expect(service.getTask(payload.task.id)!.currentStage).toBe("CREATED");
   });
 
+  it("returns 409 but still creates the task when start: true and a dependency is incomplete", async () => {
+    const prereq = seed({ title: "Prereq" });
+
+    const response = await post({ ...VALID_BODY, repoId, start: true, dependsOn: [prereq.id] });
+    expect(response.status).toBe(409);
+
+    const payload = (await response.json()) as {
+      task: { id: string };
+      started: boolean;
+      error: string;
+    };
+    expect(payload.started).toBe(false);
+    expect(payload.error).toContain("Prereq");
+    // The work is not lost: the task exists at CREATED and can be started later.
+    expect(service.getTask(payload.task.id)!.currentStage).toBe("CREATED");
+  });
+
   it("starts with 201 even while another task is awaiting_gate", async () => {
     gated("Awaiting approval");
 
@@ -179,6 +196,45 @@ describe("POST /api/tasks", () => {
   it("rejects an unknown repository", async () => {
     const response = await post({ ...VALID_BODY, repoId: "repo_missing" });
     expect(response.status).toBe(400);
+  });
+
+  it("creates a task with no dependencies when dependsOn is omitted", async () => {
+    const response = await post({ ...VALID_BODY, repoId });
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as { task: { id: string } };
+    const detail = await taskRoute.GET(new Request("http://test"), params(payload.task.id));
+    const detailPayload = (await detail.json()) as { dependsOn: unknown[] };
+    expect(detailPayload.dependsOn).toEqual([]);
+  });
+
+  it("creates a task with a valid dependency", async () => {
+    const prereq = seed({ title: "Prereq" });
+
+    const response = await post({ ...VALID_BODY, repoId, dependsOn: [prereq.id] });
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as { task: { id: string } };
+    const detail = await taskRoute.GET(new Request("http://test"), params(payload.task.id));
+    const detailPayload = (await detail.json()) as { dependsOn: Array<{ id: string }> };
+    expect(detailPayload.dependsOn.map((d) => d.id)).toEqual([prereq.id]);
+  });
+
+  it("rejects an unknown dependency id", async () => {
+    const response = await post({ ...VALID_BODY, repoId, dependsOn: ["task_missing"] });
+    expect(response.status).toBe(400);
+    expect(service.listTasks()).toHaveLength(0);
+  });
+
+  it("rejects a dependency on an already-completed task", async () => {
+    const done = seed({ title: "Already shipped" });
+    service.setTaskStage(done.id, "COMPLETED");
+
+    const response = await post({ ...VALID_BODY, repoId, dependsOn: [done.id] });
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("Already shipped");
+    expect(service.listTasks()).toHaveLength(1); // only `done`, nothing new created
   });
 
   it("accepts multiple attachments in one multipart submission", async () => {
@@ -273,6 +329,27 @@ describe("POST /api/tasks/:id/start", () => {
     expect(response.status).toBe(200);
     expect(service.getTask(task.id)!.status).toBe("running");
   });
+
+  it("returns 409 naming an incomplete prerequisite", async () => {
+    const prereq = seed({ title: "Design the schema" });
+    const task = seed({ title: "Depends on schema" });
+    service.replaceDependencies(task.id, [prereq.id]);
+
+    const response = await startRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { error: string }).error).toContain("Design the schema");
+    expect(service.getTask(task.id)!.currentStage).toBe("CREATED");
+  });
+
+  it("starts once the prerequisite is COMPLETED", async () => {
+    const prereq = seed({ title: "Design the schema" });
+    service.setTaskStage(prereq.id, "COMPLETED");
+    const task = seed({ title: "Depends on schema" });
+    service.replaceDependencies(task.id, [prereq.id]);
+
+    const response = await startRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(200);
+  });
 });
 
 describe("PATCH /api/tasks/:id", () => {
@@ -316,6 +393,76 @@ describe("PATCH /api/tasks/:id", () => {
   it("validates the payload", async () => {
     const task = seed();
     const response = await patch(task.id, { repoId, title: "x", description: "short" });
+    expect(response.status).toBe(400);
+  });
+
+  it("replaces the stored dependency set and round-trips it through GET", async () => {
+    const prereq = seed({ title: "Prereq" });
+    const task = seed();
+
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: [prereq.id] });
+    expect(response.status).toBe(200);
+
+    const detail = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await detail.json()) as { dependsOn: Array<{ id: string }> };
+    expect(payload.dependsOn.map((d) => d.id)).toEqual([prereq.id]);
+  });
+
+  it("rejects an unknown dependency id", async () => {
+    const task = seed();
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: ["task_missing"] });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a dependency on an already-completed task", async () => {
+    const done = seed({ title: "Already shipped" });
+    service.setTaskStage(done.id, "COMPLETED");
+    const task = seed({ title: "Editing this one" });
+
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: [done.id] });
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("Already shipped");
+  });
+
+  it("rejects a self-reference", async () => {
+    const task = seed();
+    const response = await patch(task.id, { ...VALID_BODY, repoId, dependsOn: [task.id] });
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a direct two-hop cycle, naming the tasks in the cycle", async () => {
+    const a = seed({ title: "Task Alpha" });
+    const b = seed({ title: "Task Beta" });
+    // b depends on a
+    await patch(b.id, { ...VALID_BODY, title: "Task Beta", repoId, dependsOn: [a.id] });
+
+    // now try to make a depend on b, closing the cycle
+    const response = await patch(a.id, {
+      ...VALID_BODY,
+      title: "Task Alpha",
+      repoId,
+      dependsOn: [b.id],
+    });
+    expect(response.status).toBe(400);
+    const payload = (await response.json()) as { error: string };
+    expect(payload.error).toContain("Task Alpha");
+    expect(payload.error).toContain("Task Beta");
+  });
+
+  it("rejects a transitive three-hop cycle (A -> B -> C -> A)", async () => {
+    const a = seed({ title: "Task Alpha" });
+    const b = seed({ title: "Task Beta" });
+    const c = seed({ title: "Task Gamma" });
+    await patch(b.id, { ...VALID_BODY, title: "Task Beta", repoId, dependsOn: [a.id] });
+    await patch(c.id, { ...VALID_BODY, title: "Task Gamma", repoId, dependsOn: [b.id] });
+
+    const response = await patch(a.id, {
+      ...VALID_BODY,
+      title: "Task Alpha",
+      repoId,
+      dependsOn: [c.id],
+    });
     expect(response.status).toBe(400);
   });
 

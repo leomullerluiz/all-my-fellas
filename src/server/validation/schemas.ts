@@ -23,6 +23,18 @@ export const taskFieldsSchema = z.object({
   priority: z.enum(PRIORITIES).default("medium"),
   /** Park at HUMAN_CODE_REVIEW before delivery. Not changeable after start. */
   requireHumanCodeReview: z.boolean().default(false),
+  /**
+   * Ids of tasks that must reach `COMPLETED` before this one can be started.
+   *
+   * A `multipart/form-data` submission repeats the `dependsOn` field once per
+   * selected id rather than sending a JSON array, so a single selection
+   * arrives as a bare string — the `preprocess` normalizes both shapes (and
+   * an omitted field) to an array before the length/content checks run.
+   */
+  dependsOn: z.preprocess(
+    (value) => (value === undefined ? [] : Array.isArray(value) ? value : [value]),
+    z.array(z.string().min(1)).max(50),
+  ),
 });
 
 export const createTaskSchema = taskFieldsSchema.extend({
@@ -143,6 +155,16 @@ const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.string().trim().m
 const turnsMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.number().int().min(1).max(500));
 const providersMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.enum(LLM_PROVIDER_IDS));
 
+const quotaLimitSchema = z.object({
+  /** `null` clears the limit — the bar goes back to "quota not configured". */
+  limitUsd: z.number().min(0).nullable(),
+  cadence: z.enum(["daily", "hourly"]),
+});
+const quotaLimitsSchema = z.partialRecord(
+  z.enum(["subscription", "api_key"]),
+  quotaLimitSchema,
+);
+
 export const updateSettingsSchema = z.object({
   models: modelMapSchema.optional(),
   providers: providersMapSchema.optional(),
@@ -152,6 +174,7 @@ export const updateSettingsSchema = z.object({
   autoApprovePlanForLowCriticality: z.boolean().optional(),
   workspaceRetentionDays: z.number().int().min(0).max(365).optional(),
   theme: z.enum(THEMES).optional(),
+  quotaLimits: quotaLimitsSchema.optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 

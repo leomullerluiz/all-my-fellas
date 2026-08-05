@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,9 +49,6 @@ export function RepoManager({
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [notice, setNotice] = useState<{ tone: "warning" | "success"; text: string } | null>(
-    null,
-  );
 
   const selected = useMemo(
     () => providers.find((option) => option.id === provider),
@@ -62,7 +60,6 @@ export function RepoManager({
     event.preventDefault();
     setBusy(true);
     setErrors({});
-    setNotice(null);
 
     const response = await fetch("/api/repos", {
       method: "POST",
@@ -89,7 +86,7 @@ export function RepoManager({
 
     if (!response.ok) {
       setErrors(payload.details ?? {});
-      setNotice({ tone: "warning", text: payload.error ?? "Could not add the repository." });
+      toast.error(payload.error ?? "Could not add the repository.");
       return;
     }
 
@@ -102,30 +99,29 @@ export function RepoManager({
 
     const branchMismatch =
       payload.detectedDefaultBranch && payload.detectedDefaultBranch !== defaultBranch;
-    setNotice(
-      payload.verified
-        ? {
-            tone: branchMismatch ? "warning" : "success",
-            text: branchMismatch
-              ? `Connected, but the repository's default branch is "${payload.detectedDefaultBranch}", not "${defaultBranch}". Tasks will clone the branch you entered.`
-              : "Connected and verified.",
-          }
-        : {
-            tone: "warning",
-            text: `Saved, but the access check failed: ${payload.warning ?? "unknown reason"}`,
-          },
-    );
+    if (payload.verified) {
+      if (branchMismatch) {
+        toast.info(
+          `Connected, but the repository's default branch is "${payload.detectedDefaultBranch}", not "${defaultBranch}". Tasks will clone the branch you entered.`,
+        );
+      } else {
+        toast.success("Connected and verified.");
+      }
+    } else {
+      toast.warning(`Saved, but the access check failed: ${payload.warning ?? "unknown reason"}`);
+    }
     router.refresh();
   }
 
   async function removeRepo(id: string) {
     setBusy(true);
-    setNotice(null);
 
     const response = await fetch(`/api/repos/${id}`, { method: "DELETE" });
     if (!response.ok) {
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      setNotice({ tone: "warning", text: payload.error ?? "Could not remove the repository." });
+      toast.error(payload.error ?? "Could not remove the repository.");
+    } else {
+      toast.success("Repository removed.");
     }
 
     setBusy(false);
@@ -248,16 +244,6 @@ export function RepoManager({
                 className="font-mono text-xs"
               />
             </Field>
-
-            {notice ? (
-              <p
-                className={
-                  notice.tone === "success" ? "text-xs text-success" : "text-xs text-warning"
-                }
-              >
-                {notice.text}
-              </p>
-            ) : null}
 
             <Button type="submit" disabled={busy}>
               {busy ? "Saving…" : "Add repository"}

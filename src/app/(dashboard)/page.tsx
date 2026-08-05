@@ -5,12 +5,14 @@ import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-sta
 import { TaskBoard, type BoardTask } from "@/components/task-board";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { UsageBar } from "@/components/usage-bar";
 import { formatCost } from "@/lib/utils";
 import { resolveProviderAuth } from "@/server/config/env";
 import { credentialSource } from "@/server/git/credentials";
 import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
-import { listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
+import { listDependencies, listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
+import { resolveQuotaStatus, spendToday } from "@/server/usage/quota";
 
 // The board reflects worker state that changes between requests, so it must be
 // rendered per request rather than prerendered at build time.
@@ -62,12 +64,18 @@ export default async function DashboardPage() {
   const tasks: BoardTask[] = listTasks().map((task) => ({
     ...task,
     costUsd: totalCostForTask(task.id),
+    dependsOn: listDependencies(task.id),
   }));
 
   const slots = capacity();
   const notStarted = tasks.filter((task) => task.currentStage === "CREATED").length;
   const waiting = tasks.filter((task) => task.status === "awaiting_gate").length;
   const spend = tasks.reduce((sum, task) => sum + task.costUsd, 0);
+
+  // S1/S2/S3's bottom-of-page bar. Recomputed on every request that renders
+  // this route, same as everything else here — no separate polling.
+  const todaySpend = spendToday();
+  const quota = resolveQuotaStatus();
 
   // A digest of every task's id/stage/status, recomputed on each request
   // that renders this route (full load or `router.refresh()`). Changes
@@ -122,6 +130,8 @@ export default async function DashboardPage() {
       ) : (
         <TaskBoard tasks={tasks} capacity={slots} />
       )}
+
+      <UsageBar spendToday={todaySpend} quota={quota} />
     </BatchSelectionProvider>
   );
 }
