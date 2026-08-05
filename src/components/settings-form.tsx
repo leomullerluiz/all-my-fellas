@@ -3,14 +3,23 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, Input } from "@/components/ui/field";
+import { Field, Input, Select } from "@/components/ui/field";
+import type { ProviderAuth } from "@/server/config/env";
+import { LLM_PROVIDER_IDS, LLM_PROVIDER_LABELS, type LlmProviderId } from "@/server/config/llm-providers";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
 import type { AppSettings } from "@/server/settings/store";
 
-/** Editable runtime settings: models, turn ceilings and pipeline limits. */
-export function SettingsForm({ initial }: { initial: AppSettings }) {
+/** Editable runtime settings: models, providers, turn ceilings and pipeline limits. */
+export function SettingsForm({
+  initial,
+  llmCredentials,
+}: {
+  initial: AppSettings;
+  llmCredentials: Record<LlmProviderId, ProviderAuth>;
+}) {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
@@ -21,6 +30,13 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
     setSettings((current) => ({
       ...current,
       models: { ...current.models, [stage]: value },
+    }));
+  }
+
+  function setProvider(stage: AgentStage, value: LlmProviderId) {
+    setSettings((current) => ({
+      ...current,
+      providers: { ...current.providers, [stage]: value },
     }));
   }
 
@@ -59,24 +75,52 @@ export function SettingsForm({ initial }: { initial: AppSettings }) {
     <form onSubmit={save} className="flex flex-col gap-5">
       <Card>
         <CardHeader>
-          <CardTitle>Model per role</CardTitle>
+          <CardTitle>Provider and model per role</CardTitle>
           <CardDescription>
-            Light roles produce text only; the Developer benefits most from a stronger model.
-            Any Claude model id is accepted.
+            Claude stays the default for every role — switching a role to ChatGPT or Gemini is
+            opt-in. The model id must match whichever provider is selected for that role; see{" "}
+            <code className="font-mono">docs/llm-providers.md</code> for accepted ids.
           </CardDescription>
         </CardHeader>
         <CardBody>
           <div className="grid gap-4 sm:grid-cols-2">
-            {AGENT_STAGES.map((stage) => (
-              <Field key={stage} label={STAGE_LABELS[stage]} htmlFor={`model-${stage}`}>
-                <Input
-                  id={`model-${stage}`}
-                  value={settings.models[stage]}
-                  onChange={(event) => setModel(stage, event.target.value)}
-                  className="font-mono text-xs"
-                />
-              </Field>
-            ))}
+            {AGENT_STAGES.map((stage) => {
+              const provider = settings.providers[stage];
+              const credential = llmCredentials[provider];
+              return (
+                <div key={stage} className="flex flex-col gap-2 rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-foreground">{STAGE_LABELS[stage]}</span>
+                    {credential.mode === "missing" ? (
+                      <Badge tone="danger" title={credential.label}>
+                        credential missing
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <Field label="Provider" htmlFor={`provider-${stage}`}>
+                    <Select
+                      id={`provider-${stage}`}
+                      value={provider}
+                      onChange={(event) => setProvider(stage, event.target.value as LlmProviderId)}
+                    >
+                      {LLM_PROVIDER_IDS.map((id) => (
+                        <option key={id} value={id}>
+                          {LLM_PROVIDER_LABELS[id]}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Model id" htmlFor={`model-${stage}`}>
+                    <Input
+                      id={`model-${stage}`}
+                      value={settings.models[stage]}
+                      onChange={(event) => setModel(stage, event.target.value)}
+                      className="font-mono text-xs"
+                    />
+                  </Field>
+                </div>
+              );
+            })}
           </div>
         </CardBody>
       </Card>

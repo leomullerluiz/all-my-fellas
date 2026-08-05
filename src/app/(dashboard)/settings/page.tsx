@@ -2,6 +2,7 @@ import { SettingsForm } from "@/components/settings-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { resolveProviderAuth } from "@/server/config/env";
+import { LLM_PROVIDER_LABELS, resolveAllLlmCredentials } from "@/server/config/llm-providers";
 import { configuredCredentialVariables, conventionalEnvVars } from "@/server/git/credentials";
 import { PROVIDERS, providerFor } from "@/server/git/providers";
 import { getSettings } from "@/server/settings/store";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const auth = resolveProviderAuth();
   const settings = getSettings();
+  const llmCredentials = resolveAllLlmCredentials();
 
   // One row per provider, plus any variable a connection explicitly names, so
   // a custom credential reference is visible here too.
@@ -50,6 +52,20 @@ export default async function SettingsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted">Claude:</span>
             <Badge tone={auth.mode === "missing" ? "danger" : "success"}>{auth.label}</Badge>
+          </div>
+          <div className="flex flex-col gap-2">
+            <span className="text-xs text-muted">LLM providers (Settings → Model per role):</span>
+            <div className="flex flex-wrap gap-1.5">
+              {(Object.keys(llmCredentials) as Array<keyof typeof llmCredentials>).map((id) => (
+                <Badge
+                  key={id}
+                  tone={llmCredentials[id].mode === "missing" ? "danger" : "success"}
+                  title={llmCredentials[id].label}
+                >
+                  {LLM_PROVIDER_LABELS[id]} {llmCredentials[id].mode === "missing" ? "✗" : "✓"}
+                </Badge>
+              ))}
+            </div>
           </div>
           <div className="flex flex-col gap-2">
             <span className="text-xs text-muted">Repository credentials:</span>
@@ -93,7 +109,7 @@ export default async function SettingsPage() {
         </CardBody>
       </Card>
 
-      <SettingsForm initial={settings} />
+      <SettingsForm initial={settings} llmCredentials={llmCredentials} />
     </div>
   );
 }

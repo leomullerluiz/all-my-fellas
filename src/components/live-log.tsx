@@ -65,8 +65,8 @@ function describe(event: PipelineEvent): string {
       return `✎ Edited: ${event.fields.join(", ")}`;
     case "stage_started":
       return `▶ ${event.stage} started (attempt ${event.attempt}${
-        event.model ? `, ${event.model}` : ""
-      })`;
+        event.provider ? `, ${event.provider}` : ""
+      }${event.model ? `, ${event.model}` : ""})`;
     case "stage_finished":
       return `✔ ${event.stage} finished`;
     case "stage_failed":
