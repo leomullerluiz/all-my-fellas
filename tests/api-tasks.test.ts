@@ -198,6 +198,20 @@ describe("POST /api/tasks", () => {
     expect(response.status).toBe(400);
   });
 
+  it("accepts a description of exactly 50,000 characters", async () => {
+    const response = await post({ ...VALID_BODY, repoId, description: "a".repeat(50_000) });
+    expect(response.status).toBe(201);
+  });
+
+  it("rejects a description of 50,001 characters", async () => {
+    const response = await post({ ...VALID_BODY, repoId, description: "a".repeat(50_001) });
+    expect(response.status).toBe(400);
+
+    const payload = (await response.json()) as { details: Record<string, string> };
+    expect(payload.details.description).not.toContain("20000");
+    expect(payload.details.description).not.toContain("20,000");
+  });
+
   it("creates a task with no dependencies when dependsOn is omitted", async () => {
     const response = await post({ ...VALID_BODY, repoId });
     expect(response.status).toBe(201);
@@ -394,6 +408,30 @@ describe("PATCH /api/tasks/:id", () => {
     const task = seed();
     const response = await patch(task.id, { repoId, title: "x", description: "short" });
     expect(response.status).toBe(400);
+  });
+
+  it("accepts a description of exactly 50,000 characters", async () => {
+    const task = seed();
+    const response = await patch(task.id, {
+      ...VALID_BODY,
+      repoId,
+      description: "a".repeat(50_000),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects a description of 50,001 characters", async () => {
+    const task = seed();
+    const response = await patch(task.id, {
+      ...VALID_BODY,
+      repoId,
+      description: "a".repeat(50_001),
+    });
+    expect(response.status).toBe(400);
+
+    const payload = (await response.json()) as { details: Record<string, string> };
+    expect(payload.details.description).not.toContain("20000");
+    expect(payload.details.description).not.toContain("20,000");
   });
 
   it("replaces the stored dependency set and round-trips it through GET", async () => {
