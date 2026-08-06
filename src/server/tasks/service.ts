@@ -120,7 +120,7 @@ export type DependencyOption = { id: string; title: string; repoName: string };
  */
 export function listDependencyOptions(excludeId?: string): DependencyOption[] {
   return listTasks()
-    .filter((task) => task.status !== "completed" && task.id !== excludeId)
+    .filter((task) => task.status !== "completed" && task.status !== "rejected" && task.status !== "failed" && task.status !== "cancelled" && task.id !== excludeId)
     .map((task) => ({ id: task.id, title: task.title, repoName: task.repo.name }));
 }
 

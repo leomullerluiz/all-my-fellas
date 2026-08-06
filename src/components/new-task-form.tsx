@@ -93,7 +93,7 @@ export function NewTaskForm({
   const blockedReason = capacity.slotAvailable
     ? null
     : `Limit of ${capacity.limit} task${capacity.limit === 1 ? "" : "s"} in progress reached` +
-      (capacity.blocking[0] ? ` — ${capacity.blocking[0].title} is still running.` : ".");
+    (capacity.blocking[0] ? ` — ${capacity.blocking[0].title} is still running.` : ".");
 
   async function submit(start: boolean) {
     setErrors({});
@@ -429,7 +429,7 @@ export function NewTaskForm({
         </CardHeader>
         <CardBody>
           <pre className="artifact-body max-h-[32rem] overflow-auto rounded-md border border-border bg-background p-3">
-{`## Task
+            {`## Task
 
 - Title: ${title || "(not set)"}
 - Repository: ${selectedRepo?.name ?? "(none selected)"}
