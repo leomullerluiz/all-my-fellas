@@ -178,6 +178,12 @@ export const updateSettingsSchema = z.object({
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 
+/** `POST /api/settings/test-provider` — which LLM backend to send `"test"` to. */
+export const testProviderSchema = z.object({
+  provider: z.enum(LLM_PROVIDER_IDS),
+});
+export type TestProviderInput = z.infer<typeof testProviderSchema>;
+
 export const usageQuerySchema = z.object({
   /** Rolling window in days; omitted means all time. */
   days: z.coerce.number().int().min(1).max(365).optional(),
