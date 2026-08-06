@@ -39,6 +39,12 @@ export const repos = sqliteTable("repos", {
   credentialUsername: text("credential_username"),
   /** API root for self-hosted instances; `NULL` uses the provider's default. */
   apiBaseUrl: text("api_base_url"),
+  /**
+   * Free-text project documentation (architecture, layout, conventions),
+   * entered once at connection time and handed to every stage prompt. `NULL`
+   * means none was provided.
+   */
+  context: text("context"),
   createdAt: integer("created_at").notNull().default(now),
 });
 
