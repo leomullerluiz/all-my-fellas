@@ -204,6 +204,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
           description: task.description,
           priority: task.priority,
           repoName: task.repo.name,
+          repoContext: task.repo.context,
           branchName,
         },
         artifacts: inputs,

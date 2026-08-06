@@ -45,6 +45,7 @@ const prompt: StagePromptInput = {
     description: "As a user I want to log in.",
     priority: "medium",
     repoName: "acme/app",
+    repoContext: null,
     branchName: "task/login-form",
   },
   artifacts: [{ type: "brief", content: "Build a login form." }],
