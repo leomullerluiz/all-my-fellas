@@ -30,8 +30,12 @@ export type RepoRowView = {
   createdAt: number;
   taskCount: number;
   credential: { variable: string; present: boolean };
-  /** Free-text project documentation entered at connection time, if any. */
-  context: string | null;
+  /**
+   * Whether free-text project documentation was entered at connection time.
+   * The list payload never carries the full text — it's fetched on demand
+   * from `/api/repos/:id` when a repo's context is expanded.
+   */
+  hasContext: boolean;
 };
 
 export function RepoManager({
@@ -53,6 +57,8 @@ export function RepoManager({
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [expandedContext, setExpandedContext] = useState<string | null>(null);
+  const [contextText, setContextText] = useState<Record<string, string>>({});
+  const [loadingContext, setLoadingContext] = useState<string | null>(null);
 
   const selected = useMemo(
     () => providers.find((option) => option.id === provider),
@@ -132,6 +138,25 @@ export function RepoManager({
 
     setBusy(false);
     router.refresh();
+  }
+
+  async function toggleContext(id: string) {
+    if (expandedContext === id) {
+      setExpandedContext(null);
+      return;
+    }
+
+    if (!(id in contextText)) {
+      setLoadingContext(id);
+      const response = await fetch(`/api/repos/${id}`);
+      const payload = (await response.json().catch(() => ({}))) as {
+        repo?: { context: string | null };
+      };
+      setContextText((current) => ({ ...current, [id]: payload.repo?.context ?? "" }));
+      setLoadingContext(null);
+    }
+
+    setExpandedContext(id);
   }
 
   return (
@@ -291,20 +316,23 @@ export function RepoManager({
                     <p className="mt-0.5 text-[11px] text-muted">
                       base {repo.defaultBranch} · added {formatDateTime(repo.createdAt)}
                     </p>
-                    {repo.context ? (
+                    {repo.hasContext ? (
                       <>
                         <button
                           type="button"
                           className="mt-1 text-[11px] text-accent underline-offset-2 hover:underline"
-                          onClick={() =>
-                            setExpandedContext((current) => (current === repo.id ? null : repo.id))
-                          }
+                          onClick={() => toggleContext(repo.id)}
+                          disabled={loadingContext === repo.id}
                         >
-                          {expandedContext === repo.id ? "Hide context" : "Show context"}
+                          {loadingContext === repo.id
+                            ? "Loading…"
+                            : expandedContext === repo.id
+                              ? "Hide context"
+                              : "Show context"}
                         </button>
                         {expandedContext === repo.id ? (
                           <p className="mt-1 whitespace-pre-wrap rounded-md border border-border bg-surface-raised p-2 text-[11px] text-foreground">
-                            {repo.context}
+                            {contextText[repo.id]}
                           </p>
                         ) : null}
                       </>
@@ -324,14 +352,14 @@ export function RepoManager({
                       {repo.credential.variable} {repo.credential.present ? "✓" : "missing"}
                     </Badge>
                     <Badge
-                      tone={repo.context ? "success" : "neutral"}
+                      tone={repo.hasContext ? "success" : "neutral"}
                       title={
-                        repo.context
+                        repo.hasContext
                           ? "Agents receive this repository's context at every stage."
                           : "No context provided for this repository."
                       }
                     >
-                      {repo.context ? "Context ✓" : "No context"}
+                      {repo.hasContext ? "Context ✓" : "No context"}
                     </Badge>
                     <Badge tone={repo.taskCount > 0 ? "neutral" : "neutral"}>
                       {repo.taskCount} task{repo.taskCount === 1 ? "" : "s"}

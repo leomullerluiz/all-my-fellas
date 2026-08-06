@@ -19,7 +19,7 @@ export default async function ReposPage() {
       defaultBranch: repo.defaultBranch,
       createdAt: repo.createdAt,
       taskCount: tasks.filter((task) => task.repoId === repo.id).length,
-      context: repo.context,
+      hasContext: repo.context != null,
       credential: credentialSource({
         provider,
         credentialRef: repo.credentialRef,

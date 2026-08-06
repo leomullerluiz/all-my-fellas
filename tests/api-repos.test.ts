@@ -6,8 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
  * Route-handler tests for repository connections, covering the optional
- * `context` field: creation with/without it, the length cap, and that both
- * `GET` endpoints echo it back.
+ * `context` field: creation with/without it, the length cap, that the list
+ * endpoint reports only presence, and that the detail endpoint echoes the
+ * full text.
  */
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "api-repos-test-"));
@@ -84,18 +85,34 @@ describe("POST /api/repos", () => {
 });
 
 describe("GET /api/repos and /api/repos/:id", () => {
-  it("echo the stored context on both endpoints", async () => {
+  it("reports presence only on the list endpoint, and the full text on the detail endpoint", async () => {
     const context = "Architecture notes for the agents.";
     const created = await post({ ...VALID_BODY, name: "acme/other", context });
     const { repo } = (await created.json()) as { repo: { id: string } };
 
     const list = await reposRoute.GET();
-    const listPayload = (await list.json()) as { repos: Array<{ id: string; context: string | null }> };
+    const listPayload = (await list.json()) as {
+      repos: Array<{ id: string; context?: string | null; hasContext: boolean }>;
+    };
     const listed = listPayload.repos.find((entry) => entry.id === repo.id);
-    expect(listed?.context).toBe(context);
+    expect(listed?.hasContext).toBe(true);
+    expect(listed?.context).toBeUndefined();
 
     const detail = await repoRoute.GET(new Request("http://test/api/repos/x"), params(repo.id));
     const detailPayload = (await detail.json()) as { repo: { context: string | null } };
     expect(detailPayload.repo.context).toBe(context);
+  });
+
+  it("reports hasContext=false on the list endpoint when no context was set", async () => {
+    const created = await post({ ...VALID_BODY, name: "acme/no-context" });
+    const { repo } = (await created.json()) as { repo: { id: string } };
+
+    const list = await reposRoute.GET();
+    const listPayload = (await list.json()) as {
+      repos: Array<{ id: string; context?: string | null; hasContext: boolean }>;
+    };
+    const listed = listPayload.repos.find((entry) => entry.id === repo.id);
+    expect(listed?.hasContext).toBe(false);
+    expect(listed?.context).toBeUndefined();
   });
 });

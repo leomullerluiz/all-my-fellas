@@ -10,8 +10,12 @@ export async function GET() {
   try {
     const repos = listRepos().map((repo) => {
       const provider = providerFor(repo.provider);
+      // The list payload reports only whether context is set, never the text
+      // itself — the full value is fetched on demand from `/api/repos/:id`.
+      const { context, ...rest } = repo;
       return {
-        ...repo,
+        ...rest,
+        hasContext: context != null,
         providerName: provider.displayName,
         changeRequestNoun: provider.changeRequestNoun,
         // The variable name and whether it is set — never the secret.
