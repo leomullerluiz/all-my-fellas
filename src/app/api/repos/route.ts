@@ -56,9 +56,10 @@ export async function POST(request: Request) {
       credentialUsername: parsed.data.credentialUsername ?? null,
       apiBaseUrl: parsed.data.apiBaseUrl ?? null,
     };
+    const context = parsed.data.context ?? null;
 
     const access = await verifyRepositoryAccess(connection);
-    const repo = createRepo({ name: parsed.data.name, ...connection });
+    const repo = createRepo({ name: parsed.data.name, ...connection, context });
 
     return json(
       {
