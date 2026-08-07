@@ -37,7 +37,13 @@ const REFRESH_TRIGGERS = new Set([
 
 const MAX_LINES = 400;
 
-function toneFor(event: PipelineEvent): string {
+/**
+ * Exported for `tests/live-log-tone.test.tsx` — the `default` branch means a
+ * missed case here compiles cleanly (unlike `describe()` below, which has no
+ * `default` and is therefore compiler-forced), so the failed/errored/stderr
+ * branches need a direct test rather than relying on totality.
+ */
+export function toneFor(event: PipelineEvent): string {
   switch (event.type) {
     case "stage_started":
       return "text-accent";
