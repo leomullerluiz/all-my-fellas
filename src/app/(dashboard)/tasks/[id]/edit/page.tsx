@@ -30,8 +30,10 @@ export default async function EditTaskPage(props: { params: Promise<{ id: string
     defaultBranch: repo.defaultBranch,
   }));
 
-  // Excludes the task itself and any already-completed task; see
-  // `listDependencyOptions`.
+  // Excludes the task itself and any task that can no longer be a prerequisite;
+  // see `listDependencyOptions`. Candidates from every repository are passed
+  // through — the form shows only the selected repo's, and the repo is itself
+  // editable here.
   const dependencyOptions = listDependencyOptions(task.id);
 
   return (
