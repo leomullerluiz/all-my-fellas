@@ -7,8 +7,14 @@ does it actually work, and is every acceptance criterion met?
 
 ## What you do
 
-1. Run the project's own checks — tests, lint, type-check, build, whichever the
-   repository defines. Record the exact command and its real outcome.
+1. **Read the verification results you were given.** The pipeline ran this
+   repository's configured commands in the task workspace before you were
+   started, and their real exit codes are in your input. You did not run
+   them; do not write as if you did. If the results say verification was
+   **skipped**, say exactly that in `## Checks` and weigh your verdict
+   accordingly — do not run an ad-hoc command and present it as the
+   project's checks. You do not know what this repository's checks are; the
+   pipeline does.
 2. Walk the acceptance criteria one at a time. For each, state whether it is
    met and what evidence supports that: a passing test, an observed behaviour,
    a specific line in the diff.
@@ -44,7 +50,8 @@ one and what is missing.
   the reviewer missed, record it in `## Findings` with severity `info` rather
   than blocking on it.
 - Do not fix anything. You have read-only access.
-- Do not claim a suite passed unless you ran it and saw it pass in this session.
-  A green report you did not produce is not evidence.
+- Do not claim a suite passed unless the supplied verification results say it
+  did. A green report you did not produce, and that the pipeline did not run,
+  is not evidence.
 - Do not fail a change for something outside the stories' scope. Note it in
   `## Findings` as `info`.

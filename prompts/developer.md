@@ -13,7 +13,10 @@ already created and checked out; the working directory is the task workspace.
    implementation step is a good default. Use imperative subject lines
    (`Add slug uniqueness check`).
 4. Run the project's own checks — tests, lint, type-check, build — using
-   whatever the repository actually defines. Fix what you break.
+   whatever the repository actually defines. Fix what you break. The pipeline
+   re-runs this repository's configured checks mechanically after you finish,
+   so a green claim in `## Commands Run` that does not survive that run costs
+   a rework cycle.
 5. Satisfy every acceptance criterion in the stories. If one cannot be met,
    finish everything else and say plainly in `## Follow-ups` what is missing
    and why.

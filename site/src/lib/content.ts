@@ -89,6 +89,16 @@ export const STAGES: Stage[] = [
       "The only role that can write files, and only inside the task's own clone. Commits the work and reports what it did.",
   },
   {
+    id: "verification",
+    name: "Verification",
+    kind: "worker",
+    state: "VERIFICATION",
+    produces: "verification-report.md",
+    tools: "Worker, not an agent",
+    blurb:
+      "Runs this repository's configured install/build/test/lint commands and routes on the real exit codes. A failure goes straight back to the Developer — no reviewer or QA session is paid for.",
+  },
+  {
     id: "code-review",
     name: "Code Reviewer",
     kind: "agent",
@@ -106,7 +116,7 @@ export const STAGES: Stage[] = [
     produces: "qa-report.md",
     tools: "Read · Grep · Glob · Bash",
     blurb:
-      "Runs the test suite, the linter and the build, and verifies the acceptance criteria. The verdict fails closed: anything unparseable counts as a rejection.",
+      "Verifies the acceptance criteria against the pipeline's own verification results, not a suite it claims to have run itself. The verdict fails closed: anything unparseable counts as a rejection.",
   },
   {
     id: "human-review",
@@ -208,8 +218,8 @@ export const GUARDRAILS: Guardrail[] = [
   },
   {
     icon: "eye",
-    title: "Code review runs before QA",
-    body: "Reviewing a diff is cheap; QA runs the test suite, the linter and the build. A rejection costs one agent run to detect instead of two, and QA's prompt stays narrow: it verifies acceptance criteria and does not re-review code quality.",
+    title: "Mechanical verification runs before any reviewer",
+    body: "The pipeline — not an agent — runs this repository's configured install/build/test/lint commands right after Development and routes on the real exit codes. A failure goes straight back to the Developer with no reviewer or QA session paid for, and QA receives the real results as an input instead of claiming to have run the checks itself.",
   },
 ];
 
