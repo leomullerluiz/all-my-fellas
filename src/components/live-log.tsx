@@ -5,7 +5,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/store";
+// From `./types`, not `./store`: `store.ts` imports the SQLite client, which
+// cannot be bundled for the browser. `./types` has no server-only imports at
+// all — see its header comment.
+import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/types";
 
 /**
  * Live agent log, fed by the task's SSE endpoint.
