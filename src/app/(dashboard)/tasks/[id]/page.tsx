@@ -162,7 +162,12 @@ export default async function TaskDetailPage(props: {
                   {runs.map((run) => (
                     <li key={run.id} className="flex flex-col gap-1 border-l-2 border-border pl-3">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-medium">{STAGE_LABELS[run.stage]}</span>
+                        <Link
+                          href={`/tasks/${task.id}/runs/${run.id}`}
+                          className="text-xs font-medium underline-offset-2 hover:underline"
+                        >
+                          {STAGE_LABELS[run.stage]}
+                        </Link>
                         {run.attempt > 1 ? (
                           <Badge tone="warning">attempt {run.attempt}</Badge>
                         ) : null}
