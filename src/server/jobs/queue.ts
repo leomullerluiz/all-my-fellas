@@ -139,6 +139,29 @@ export function cancelPendingJobs(taskId: string): void {
 }
 
 /**
+ * Removes a task's still-pending workspace-cleanup job, if any.
+ *
+ * A terminal transition always schedules one (`scheduleWorkspaceCleanup`); a
+ * retry that re-enters the pipeline must drop it before applying its
+ * transition, or the stale job can delete the workspace out from under the
+ * retried run — see `spec-retry-recovery.md` §8.1. Deletes rather than
+ * marking `failed`, unlike {@link cancelPendingJobs}: `lastError = "Task
+ * cancelled"` would be a false statement in the audit trail for a task that
+ * is, at this moment, being retried rather than cancelled.
+ */
+export function cancelScheduledCleanup(taskId: string): void {
+  db.delete(jobs)
+    .where(
+      and(
+        eq(jobs.taskId, taskId),
+        eq(jobs.kind, "cleanup_workspace"),
+        inArray(jobs.status, ["pending", "claimed"]),
+      ),
+    )
+    .run();
+}
+
+/**
  * Returns jobs left in `claimed` by a crashed worker back to `pending`.
  *
  * Called once at worker startup: there is exactly one worker, so anything still

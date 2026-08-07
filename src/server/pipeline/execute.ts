@@ -42,7 +42,7 @@ import {
 import { advanceTask } from "./orchestrator";
 import { type ArtifactInput, truncateForPrompt } from "./prompt";
 import { runStage } from "./run-stage";
-import { type AgentStage, ARTIFACT_FILENAMES, isAgentStage } from "./stages";
+import { type AgentStage, ARTIFACT_FILENAMES, type FailureKind, isAgentStage } from "./stages";
 import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
 
@@ -61,6 +61,12 @@ export class StageJobError extends Error {
     message: string,
     /** When false the worker fails the task immediately instead of retrying. */
     readonly retryable = true,
+    /**
+     * Why the stage failed, forwarded to the `stage_failed` signal so the
+     * task's terminal `failure_kind` reflects it. `"stage_error"` is right for
+     * every throw site but the three that declare a more specific kind below.
+     */
+    readonly kind: FailureKind = "stage_error",
   ) {
     super(message);
     this.name = "StageJobError";
@@ -273,7 +279,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     markStageRunStatus(stageRunId, "failed", { error: message });
-    throw new StageJobError(message, false);
+    throw new StageJobError(message, false, "artifact_invalid");
   }
 
   saveArtifact({
@@ -316,7 +322,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     if (!(await hasCommitsAheadOfBase(workspacePath, task.repo.defaultBranch))) {
       const message = "The developer stage produced no commits on the task branch.";
       markStageRunStatus(stageRunId, "failed", { error: message });
-      throw new StageJobError(message, false);
+      throw new StageJobError(message, false, "no_commits");
     }
   }
 
@@ -604,7 +610,7 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
   } catch (error) {
     const message = redactRemote(error instanceof Error ? error.message : String(error));
     markStageRunStatus(stageRunId, "failed", { error: message });
-    throw new StageJobError(message);
+    throw new StageJobError(message, true, "delivery_failed");
   }
 
   markStageRunStatus(stageRunId, "done");

@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  GRANTS_REWORK_CYCLE,
   InvalidGateDecisionError,
   InvalidTransitionError,
+  needsBranchHistory,
   type PipelineContext,
+  RETRY_TARGET,
   nextTransition,
 } from "@/server/pipeline/state-machine";
+import { FAILURE_KINDS } from "@/server/pipeline/stages";
 
 const base: PipelineContext = {
   developmentAttempts: 0,
   homologationAttempts: 0,
   reworkMaxCycles: 2,
+  reworkBudgetGrant: 0,
   planGateRequired: true,
   humanCodeReviewRequired: false,
 };
@@ -250,6 +255,155 @@ describe("the shared rework budget", () => {
   }
 });
 
+describe("the per-task rework budget grant (S2)", () => {
+  it("terminates when the budget is exhausted and no grant is available", () => {
+    const transition = nextTransition(
+      "CODE_REVIEW",
+      { kind: "stage_succeeded", stage: "CODE_REVIEW", reviewVerdict: "changes_requested" },
+      { ...base, developmentAttempts: 3, reworkBudgetGrant: 0 },
+    );
+    expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
+  });
+
+  it("spends a granted cycle instead of terminating", () => {
+    const transition = nextTransition(
+      "CODE_REVIEW",
+      { kind: "stage_succeeded", stage: "CODE_REVIEW", reviewVerdict: "changes_requested" },
+      { ...base, developmentAttempts: 3, reworkBudgetGrant: 1 },
+    );
+    expect(transition).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 4 });
+  });
+
+  it("terminates again once the granted cycle is also spent", () => {
+    const transition = nextTransition(
+      "CODE_REVIEW",
+      { kind: "stage_succeeded", stage: "CODE_REVIEW", reviewVerdict: "changes_requested" },
+      { ...base, developmentAttempts: 4, reworkBudgetGrant: 1 },
+    );
+    expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
+  });
+
+  it("sets failedStage/failureKind to DEVELOPMENT/rework_exhausted on the terminal transition", () => {
+    const transition = nextTransition(
+      "QA",
+      { kind: "stage_succeeded", stage: "QA", reviewVerdict: "changes_requested" },
+      { ...base, developmentAttempts: 3 },
+    );
+    expect(transition).toMatchObject({
+      type: "terminal",
+      stage: "FAILED",
+      failedStage: "DEVELOPMENT",
+      failureKind: "rework_exhausted",
+    });
+  });
+
+  it("names both numbers once a grant is in play, and only the configured number otherwise", () => {
+    const noGrant = nextTransition(
+      "QA",
+      { kind: "stage_succeeded", stage: "QA", reviewVerdict: "changes_requested" },
+      { ...base, developmentAttempts: 3, reworkBudgetGrant: 0 },
+    );
+    expect((noGrant as { reason: string }).reason).toContain("rework budget of 2 cycle(s)");
+    expect((noGrant as { reason: string }).reason).not.toContain("granted by a retry");
+
+    const granted = nextTransition(
+      "QA",
+      { kind: "stage_succeeded", stage: "QA", reviewVerdict: "changes_requested" },
+      { ...base, developmentAttempts: 4, reworkBudgetGrant: 1 },
+    );
+    expect((granted as { reason: string }).reason).toContain(
+      "rework budget of 3 cycle(s) (2 configured + 1 granted by a retry)",
+    );
+  });
+});
+
+describe("stage_failed carries the failed stage and kind (S1)", () => {
+  it("defaults to stage_error when the signal omits a kind", () => {
+    expect(
+      nextTransition("ARCHITECTURE", { kind: "stage_failed", stage: "ARCHITECTURE", error: "boom" }, base),
+    ).toMatchObject({
+      type: "terminal",
+      stage: "FAILED",
+      failedStage: "ARCHITECTURE",
+      failureKind: "stage_error",
+    });
+  });
+
+  it("forwards an explicit kind", () => {
+    expect(
+      nextTransition(
+        "DEVELOPMENT",
+        { kind: "stage_failed", stage: "DEVELOPMENT", error: "no commits", failureKind: "no_commits" },
+        base,
+      ),
+    ).toMatchObject({
+      type: "terminal",
+      stage: "FAILED",
+      failedStage: "DEVELOPMENT",
+      failureKind: "no_commits",
+    });
+  });
+});
+
+describe("RETRY_TARGET / GRANTS_REWORK_CYCLE totality", () => {
+  it("has an entry for every FailureKind", () => {
+    for (const kind of FAILURE_KINDS) {
+      expect(RETRY_TARGET[kind]).toBeTypeOf("function");
+      expect(GRANTS_REWORK_CYCLE[kind]).toBeTypeOf("boolean");
+    }
+  });
+
+  it("re-runs the stage that threw for stage_error and artifact_invalid", () => {
+    expect(RETRY_TARGET.stage_error("CODE_REVIEW")).toBe("CODE_REVIEW");
+    expect(RETRY_TARGET.artifact_invalid("QA")).toBe("QA");
+  });
+
+  it("always names DEVELOPMENT for no_commits and rework_exhausted", () => {
+    expect(RETRY_TARGET.no_commits("DEVELOPMENT")).toBe("DEVELOPMENT");
+    expect(RETRY_TARGET.rework_exhausted("DEVELOPMENT")).toBe("DEVELOPMENT");
+  });
+
+  it("always names DELIVERY for delivery_failed", () => {
+    expect(RETRY_TARGET.delivery_failed("DELIVERY")).toBe("DELIVERY");
+  });
+
+  it("only rework_exhausted grants an extra cycle", () => {
+    expect(GRANTS_REWORK_CYCLE.rework_exhausted).toBe(true);
+    for (const kind of FAILURE_KINDS) {
+      if (kind !== "rework_exhausted") expect(GRANTS_REWORK_CYCLE[kind]).toBe(false);
+    }
+  });
+});
+
+describe("needsBranchHistory", () => {
+  it("always needs history for rework_exhausted and delivery_failed", () => {
+    expect(needsBranchHistory("DEVELOPMENT", "rework_exhausted", 4)).toBe(true);
+    expect(needsBranchHistory("DELIVERY", "delivery_failed", 1)).toBe(true);
+  });
+
+  it("never needs history for no_commits, regardless of attempt", () => {
+    expect(needsBranchHistory("DEVELOPMENT", "no_commits", 1)).toBe(false);
+    expect(needsBranchHistory("DEVELOPMENT", "no_commits", 5)).toBe(false);
+  });
+
+  it("never needs history for the three pre-Development stages", () => {
+    for (const stage of ["STAKEHOLDER_REFINEMENT", "PO_REFINEMENT", "ARCHITECTURE"] as const) {
+      expect(needsBranchHistory(stage, "stage_error", 1)).toBe(false);
+    }
+  });
+
+  it("does not need history for DEVELOPMENT's first attempt, but does past it", () => {
+    expect(needsBranchHistory("DEVELOPMENT", "stage_error", 1)).toBe(false);
+    expect(needsBranchHistory("DEVELOPMENT", "artifact_invalid", 2)).toBe(true);
+  });
+
+  it("needs history for CODE_REVIEW, QA, PO_HOMOLOGATION, DELIVERY and VERIFICATION", () => {
+    for (const stage of ["CODE_REVIEW", "QA", "PO_HOMOLOGATION", "DELIVERY", "VERIFICATION"] as const) {
+      expect(needsBranchHistory(stage, "stage_error", 1)).toBe(true);
+    }
+  });
+});
+
 describe("gates", () => {
   it("moves an approved plan into development", () => {
     expect(
@@ -464,14 +618,20 @@ describe("the tail of the pipeline", () => {
     ).toEqual({ type: "terminal", stage: "COMPLETED" });
   });
 
-  it("fails from any stage on a stage failure", () => {
+  it("fails from any stage on a stage failure, recording the cause (S1)", () => {
     expect(
       nextTransition(
         "DEVELOPMENT",
         { kind: "stage_failed", stage: "DEVELOPMENT", error: "boom" },
         base,
       ),
-    ).toEqual({ type: "terminal", stage: "FAILED", reason: "boom" });
+    ).toEqual({
+      type: "terminal",
+      stage: "FAILED",
+      reason: "boom",
+      failedStage: "DEVELOPMENT",
+      failureKind: "stage_error",
+    });
   });
 
   it("cancels from any stage", () => {

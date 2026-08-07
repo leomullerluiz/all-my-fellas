@@ -12,6 +12,7 @@ import {
   taskIsActive,
 } from "../server/jobs/queue";
 import {
+  StageJobError,
   executeAgentStage,
   executeCleanup,
   executeDelivery,
@@ -125,6 +126,8 @@ function handleJobFailure(job: JobRow, error: unknown): void {
   log("error", `Job ${job.id} failed permanently: ${message}`);
   failJob(job.id, message);
 
+  const failureKind = error instanceof StageJobError ? error.kind : undefined;
+
   const run =
     job.kind === "cleanup_workspace"
       ? null
@@ -152,6 +155,7 @@ function handleJobFailure(job: JobRow, error: unknown): void {
         kind: "stage_failed",
         stage: run?.stage ?? "CREATED",
         error: message,
+        failureKind,
       });
     } catch (transitionError) {
       log("error", `Could not fail task ${job.taskId}: ${String(transitionError)}`);

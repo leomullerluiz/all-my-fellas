@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -50,6 +51,18 @@ export function redactRemote(message: string): string {
 
 export function workspacePathFor(taskId: string): string {
   return path.join(resolveWorkspacesDir(), taskId);
+}
+
+/**
+ * Whether the clone is still on disk with its git directory intact.
+ *
+ * Synchronous — checked from inside `retryTask`'s `db.transaction()`, which
+ * cannot `await`. `tasks.workspace_path` alone is not trusted: the directory
+ * can also vanish by hand, or via a shared-volume `docker compose down -v`,
+ * without that column changing.
+ */
+export function workspaceHasGitDir(taskId: string): boolean {
+  return existsSync(path.join(workspacePathFor(taskId), ".git"));
 }
 
 export function branchNameFor(taskId: string, title: string): string {
