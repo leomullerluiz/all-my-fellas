@@ -149,6 +149,13 @@ export function createTask(input: {
   attachments?: NewAttachment[];
   /** Task ids that must reach `COMPLETED` before this task can be started. */
   dependsOn?: string[];
+  /**
+   * Developer-chosen override for the branch the task is developed on.
+   * Trimmed and stored as-is; `prepareWorkspace` prefers it over
+   * `branchNameFor(...)` when present. Create-only — there is no
+   * corresponding field on `EditableTaskFields`.
+   */
+  branchName?: string;
 }): TaskRow {
   const id = newId("task");
   const task = db.transaction(() => {
@@ -161,6 +168,7 @@ export function createTask(input: {
         description: input.description,
         priority: input.priority,
         requireHumanCodeReview: input.requireHumanCodeReview ?? false,
+        customBranchName: input.branchName ?? null,
         status: "queued",
         currentStage: "CREATED",
       })
