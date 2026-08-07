@@ -763,6 +763,46 @@ export function retryTask(taskId: string): Transition {
   });
 }
 
+/**
+ * Resets a Not-delivered task back to `CREATED` so it can be started again.
+ *
+ * Unlike {@link retryTask}, which re-runs the specific stage a `failed` task
+ * stopped on in place, this is a full reset available to every terminal
+ * outcome in the "Not delivered" column — `REJECTED`, `FAILED`, and
+ * `CANCELLED` alike — and lands the task back at `CREATED`/`queued` exactly
+ * like a freshly created one, rather than resuming mid-pipeline. It is not a
+ * pipeline transition (no `nextTransition`/`applyTransition`, no stage
+ * scheduled, no job enqueued), so it goes straight through `setTaskStage`.
+ *
+ * Note: this does not cancel the workspace-retention cleanup job the earlier
+ * terminal transition scheduled (`scheduleWorkspaceCleanup`) — the same gap
+ * already exists, undocumented as a fix, for `retryTask` (see
+ * `spec-retry-recovery.md` §8.1) and is out of scope here too.
+ *
+ * @throws {TaskNotFoundError} when the task does not exist.
+ * @throws {GateError} when the task is not currently `REJECTED`, `FAILED`, or
+ * `CANCELLED`.
+ */
+export function reopenTask(taskId: string): TaskRow {
+  return db.transaction(() => {
+    const task = getTask(taskId);
+    if (!task) throw new TaskNotFoundError(taskId);
+    if (!["REJECTED", "FAILED", "CANCELLED"].includes(task.currentStage)) {
+      throw new GateError(
+        `Only tasks in Rejected, Failed, or Cancelled can be moved to Created; this task is at ${task.currentStage}.`,
+      );
+    }
+
+    appendEvent(taskId, null, {
+      type: "log",
+      level: "info",
+      message: `Moved back to Created from ${task.currentStage}.`,
+    });
+
+    return setTaskStage(taskId, "CREATED")!;
+  });
+}
+
 /** Cancels a task from the UI. Safe to call on an already-finished task. */
 export function cancelTask(taskId: string): Transition | null {
   const task = getTask(taskId);
