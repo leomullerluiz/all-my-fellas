@@ -134,3 +134,118 @@ describe("NewTaskForm dependency multi-select — completed tasks excluded", () 
     vi.unstubAllGlobals();
   });
 });
+
+/**
+ * S1 — the optional "Branch name" field on the create form. Only rendered in
+ * create mode; its value flows into both submission branches of `submit()`.
+ */
+describe("NewTaskForm branch name field", () => {
+  function fillRequiredFields() {
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "repo_1" } });
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "A perfectly reasonable title" },
+    });
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "A description long enough to pass the twenty character minimum." },
+    });
+  }
+
+  it("does not render the field in edit mode", () => {
+    render(
+      <NewTaskForm
+        repos={REPOS}
+        mode="edit"
+        taskId="task_edit"
+        initial={{
+          repoId: "repo_1",
+          title: "Existing",
+          description: "An existing description, long enough to pass validation.",
+          priority: "medium",
+          requireHumanCodeReview: false,
+          attachments: [],
+          dependsOn: [],
+        }}
+      />,
+    );
+    expect(screen.queryByLabelText("Branch name")).toBeNull();
+  });
+
+  it("includes the typed value in the outgoing JSON request body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { id: "task_new" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    fillRequiredFields();
+    fireEvent.change(screen.getByLabelText("Branch name"), {
+      target: { value: "feature/my-custom-name" },
+    });
+
+    const form = document.querySelector("form")!;
+    fireEvent.submit(form);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(requestInit.body as string) as { branchName?: string };
+    expect(body.branchName).toBe("feature/my-custom-name");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("omits branchName from the JSON body when the field is left empty", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { id: "task_new" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    fillRequiredFields();
+
+    const form = document.querySelector("form")!;
+    fireEvent.submit(form);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(requestInit.body as string) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("branchName");
+    expect(body).toMatchObject({
+      repoId: "repo_1",
+      title: "A perfectly reasonable title",
+      description: "A description long enough to pass the twenty character minimum.",
+      priority: "medium",
+      requireHumanCodeReview: false,
+      dependsOn: [],
+      start: false,
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("renders a returned details.branchName error under the field without a page reload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: "Invalid request payload.",
+        details: { branchName: "Branch names cannot contain spaces or any of ~ ^ : ? * [ `." },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    fillRequiredFields();
+    fireEvent.change(screen.getByLabelText("Branch name"), {
+      target: { value: "bad name" },
+    });
+
+    const form = document.querySelector("form")!;
+    fireEvent.submit(form);
+
+    await screen.findByText(/Branch names cannot contain spaces/);
+
+    vi.unstubAllGlobals();
+  });
+});
