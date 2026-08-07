@@ -66,6 +66,10 @@ function toneFor(event: PipelineEvent): string {
         : event.status === "skipped"
           ? "text-warning"
           : "text-success";
+    // `stream` is carried precisely so stderr can be told apart from stdout
+    // in the log (§7) — a command's failure output is usually on stderr.
+    case "verification_output":
+      return event.stream === "stderr" ? "text-warning" : "text-foreground";
     default:
       return "text-foreground";
   }
