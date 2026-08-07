@@ -2,7 +2,8 @@ import { capacityBlockedReason } from "@/lib/capacity";
 
 import { db } from "../db/client";
 import { appendEvent } from "../events/store";
-import { cancelPendingJobs, enqueueJob } from "../jobs/queue";
+import { workspaceHasGitDir } from "../git/workspace";
+import { cancelPendingJobs, cancelScheduledCleanup, enqueueJob } from "../jobs/queue";
 import { getSettings } from "../settings/store";
 import {
   type DependencySummary,
@@ -29,17 +30,22 @@ import {
 } from "../tasks/service";
 import type { JobKind, TaskRow } from "../db/schema";
 import {
+  GRANTS_REWORK_CYCLE,
   InvalidGateDecisionError,
   InvalidTransitionError,
+  needsBranchHistory,
   type PipelineContext,
   type PipelineSignal,
+  RETRY_TARGET,
   type Transition,
   nextTransition,
 } from "./state-machine";
 import {
   GATE_ALLOWED_DECISIONS,
+  type FailureKind,
   type Gate,
   type GateDecision,
+  STAGE_LABELS,
   type Stage,
   isAgentStage,
   isGate,
@@ -71,6 +77,7 @@ function contextFor(task: TaskRow): PipelineContext {
     developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
     homologationAttempts: countStageRuns(task.id, "PO_HOMOLOGATION"),
     reworkMaxCycles: settings.reworkMaxCycles,
+    reworkBudgetGrant: task.reworkBudgetGrant,
     planGateRequired,
     humanCodeReviewRequired: task.requireHumanCodeReview,
   };
@@ -112,7 +119,15 @@ function scheduleStage(taskId: string, stage: Stage): void {
 export function applyTransition(taskId: string, transition: Transition): void {
   switch (transition.type) {
     case "run": {
-      setTaskStage(taskId, transition.stage);
+      // Clears any failure the task previously carried, whether or not this
+      // is a retry: a run transition always leaves the task actively running,
+      // and a stale failure_reason/failed_stage/failure_kind would otherwise
+      // survive on the row (and in the banner) while a later stage executes.
+      setTaskStage(taskId, transition.stage, {
+        failureReason: null,
+        failedStage: null,
+        failureKind: null,
+      });
       scheduleStage(taskId, transition.stage);
       break;
     }
@@ -124,7 +139,11 @@ export function applyTransition(taskId: string, transition: Transition): void {
     }
 
     case "terminal": {
-      setTaskStage(taskId, transition.stage, { failureReason: transition.reason ?? null });
+      setTaskStage(taskId, transition.stage, {
+        failureReason: transition.reason ?? null,
+        failedStage: transition.failedStage ?? null,
+        failureKind: transition.failureKind ?? null,
+      });
       cancelPendingJobs(taskId);
       appendEvent(taskId, null, {
         type: "task_finished",
@@ -732,42 +751,185 @@ export function resumeGatedTask(taskId: string): Transition {
   });
 }
 
+/** Why a retry was refused — mirrored by `available: false` on {@link RetryAvailability}. */
+export type RetryRefusalCode =
+  | "not_failed"
+  | "no_failed_stage"
+  | "workspace_gone"
+  | "capacity";
+
+/**
+ * Raised by {@link retryTask} for every refusal except capacity, which stays
+ * {@link CapacityError} so both routes report it identically.
+ */
+export class NotRetryableError extends Error {
+  constructor(
+    readonly code: Exclude<RetryRefusalCode, "capacity">,
+    message: string,
+  ) {
+    super(message);
+    this.name = "NotRetryableError";
+  }
+}
+
+/**
+ * Whether — and how — a task can be retried right now. Computed by
+ * {@link computeRetryAvailability} and consumed both by `GET /api/tasks/:id`
+ * (§10.1) and by {@link retryTask} itself, so the coded refusal and the
+ * `available: false` code can never disagree.
+ */
+export type RetryAvailability =
+  | {
+      available: true;
+      stage: Stage;
+      attempt: number;
+      cause: FailureKind;
+      grantsReworkCycles: number;
+      /** The rework ceiling this task would have after the retry. */
+      reworkMaxCycles: number;
+    }
+  | { available: false; code: RetryRefusalCode; reason: string };
+
+function notFailedReason(status: TaskRow["status"]): string {
+  switch (status) {
+    case "completed":
+      return "Only a failed task can be retried — this one completed successfully.";
+    case "rejected":
+      return "Only a failed task can be retried — this one was rejected.";
+    case "cancelled":
+      return "Only a failed task can be retried — this one was cancelled.";
+    default:
+      return "Only a failed task can be retried — this one has not failed.";
+  }
+}
+
+/**
+ * Decides whether `task` can be retried, and what a retry would do.
+ *
+ * Pure given the task row plus the current settings, capacity and workspace
+ * state — no mutation. `retryTask` re-runs this inside its own transaction
+ * before touching anything, so a refusal here and the 409 it produces are the
+ * same computation.
+ */
+export function computeRetryAvailability(task: TaskRow): RetryAvailability {
+  if (task.status !== "failed") {
+    return { available: false, code: "not_failed", reason: notFailedReason(task.status) };
+  }
+  if (!task.failedStage || !task.failureKind) {
+    return {
+      available: false,
+      code: "no_failed_stage",
+      reason:
+        "This task failed before the pipeline recorded which stage to re-run. " +
+        "Create a new task from the same description.",
+    };
+  }
+
+  const failureKind = task.failureKind as FailureKind;
+  const failedStage = task.failedStage as Stage;
+  const stage = RETRY_TARGET[failureKind](failedStage);
+  // The failed run's attempt is exactly how many runs `failedStage` has ever
+  // had: `currentStage` is FAILED, so no run has started since. No ordered
+  // scan needed (§8.4).
+  const failedRunAttempt = countStageRuns(task.id, failedStage);
+
+  if (
+    needsBranchHistory(failedStage, failureKind, failedRunAttempt) &&
+    !workspaceHasGitDir(task.id)
+  ) {
+    const { workspaceRetentionDays } = getSettings();
+    return {
+      available: false,
+      code: "workspace_gone",
+      reason:
+        `The workspace was removed after ${workspaceRetentionDays} day(s). The branch and ` +
+        `its commits are no longer on disk, so there is nothing to re-run ${STAGE_LABELS[stage]} against.`,
+    };
+  }
+
+  if (!capacity().slotAvailable) {
+    return {
+      available: false,
+      code: "capacity",
+      reason: capacityBlockedReason(capacity()) ?? "No capacity slot is free right now.",
+    };
+  }
+
+  const grantsReworkCycles = GRANTS_REWORK_CYCLE[failureKind] ? 1 : 0;
+  const { reworkMaxCycles } = getSettings();
+  return {
+    available: true,
+    stage,
+    attempt: countStageRuns(task.id, stage) + 1,
+    cause: failureKind,
+    grantsReworkCycles,
+    reworkMaxCycles: reworkMaxCycles + task.reworkBudgetGrant + grantsReworkCycles,
+  };
+}
+
+/** `GET /api/tasks/:id`'s `retry` key, and what feeds the detail page's button. */
+export function retryAvailability(taskId: string): RetryAvailability | null {
+  const task = getTask(taskId);
+  if (!task) return null;
+  return computeRetryAvailability(task);
+}
+
 /**
  * Re-runs the stage a task failed on.
  *
- * A new stage run is created with the next attempt number rather than reusing
- * the failed one, so the audit trail keeps both the failure and the retry.
+ * Reads `tasks.failed_stage`/`failure_kind` (via {@link computeRetryAvailability})
+ * instead of scanning `stage_runs` — the earlier heuristic found nothing after
+ * a rework-budget exhaustion (no run there is `"failed"`) and a stale row after
+ * an earlier stage failed, was retried, and succeeded. A new stage run is
+ * created with the next attempt number rather than reusing the failed one, so
+ * the audit trail keeps both the failure and the retry.
  *
  * `failed` is terminal, so a retry re-admits the task and is capacity-checked
- * like a fresh start — otherwise it would be a hole in the invariant.
+ * like a fresh start — otherwise it would be a hole in the invariant. The
+ * pending workspace-cleanup job the original failure scheduled is dropped
+ * before the transition applies, so it cannot delete the workspace out from
+ * under the retried run (§8.1).
+ *
+ * @throws {TaskNotFoundError} when the task does not exist.
+ * @throws {NotRetryableError} when the task has not failed, has no recorded
+ * cause, or its workspace is gone.
+ * @throws {CapacityError} when no slot is free.
  */
 export function retryTask(taskId: string): Transition {
   return db.transaction(() => {
     const task = getTask(taskId);
     if (!task) throw new TaskNotFoundError(taskId);
-    if (task.status !== "failed") {
-      throw new GateError(`Only failed tasks can be retried; this task is ${task.status}.`);
+
+    const availability = computeRetryAvailability(task);
+    if (!availability.available) {
+      if (availability.code === "capacity") {
+        throw new CapacityError(getSettings().maxParallelTasks, capacity().blocking);
+      }
+      throw new NotRetryableError(availability.code, availability.reason);
     }
 
-    const lastRun = listStageRuns(taskId)
-      .filter((run) => run.status === "failed")
-      .at(-1);
-    if (!lastRun) {
-      throw new GateError("No failed stage was found to retry.");
-    }
+    cancelScheduledCleanup(taskId);
 
-    assertSlotAvailable();
+    if (availability.grantsReworkCycles > 0) {
+      updateTask(taskId, {
+        reworkBudgetGrant: task.reworkBudgetGrant + availability.grantsReworkCycles,
+      });
+    }
 
     appendEvent(taskId, null, {
       type: "log",
       level: "info",
-      message: `Retrying ${lastRun.stage} (attempt ${lastRun.attempt + 1}).`,
+      message:
+        `Retrying ${availability.stage} (attempt ${availability.attempt}).` +
+        (availability.grantsReworkCycles > 0
+          ? ` Grants ${availability.grantsReworkCycles} extra rework cycle(s).`
+          : ""),
     });
 
     const transition: Transition = {
       type: "run",
-      stage: lastRun.stage,
-      attempt: lastRun.attempt + 1,
+      stage: availability.stage,
+      attempt: availability.attempt,
     };
     applyTransition(taskId, transition);
     return transition;

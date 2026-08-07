@@ -363,6 +363,97 @@ describe("pipeline orchestration", () => {
       ["STAKEHOLDER_REFINEMENT", 2],
     ]);
     expect(service.getTask(task.id)!.status).toBe("running");
+
+    // §8.2: the failure banner and its cause must not survive the retry.
+    const retried = service.getTask(task.id)!;
+    expect(retried.failureReason).toBeNull();
+    expect(retried.failedStage).toBeNull();
+    expect(retried.failureKind).toBeNull();
+  });
+
+  it("cancels the pending workspace-cleanup job before applying the retry (§8.1)", async () => {
+    // Retention of 0 days makes the cleanup job eligible immediately, exactly
+    // the window in which the old bug fired: the stale cleanup job's
+    // `runAfter` sorts ahead of the freshly enqueued stage job.
+    const settingsStore = await import("@/server/settings/store");
+    settingsStore.updateSettings({ workspaceRetentionDays: 0 });
+
+    const task = newTask("Cleanup race");
+    const run = service.listStageRuns(task.id).at(-1)!;
+    service.markStageRunStatus(run.id, "failed", { error: "boom" });
+    orchestrator.advanceTask(task.id, {
+      kind: "stage_failed",
+      stage: "STAKEHOLDER_REFINEMENT",
+      error: "boom",
+    });
+
+    orchestrator.retryTask(task.id);
+
+    // Scoped to this task's own jobs — the shared queue in this integration
+    // file accumulates unclaimed jobs from every earlier test.
+    const { db } = await import("@/server/db/client");
+    const { jobs } = await import("@/server/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const taskJobs = db.select().from(jobs).where(eq(jobs.taskId, task.id)).all();
+    expect(taskJobs.some((job) => job.kind === "cleanup_workspace")).toBe(false);
+    expect(
+      taskJobs.some((job) => job.kind === "run_stage" && job.status === "pending"),
+    ).toBe(true);
+
+    settingsStore.updateSettings({ workspaceRetentionDays: 7 });
+  });
+
+  it("defect-3 regression: an earlier retried-and-succeeded stage does not resurface on a later retry", () => {
+    const task = newTask("Regression defect 3");
+
+    completeCurrentStage(task.id); // Stakeholder -> PO_REFINEMENT
+    completeCurrentStage(task.id); // PO_REFINEMENT -> ARCHITECTURE
+
+    // ARCHITECTURE fails, is retried, and succeeds.
+    const architectureRun = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "ARCHITECTURE")
+      .at(-1)!;
+    service.markStageRunStatus(architectureRun.id, "failed", { error: "malformed techplan.md" });
+    orchestrator.advanceTask(task.id, {
+      kind: "stage_failed",
+      stage: "ARCHITECTURE",
+      error: "malformed techplan.md",
+    });
+    expect(service.getTask(task.id)!.status).toBe("failed");
+
+    const firstRetry = orchestrator.retryTask(task.id);
+    expect(firstRetry).toMatchObject({ type: "run", stage: "ARCHITECTURE", attempt: 2 });
+
+    completeCurrentStage(task.id); // Architecture #2 -> PLAN_GATE
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+
+    // Spend the rework budget entirely on CODE_REVIEW rejections (developer
+    // attempts 1, 2, 3), landing on rework_exhausted.
+    completeCurrentStage(task.id); // Development #1
+    completeCurrentStage(task.id, "approved"); // Verification #1
+    completeCurrentStage(task.id, "changes_requested"); // Code review #1
+    completeCurrentStage(task.id); // Development #2
+    completeCurrentStage(task.id, "approved"); // Verification #2
+    completeCurrentStage(task.id, "changes_requested"); // Code review #2
+    completeCurrentStage(task.id); // Development #3
+    completeCurrentStage(task.id, "approved"); // Verification #3
+    completeCurrentStage(task.id, "changes_requested"); // Code review #3 — exhausted
+
+    const exhausted = service.getTask(task.id)!;
+    expect(exhausted.status).toBe("failed");
+    expect(exhausted.failedStage).toBe("DEVELOPMENT");
+    expect(exhausted.failureKind).toBe("rework_exhausted");
+
+    // rework_exhausted needs branch history — a real clone would still exist
+    // from the DEVELOPMENT runs above; this test never clones one.
+    fs.mkdirSync(path.join(process.env.WORKSPACES_DIR!, task.id, ".git"), { recursive: true });
+
+    // The old `.filter(status === "failed").at(-1)` scan would find the
+    // long-resolved ARCHITECTURE#1 failure here and re-run ARCHITECTURE,
+    // throwing away three Development runs and the approved plan.
+    const secondRetry = orchestrator.retryTask(task.id);
+    expect(secondRetry).toMatchObject({ type: "run", stage: "DEVELOPMENT", attempt: 4 });
   });
 });
 

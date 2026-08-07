@@ -667,6 +667,8 @@ describe("POST /api/tasks/:id/retry", () => {
 
     expect(response.status).toBe(200);
     expect(service.getTask(task.id)!.status).toBe("running");
+    // A plain stage_error retry is not a rework-budget grant.
+    expect(service.getTask(task.id)!.reworkBudgetGrant).toBe(0);
   });
 
   it("returns 409 when no slot is free", async () => {
@@ -692,6 +694,89 @@ describe("POST /api/tasks/:id/retry", () => {
     const response = await retryRoute.POST(new Request("http://test"), params(task.id));
     expect(response.status).toBe(200);
     expect(service.getTask(task.id)!.status).toBe("running");
+  });
+
+  /**
+   * Fails a task on rework exhaustion — every run is "done", none "failed" —
+   * exactly the case `.filter(status === "failed").at(-1)` could never find
+   * (`spec-retry-recovery.md` §3.2). `developmentAttempts` runs already exist
+   * before the rejecting CODE_REVIEW run, so the shared budget (2 by default)
+   * is already spent when it rejects.
+   */
+  function reworkExhausted(title: string, developmentAttempts: number) {
+    const task = seed({ title });
+    orchestrator.startTask(task.id);
+    for (let attempt = 1; attempt <= developmentAttempts; attempt += 1) {
+      service.createStageRun({ taskId: task.id, stage: "DEVELOPMENT", attempt });
+    }
+    // `rework_exhausted` always needs branch history (§9): a real workspace
+    // has to be on disk for the retry to be offered at all.
+    fs.mkdirSync(path.join(process.env.WORKSPACES_DIR!, task.id, ".git"), { recursive: true });
+    service.setTaskStage(task.id, "CODE_REVIEW");
+    orchestrator.advanceTask(task.id, {
+      kind: "stage_succeeded",
+      stage: "CODE_REVIEW",
+      reviewVerdict: "changes_requested",
+    });
+    return task;
+  }
+
+  it("recovers a rework-exhausted task, where the old scan found nothing", async () => {
+    const task = reworkExhausted("Budget exhausted", 3);
+    const before = service.getTask(task.id)!;
+    expect(before.status).toBe("failed");
+    expect(before.failedStage).toBe("DEVELOPMENT");
+    expect(before.failureKind).toBe("rework_exhausted");
+
+    const response = await retryRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(200);
+
+    const after = service.getTask(task.id)!;
+    expect(after.status).toBe("running");
+    expect(after.currentStage).toBe("DEVELOPMENT");
+    expect(after.reworkBudgetGrant).toBe(1);
+    const developmentRuns = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "DEVELOPMENT");
+    expect(developmentRuns).toHaveLength(4);
+    expect(developmentRuns.at(-1)!.attempt).toBe(4);
+  });
+
+  it("grants exactly one extra cycle per retry — two retries, two extra runs, not four", async () => {
+    const task = reworkExhausted("Two retries", 3);
+    await retryRoute.POST(new Request("http://test"), params(task.id));
+    expect(service.getTask(task.id)!.reworkBudgetGrant).toBe(1);
+
+    // Exhaust again: developmentAttempts is now 4, effective ceiling 2 + 1 = 3.
+    service.setTaskStage(task.id, "CODE_REVIEW");
+    orchestrator.advanceTask(task.id, {
+      kind: "stage_succeeded",
+      stage: "CODE_REVIEW",
+      reviewVerdict: "changes_requested",
+    });
+    expect(service.getTask(task.id)!.status).toBe("failed");
+
+    await retryRoute.POST(new Request("http://test"), params(task.id));
+
+    const after = service.getTask(task.id)!;
+    expect(after.reworkBudgetGrant).toBe(2);
+    const developmentRuns = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "DEVELOPMENT");
+    expect(developmentRuns).toHaveLength(5);
+    expect(developmentRuns.map((run) => run.attempt)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("does not grant a rework cycle when a rework-exhausted retry is refused for capacity", async () => {
+    const task = reworkExhausted("Blocked, would have granted", 3);
+    const other = seed({ title: "Occupier" });
+    orchestrator.startTask(other.id);
+
+    const response = await retryRoute.POST(new Request("http://test"), params(task.id));
+    expect(response.status).toBe(409);
+    // The capacity check and the grant share one transaction; a refused
+    // retry must leave the column untouched (S2).
+    expect(service.getTask(task.id)!.reworkBudgetGrant).toBe(0);
   });
 });
 
