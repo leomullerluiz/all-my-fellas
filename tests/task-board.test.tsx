@@ -29,6 +29,11 @@ const REPO = {
   credentialUsername: null,
   apiBaseUrl: null,
   context: null,
+  verifyInstall: null,
+  verifyBuild: null,
+  verifyTest: null,
+  verifyLint: null,
+  verifyTimeoutSeconds: 600,
   createdAt: 0,
 };
 

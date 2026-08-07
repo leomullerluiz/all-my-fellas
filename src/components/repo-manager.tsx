@@ -36,7 +36,31 @@ export type RepoRowView = {
    * from `/api/repos/:id` when a repo's context is expanded.
    */
   hasContext: boolean;
+  /** Operator-configured verification commands, run mechanically by the pipeline. */
+  verifyInstall: string | null;
+  verifyBuild: string | null;
+  verifyTest: string | null;
+  verifyLint: string | null;
+  verifyTimeoutSeconds: number;
 };
+
+type VerificationCommandFields = {
+  verifyInstall: string;
+  verifyBuild: string;
+  verifyTest: string;
+  verifyLint: string;
+  verifyTimeoutSeconds: string;
+};
+
+function verificationFieldsFrom(repo: RepoRowView): VerificationCommandFields {
+  return {
+    verifyInstall: repo.verifyInstall ?? "",
+    verifyBuild: repo.verifyBuild ?? "",
+    verifyTest: repo.verifyTest ?? "",
+    verifyLint: repo.verifyLint ?? "",
+    verifyTimeoutSeconds: String(repo.verifyTimeoutSeconds),
+  };
+}
 
 export function RepoManager({
   repos,
@@ -59,6 +83,10 @@ export function RepoManager({
   const [expandedContext, setExpandedContext] = useState<string | null>(null);
   const [contextText, setContextText] = useState<Record<string, string>>({});
   const [loadingContext, setLoadingContext] = useState<string | null>(null);
+  const [editingCommands, setEditingCommands] = useState<string | null>(null);
+  const [commandFields, setCommandFields] = useState<Record<string, VerificationCommandFields>>({});
+  const [commandErrors, setCommandErrors] = useState<Record<string, string>>({});
+  const [savingCommands, setSavingCommands] = useState(false);
 
   const selected = useMemo(
     () => providers.find((option) => option.id === provider),
@@ -91,6 +119,8 @@ export function RepoManager({
       warning?: string;
       verified?: boolean;
       detectedDefaultBranch?: string;
+      repo?: { id: string };
+      suggestedCommands?: Partial<Record<"install" | "build" | "test" | "lint", string>>;
     };
 
     setBusy(false);
@@ -122,6 +152,25 @@ export function RepoManager({
     } else {
       toast.warning(`Saved, but the access check failed: ${payload.warning ?? "unknown reason"}`);
     }
+
+    // Detection never saves anything (§5.2) — the suggestion is prefilled into
+    // the commands panel and the operator still has to press Save.
+    const suggestions = payload.suggestedCommands;
+    if (payload.repo && suggestions && Object.values(suggestions).some((command) => command)) {
+      setCommandFields((current) => ({
+        ...current,
+        [payload.repo!.id]: {
+          verifyInstall: suggestions.install ?? "",
+          verifyBuild: suggestions.build ?? "",
+          verifyTest: suggestions.test ?? "",
+          verifyLint: suggestions.lint ?? "",
+          verifyTimeoutSeconds: "600",
+        },
+      }));
+      setEditingCommands(payload.repo.id);
+      toast.info("Detected verification commands from the repository — review and save them below.");
+    }
+
     router.refresh();
   }
 
@@ -157,6 +206,53 @@ export function RepoManager({
     }
 
     setExpandedContext(id);
+  }
+
+  function toggleCommands(repo: RepoRowView) {
+    if (editingCommands === repo.id) {
+      setEditingCommands(null);
+      return;
+    }
+    setCommandFields((current) => ({ ...current, [repo.id]: verificationFieldsFrom(repo) }));
+    setCommandErrors({});
+    setEditingCommands(repo.id);
+  }
+
+  async function saveCommands(id: string) {
+    const fields = commandFields[id];
+    if (!fields) return;
+
+    const timeout = Number.parseInt(fields.verifyTimeoutSeconds, 10);
+    setSavingCommands(true);
+    setCommandErrors({});
+
+    const response = await fetch(`/api/repos/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        verifyInstall: fields.verifyInstall,
+        verifyBuild: fields.verifyBuild,
+        verifyTest: fields.verifyTest,
+        verifyLint: fields.verifyLint,
+        ...(Number.isFinite(timeout) ? { verifyTimeoutSeconds: timeout } : {}),
+      }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      details?: Record<string, string>;
+    };
+
+    setSavingCommands(false);
+
+    if (!response.ok) {
+      setCommandErrors(payload.details ?? {});
+      toast.error(payload.error ?? "Could not save the verification commands.");
+      return;
+    }
+
+    toast.success("Verification commands saved.");
+    setEditingCommands(null);
+    router.refresh();
   }
 
   return (
@@ -337,6 +433,83 @@ export function RepoManager({
                         ) : null}
                       </>
                     ) : null}
+                    <button
+                      type="button"
+                      className="mt-1 block text-[11px] text-accent underline-offset-2 hover:underline"
+                      onClick={() => toggleCommands(repo)}
+                    >
+                      {editingCommands === repo.id ? "Hide verification commands" : "Edit commands"}
+                    </button>
+                    {editingCommands === repo.id ? (
+                      <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-surface-raised p-3">
+                        {(
+                          [
+                            ["verifyInstall", "Install"],
+                            ["verifyBuild", "Build"],
+                            ["verifyTest", "Test"],
+                            ["verifyLint", "Lint"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <Field
+                            key={key}
+                            label={label}
+                            htmlFor={`${repo.id}-${key}`}
+                            error={commandErrors[key]}
+                          >
+                            <Input
+                              id={`${repo.id}-${key}`}
+                              value={commandFields[repo.id]?.[key] ?? ""}
+                              onChange={(event) =>
+                                setCommandFields((current) => ({
+                                  ...current,
+                                  [repo.id]: {
+                                    ...verificationFieldsFrom(repo),
+                                    ...current[repo.id],
+                                    [key]: event.target.value,
+                                  },
+                                }))
+                              }
+                              placeholder="Leave blank to disable this command"
+                              className="font-mono text-xs"
+                            />
+                          </Field>
+                        ))}
+                        <Field
+                          label="Timeout (seconds)"
+                          htmlFor={`${repo.id}-timeout`}
+                          error={commandErrors.verifyTimeoutSeconds}
+                        >
+                          <Input
+                            id={`${repo.id}-timeout`}
+                            type="number"
+                            min={30}
+                            max={3600}
+                            value={commandFields[repo.id]?.verifyTimeoutSeconds ?? "600"}
+                            onChange={(event) =>
+                              setCommandFields((current) => ({
+                                ...current,
+                                [repo.id]: {
+                                  ...verificationFieldsFrom(repo),
+                                  ...current[repo.id],
+                                  verifyTimeoutSeconds: event.target.value,
+                                },
+                              }))
+                            }
+                            className="w-32 font-mono text-xs"
+                          />
+                        </Field>
+                        <div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={savingCommands}
+                            onClick={() => saveCommands(repo.id)}
+                          >
+                            {savingCommands ? "Saving…" : "Save commands"}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -360,6 +533,21 @@ export function RepoManager({
                       }
                     >
                       {repo.hasContext ? "Context ✓" : "No context"}
+                    </Badge>
+                    <Badge
+                      tone={
+                        [repo.verifyInstall, repo.verifyBuild, repo.verifyTest, repo.verifyLint].some(
+                          (command) => command,
+                        )
+                          ? "success"
+                          : "neutral"
+                      }
+                      title="Commands the pipeline runs mechanically between Development and Code Review."
+                    >
+                      {[repo.verifyInstall, repo.verifyBuild, repo.verifyTest, repo.verifyLint].filter(
+                        (command) => command,
+                      ).length}
+                      /4 verification commands
                     </Badge>
                     <Badge tone={repo.taskCount > 0 ? "neutral" : "neutral"}>
                       {repo.taskCount} task{repo.taskCount === 1 ? "" : "s"}

@@ -5,7 +5,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { PipelineEvent } from "@/server/events/store";
+// From `./types`, not `./store`: `store.ts` imports the SQLite client, which
+// cannot be bundled for the browser. `./types` has no server-only imports at
+// all — see its header comment.
+import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/types";
 
 /**
  * Live agent log, fed by the task's SSE endpoint.
@@ -27,11 +30,20 @@ const REFRESH_TRIGGERS = new Set([
   "gate_decided",
   "pr_opened",
   "task_finished",
+  // Changes the timeline (a new stage run) and the gate badge computed from
+  // `verification_runs`, both server-rendered.
+  "verification_finished",
 ]);
 
 const MAX_LINES = 400;
 
-function toneFor(event: PipelineEvent): string {
+/**
+ * Exported for `tests/live-log-tone.test.tsx` — the `default` branch means a
+ * missed case here compiles cleanly (unlike `describe()` below, which has no
+ * `default` and is therefore compiler-forced), so the failed/errored/stderr
+ * branches need a direct test rather than relying on totality.
+ */
+export function toneFor(event: PipelineEvent): string {
   switch (event.type) {
     case "stage_started":
       return "text-accent";
@@ -50,6 +62,20 @@ function toneFor(event: PipelineEvent): string {
         : event.level === "warn"
           ? "text-warning"
           : "text-muted";
+    // Not compiler-forced — `default` below still covers every other
+    // variant — but red verification is exactly the signal this stage
+    // exists to make visible, so it gets an explicit branch rather than
+    // silently inheriting the neutral default.
+    case "verification_finished":
+      return event.status === "failed" || event.status === "errored"
+        ? "text-danger"
+        : event.status === "skipped"
+          ? "text-warning"
+          : "text-success";
+    // `stream` is carried precisely so stderr can be told apart from stdout
+    // in the log (§7) — a command's failure output is usually on stderr.
+    case "verification_output":
+      return event.stream === "stderr" ? "text-warning" : "text-foreground";
     default:
       return "text-foreground";
   }
@@ -95,6 +121,18 @@ function describe(event: PipelineEvent): string {
       return `■ task finished (${event.stage})${event.reason ? `: ${event.reason}` : ""}`;
     case "log":
       return event.message;
+    case "verification_started":
+      return `▶ verification started (${event.commands.join(", ") || "no commands"})`;
+    case "verification_command_started":
+      return `▶ ${event.kind}: ${event.command}`;
+    case "verification_output":
+      return event.chunk;
+    case "verification_command_finished":
+      return `${event.exitCode === 0 ? "✔" : "✖"} ${event.kind} ${
+        event.timedOut ? "timed out" : `exited ${event.exitCode ?? "null"}`
+      } (${Math.round(event.durationMs / 1000)}s)`;
+    case "verification_finished":
+      return `■ verification ${event.status}${event.reason ? `: ${event.reason}` : ""}`;
   }
 }
 
@@ -124,23 +162,7 @@ export function LiveLog({ taskId, live }: { taskId: string; live: boolean }) {
     // Every payload is dispatched under its own event name, so a single
     // `message` handler is not enough — listen on the element instead.
     source.addEventListener("message", onMessage);
-    for (const type of [
-      "task_created",
-      "stage_started",
-      "stage_finished",
-      "stage_failed",
-      "agent_text",
-      "agent_thinking",
-      "agent_tool_use",
-      "agent_tool_denied",
-      "artifact_saved",
-      "gate_opened",
-      "gate_decided",
-      "git",
-      "pr_opened",
-      "task_finished",
-      "log",
-    ]) {
+    for (const type of PIPELINE_EVENT_TYPES) {
       source.addEventListener(type, onMessage as EventListener);
     }
     source.addEventListener("done", () => {

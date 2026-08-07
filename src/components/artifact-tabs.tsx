@@ -16,13 +16,22 @@ export type ArtifactView = {
   createdAt: number;
 };
 
-/** Ordered so the tabs read as the pipeline runs. */
-const ORDER: ArtifactType[] = [
+/**
+ * Ordered so the tabs read as the pipeline runs.
+ *
+ * Must list every `ArtifactType` — a type missing here sorts ahead of
+ * everything else (`indexOf` returns -1) and can therefore never be the tab
+ * that opens by default (`sorted.at(-1)` below). See `tests/artifact-tabs.test.tsx`.
+ */
+export const ORDER: ArtifactType[] = [
   "brief",
   "stories",
   "techplan",
   "dev_report",
+  "verification_report",
+  "code_review_report",
   "qa_report",
+  "human_review",
   "homolog_report",
 ];
 

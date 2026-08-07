@@ -120,13 +120,14 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
  * Terminal states other than COMPLETED are collected into a trailing column so
  * the board does not grow a column per failure mode.
  *
- * `BOARD_STAGES` has thirteen entries; adding "On Queue" and "Not delivered"
- * makes fifteen columns total. They are laid out as a wrapping grid rather
- * than a horizontally scrolling row: at fifteen across even a wide monitor
- * leaves each column too narrow to read, so the columns wrap into whole rows
- * instead. Fifteen divides evenly into the grid's 3-per-row breakpoint (five
- * full rows) but not its 2-, 4-, or 6-per-row breakpoints — those layouts'
- * last row is simply short, which is a cosmetic gap, not a bug.
+ * `BOARD_STAGES` has fourteen entries (`VERIFICATION` joined it alongside
+ * `DEVELOPMENT`); adding "On Queue" and "Not delivered" makes sixteen columns
+ * total. They are laid out as a wrapping grid rather than a horizontally
+ * scrolling row: at sixteen across even a wide monitor leaves each column too
+ * narrow to read, so the columns wrap into whole rows instead. Sixteen
+ * divides evenly into the grid's 2- and 4-per-row breakpoints (eight and four
+ * full rows) but not its 3- or 6-per-row breakpoints — those layouts' last
+ * row is simply short, which is a cosmetic gap, not a bug.
  */
 export function TaskBoard({
   tasks,

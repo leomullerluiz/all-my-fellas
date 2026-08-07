@@ -1,36 +1,23 @@
 import { and, asc, eq, gt, sql } from "drizzle-orm";
 
-import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { events } from "../db/schema";
-import type { Stage } from "../pipeline/stages";
+import type { PipelineEvent } from "./types";
 
 /**
  * Append-only event log, the only channel between the worker and the browser.
  *
  * The worker writes; the SSE route tails by `seq`. Nothing else coordinates the
  * two processes, which is what keeps the MVP free of a queue or broker.
+ *
+ * The event *vocabulary* (`PipelineEvent`, `PIPELINE_EVENT_TYPES`,
+ * `VerificationKind`) lives in `./types` and is re-exported here — see that
+ * module for why: this file pulls in `db` (`better-sqlite3`), which cannot be
+ * bundled for the browser, so a client component needing the types (or the
+ * runtime `PIPELINE_EVENT_TYPES` tuple) must import `./types` directly.
  */
-
-export type PipelineEvent =
-  | { type: "task_created"; title: string }
-  | { type: "task_started" }
-  /** Field names only — the current values already live on the task row. */
-  | { type: "task_edited"; fields: string[] }
-  | { type: "stage_started"; stage: Stage; attempt: number; model?: string; provider?: LlmProviderId }
-  | { type: "stage_finished"; stage: Stage; attempt: number; costUsd: number }
-  | { type: "stage_failed"; stage: Stage; attempt: number; error: string }
-  | { type: "agent_text"; text: string }
-  | { type: "agent_thinking" }
-  | { type: "agent_tool_use"; tool: string; summary: string }
-  | { type: "agent_tool_denied"; tool: string; reason: string }
-  | { type: "artifact_saved"; artifactType: string }
-  | { type: "gate_opened"; gate: Stage }
-  | { type: "gate_decided"; gate: Stage; decision: string; comment?: string }
-  | { type: "git"; message: string }
-  | { type: "pr_opened"; url: string }
-  | { type: "task_finished"; stage: Stage; reason?: string }
-  | { type: "log"; level: "info" | "warn" | "error"; message: string };
+export type { PipelineEvent, VerificationKind } from "./types";
+export { PIPELINE_EVENT_TYPES } from "./types";
 
 export type StoredEvent = {
   seq: number;

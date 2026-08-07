@@ -1,5 +1,6 @@
 import { badRequest, json, parseBody, serverError } from "@/server/http/respond";
 import { credentialSource } from "@/server/git/credentials";
+import { detectVerificationCommandsForRepo } from "@/server/git/detect-verification";
 import { detectProvider, providerFor } from "@/server/git/providers";
 import { verifyRepositoryAccess } from "@/server/git/pull-request";
 import { createRepo, listRepos } from "@/server/tasks/service";
@@ -65,6 +66,14 @@ export async function POST(request: Request) {
     const access = await verifyRepositoryAccess(connection);
     const repo = createRepo({ name: parsed.data.name, ...connection, context });
 
+    // A throwaway shallow clone, purely to suggest verification commands —
+    // never to save them. Detection failure (private repo, offline host) is
+    // not an error for the connection request; the form just gets empty
+    // suggestions. This is a second network call beyond the access check
+    // above, so it runs after the repo already exists rather than blocking
+    // the connection on it.
+    const detection = await detectVerificationCommandsForRepo(connection);
+
     return json(
       {
         repo,
@@ -73,6 +82,7 @@ export async function POST(request: Request) {
         // most common reason a first task fails at clone time.
         detectedDefaultBranch: access.ok ? access.defaultBranch : undefined,
         warning: access.ok ? undefined : access.reason,
+        suggestedCommands: detection.suggestions,
       },
       { status: 201 },
     );

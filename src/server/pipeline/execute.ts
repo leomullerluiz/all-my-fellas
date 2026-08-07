@@ -19,11 +19,16 @@ import {
 import { getSettings } from "../settings/store";
 import {
   getStageRun,
+  getStageRunByAttempt,
   getTaskWithRepo,
   latestArtifact,
+  latestArtifactSince,
+  listStageRuns,
+  listVerificationRuns,
   markStageRunStatus,
   saveArtifact,
   saveTranscript,
+  saveVerificationRuns,
   setTaskEstimate,
   updateStageRun,
   updateTask,
@@ -38,6 +43,7 @@ import { type ArtifactInput, truncateForPrompt } from "./prompt";
 import { runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, isAgentStage } from "./stages";
 import type { ReviewVerdict } from "./state-machine";
+import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
 
 /**
  * Stage execution as the worker performs it: prepare the workspace, run the
@@ -101,10 +107,22 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
 
   // On a rework cycle the Developer additionally receives the reviewers'
   // reports — and only the reports, never their transcripts. Human feedback
-  // comes last so it reads as the final word.
+  // comes last so it reads as the final word. `verification_report` goes
+  // first: a compile error outranks an opinion.
   if (stage === "DEVELOPMENT" && attempt > 1) {
+    const verification = latestArtifact(taskId, "verification_report");
+    if (verification) inputs.push({ type: "verification_report", content: verification.contentMd });
+
+    // With `VERIFICATION` ahead of `CODE_REVIEW`, a red verification can send
+    // work back to the Developer before any reviewer ran in this cycle, so
+    // `latestArtifact` alone could still hand over a stale, already-approved
+    // report from an earlier cycle (spec §10.5). Only reports produced after
+    // the previous DEVELOPMENT run finished belong to the cycle that just
+    // ended.
+    const previousDevelopmentRun = getStageRunByAttempt(taskId, "DEVELOPMENT", attempt - 1);
+    const cycleStart = previousDevelopmentRun?.finishedAt ?? previousDevelopmentRun?.createdAt ?? 0;
     for (const type of ["code_review_report", "qa_report", "human_review"] as const) {
-      const artifact = latestArtifact(taskId, type);
+      const artifact = latestArtifactSince(taskId, type, cycleStart);
       if (artifact) inputs.push({ type, content: artifact.contentMd });
     }
   }
@@ -186,6 +204,17 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
         fenced: true,
       });
     }
+  }
+
+  // The pipeline's own mechanical result, not the agent's claim about it —
+  // see spec-mechanical-verification.md §8.1. Not fenced: it is structured
+  // Markdown produced by the worker, unlike a raw diff.
+  if (run.stage === "QA" || run.stage === "PO_HOMOLOGATION") {
+    const report = latestArtifact(task.id, "verification_report");
+    supplements.push({
+      label: "Mechanical verification (run by the pipeline, not by you)",
+      body: report?.contentMd ?? "No verification has been run for this task.",
+    });
   }
 
   const inputs = gatherInputs(task.id, run.stage, run.attempt);
@@ -309,8 +338,175 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
   advanceTask(task.id, { kind: "stage_succeeded", stage: run.stage, reviewVerdict });
 }
 
-/** Builds the pull request body from the stories and the developer report. */
-function buildPullRequestBody(taskId: string, taskTitle: string): string {
+function resultLine(result: CommandResult): string {
+  const outcome = result.timedOut
+    ? "⏱ timed out"
+    : result.exitCode === null
+      ? "⚠ could not start"
+      : result.exitCode === 0
+        ? "✅ exit 0"
+        : `❌ exit ${result.exitCode}`;
+  return `| \`${result.command}\` | ${result.kind} | ${outcome} | ${Math.round(result.durationMs / 1000)}s |`;
+}
+
+/**
+ * Renders `verification_report` from the persisted rows. Not passed through
+ * `validateArtifact` — the document is machine-generated, and validating it
+ * would just be the worker checking its own template, the same shortcut
+ * `human_review` already takes (`decideGate`).
+ */
+function renderVerificationReport(outcome: VerificationOutcome): string {
+  const results = outcome.status === "skipped" ? [] : outcome.results;
+
+  const summary =
+    outcome.status === "skipped"
+      ? "Skipped — no verification commands are configured for this repository."
+      : outcome.status === "errored"
+        ? `Errored: ${outcome.reason}`
+        : outcome.status === "failed"
+          ? `Failed: ${outcome.failed.map((result) => `\`${result.command}\` exited ${result.exitCode}`).join(", ")}`
+          : "Passed.";
+
+  const commandsTable =
+    results.length === 0
+      ? "None."
+      : ["| Command | Kind | Result | Duration |", "|---|---|---|---|", ...results.map(resultLine)].join("\n");
+
+  const output =
+    results.length === 0
+      ? "None."
+      : results
+          .map((result) => {
+            const parts = [`### ${result.kind}: \`${result.command}\``, "", "```", result.stdoutTail || "(no stdout)", "```"];
+            if (result.stderrTail) parts.push("```", result.stderrTail, "```");
+            return parts.join("\n");
+          })
+          .join("\n\n");
+
+  return ["## Outcome", "", summary, "", "## Commands", "", commandsTable, "", "## Output", "", output].join("\n");
+}
+
+/**
+ * Runs a repository's configured install/build/test/lint commands against
+ * the task's workspace, persists the result, and routes the task on the real
+ * exit codes — mechanical, not an agent's claim about itself.
+ *
+ * `skipped` and `passed` both map to `reviewVerdict: "approved"` (the shape
+ * `CODE_REVIEW` and `QA` already share, per `state-machine.ts`'s rule against
+ * a second near-identical field). `errored` never reaches the state machine
+ * as a success signal at all: it throws a retryable `StageJobError` instead,
+ * entering the worker's ordinary backoff — an environment failure, not a
+ * rework signal (spec §6.3).
+ */
+export async function executeVerification(stageRunId: string): Promise<void> {
+  const run = getStageRun(stageRunId);
+  if (!run) throw new StageJobError(`Stage run ${stageRunId} not found.`, false);
+  if (run.stage !== "VERIFICATION") {
+    throw new StageJobError(`${run.stage} is not the verification stage.`, false);
+  }
+
+  const task = getTaskWithRepo(run.taskId);
+  if (!task) throw new StageJobError(`Task ${run.taskId} not found.`, false);
+  if (!task.workspacePath) {
+    throw new StageJobError("The task has no workspace to verify.", false);
+  }
+
+  markStageRunStatus(stageRunId, "running");
+  appendEvent(task.id, stageRunId, {
+    type: "stage_started",
+    stage: "VERIFICATION",
+    attempt: run.attempt,
+  });
+
+  const outcome = await runVerification(task.repo, task.workspacePath, (event) =>
+    appendEvent(task.id, stageRunId, event),
+  );
+
+  saveVerificationRuns(task.id, stageRunId, outcome.status === "skipped" ? [] : outcome.results);
+
+  const report = renderVerificationReport(outcome);
+  saveArtifact({
+    taskId: task.id,
+    stageRunId,
+    type: "verification_report",
+    contentMd: report,
+  });
+  appendEvent(task.id, stageRunId, { type: "artifact_saved", artifactType: "verification_report" });
+
+  appendEvent(task.id, stageRunId, {
+    type: "verification_finished",
+    status: outcome.status,
+    reason: outcome.status === "errored" ? outcome.reason : undefined,
+  });
+
+  if (outcome.status === "errored") {
+    const message = `Verification could not run: ${outcome.reason}`;
+    markStageRunStatus(stageRunId, "failed", { error: message });
+    throw new StageJobError(message, true);
+  }
+
+  markStageRunStatus(stageRunId, "done");
+  appendEvent(task.id, stageRunId, {
+    type: "stage_finished",
+    stage: "VERIFICATION",
+    attempt: run.attempt,
+    costUsd: 0,
+  });
+
+  const reviewVerdict: ReviewVerdict =
+    outcome.status === "passed" || outcome.status === "skipped" ? "approved" : "changes_requested";
+
+  // Named, not generic: if the rework budget is spent on this failure, the
+  // terminal message should say which command broke rather than just that
+  // "verification failed" (spec §9.1's worked example).
+  const detail =
+    outcome.status === "failed"
+      ? `Verification failed (${outcome.failed
+          .map((result) => `\`${result.command}\` exited ${result.exitCode}`)
+          .join(", ")})`
+      : undefined;
+
+  advanceTask(task.id, { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict, detail });
+}
+
+function pullRequestResultCell(run: { exitCode: number | null; timedOut: boolean }): string {
+  if (run.timedOut) return "⏱ timed out";
+  if (run.exitCode === null) return "⚠ could not start";
+  return run.exitCode === 0 ? "✅ exit 0" : `❌ exit ${run.exitCode}`;
+}
+
+/**
+ * Renders the `## Verification` section from the latest `VERIFICATION`
+ * stage run's rows. Expanded rather than inside a `<details>`: it is the
+ * part a reviewer on the provider's side should not have to click for.
+ */
+function verificationSection(taskId: string): string {
+  const latestRun = listStageRuns(taskId).filter((run) => run.stage === "VERIFICATION").at(-1);
+  const rows = latestRun ? listVerificationRuns(taskId, latestRun.id) : [];
+
+  if (rows.length === 0) {
+    return (
+      "No verification commands are configured for this repository, so " +
+      "**nothing was run mechanically**. The reports below are the agents' own assessments."
+    );
+  }
+
+  return [
+    "| Command | Result | Duration |",
+    "|---|---|---|",
+    ...rows.map(
+      (row) => `| \`${row.command}\` | ${pullRequestResultCell(row)} | ${Math.round(row.durationMs / 1000)}s |`,
+    ),
+  ].join("\n");
+}
+
+/**
+ * Builds the pull request body from the stories and the developer report.
+ *
+ * Exported for `tests/execute-pr-body.test.ts` — the only other caller,
+ * `executeDelivery`, needs a real git push and provider API call to reach it.
+ */
+export function buildPullRequestBody(taskId: string, taskTitle: string): string {
   const stories = latestArtifact(taskId, "stories")?.contentMd ?? "";
   const devReport = latestArtifact(taskId, "dev_report")?.contentMd ?? "";
   const qaReport = latestArtifact(taskId, "qa_report")?.contentMd ?? "";
@@ -319,6 +515,10 @@ function buildPullRequestBody(taskId: string, taskTitle: string): string {
     `## ${taskTitle}`,
     "",
     `Delivered by the multi-agent pipeline (task \`${taskId}\`).`,
+    "",
+    "## Verification",
+    "",
+    verificationSection(taskId),
     "",
     "<details><summary>User stories</summary>",
     "",

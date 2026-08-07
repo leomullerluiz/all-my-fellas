@@ -15,6 +15,9 @@ const STAGE_TONES: Record<Stage, NonNullable<BadgeProps["tone"]>> = {
   ARCHITECTURE: "info",
   PLAN_GATE: "warning",
   DEVELOPMENT: "accent",
+  // Not a review stage — mechanical, not an opinion — so it gets its own
+  // neutral tone rather than the reviewers' "accent".
+  VERIFICATION: "neutral",
   CODE_REVIEW: "accent",
   QA: "accent",
   HUMAN_CODE_REVIEW: "warning",

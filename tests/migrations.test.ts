@@ -125,6 +125,33 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds the five verification columns to an existing repos table", () => {
+    const sqlite = freshDatabase("verify-columns.db");
+    for (const column of [
+      "verify_install",
+      "verify_build",
+      "verify_test",
+      "verify_lint",
+      "verify_timeout_seconds",
+    ]) {
+      expect(columns(sqlite, "repos")).not.toContain(column);
+    }
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+
+    runMigrations(sqlite);
+
+    expect(columns(sqlite, "repos")).toContain("verify_install");
+    expect(columns(sqlite, "repos")).toContain("verify_timeout_seconds");
+    const row = sqlite
+      .prepare("SELECT verify_install AS install, verify_timeout_seconds AS timeout FROM repos WHERE id = 'r'")
+      .get() as { install: string | null; timeout: number };
+    expect(row.install).toBeNull();
+    expect(row.timeout).toBe(600);
+    sqlite.close();
+  });
+
   it("is a no-op when run again", () => {
     const sqlite = freshDatabase("twice.db");
     runMigrations(sqlite);
@@ -175,6 +202,25 @@ describe("runMigrations", () => {
     sqlite.exec(BOOTSTRAP_SQL);
 
     expect(tableExists(sqlite, "task_dependencies")).toBe(true);
+    sqlite.close();
+  });
+
+  it("adds the verification_runs table to a database created before it existed", () => {
+    // Same story as attachments/task_dependencies: a new table needs only the
+    // bootstrap's `CREATE TABLE IF NOT EXISTS`, not a `migrations.ts` entry.
+    const preVerificationRunsSql = BOOTSTRAP_SQL.replace(
+      /CREATE TABLE IF NOT EXISTS verification_runs[\s\S]*?verification_runs_stage_run_idx ON verification_runs\(stage_run_id\);/,
+      "",
+    );
+    expect(preVerificationRunsSql).not.toContain("verification_runs");
+
+    const sqlite = new Database(path.join(tempDir, "pre-verification-runs.db"));
+    sqlite.exec(preVerificationRunsSql);
+    expect(tableExists(sqlite, "verification_runs")).toBe(false);
+
+    sqlite.exec(BOOTSTRAP_SQL);
+
+    expect(tableExists(sqlite, "verification_runs")).toBe(true);
     sqlite.close();
   });
 

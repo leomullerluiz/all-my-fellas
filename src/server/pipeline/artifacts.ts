@@ -54,6 +54,13 @@ export const ARTIFACT_SPECS: Record<ArtifactType, ArtifactSpec> = {
     description: "What was implemented and how it was verified",
     requiredSections: ["Summary", "Changes", "Commands Run", "Follow-ups"],
   },
+  verification_report: {
+    type: "verification_report",
+    description:
+      "Mechanical verification result — rendered by the pipeline from the " +
+      "commands it ran, not written by an agent",
+    requiredSections: ["Outcome", "Commands", "Output"],
+  },
   code_review_report: {
     type: "code_review_report",
     description: "Code review verdict against the diff",
@@ -61,7 +68,9 @@ export const ARTIFACT_SPECS: Record<ArtifactType, ArtifactSpec> = {
   },
   qa_report: {
     type: "qa_report",
-    description: "QA verdict against the acceptance criteria",
+    description:
+      "QA verdict against the acceptance criteria, given the pipeline's " +
+      "verification results",
     requiredSections: ["Verdict", "Checks", "Acceptance Criteria Review", "Findings"],
   },
   human_review: {

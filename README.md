@@ -230,20 +230,24 @@ CREATED
  └─► STAKEHOLDER_REFINEMENT   agent · brief.md
       └─► PO_REFINEMENT       agent · stories.md
            └─► ARCHITECTURE   agent · techplan.md
-                └─► PLAN_GATE            human · approve / reject
-                     └─► DEVELOPMENT     agent · commits + dev-report.md
-                          └─► CODE_REVIEW  agent · code-review-report.md
-                               ├─ changes_requested → DEVELOPMENT
-                               └─► QA       agent · qa-report.md
-                                    ├─ changes_requested → DEVELOPMENT
-                                    └─► HUMAN_CODE_REVIEW   human · optional
-                                         ├─ request_changes → DEVELOPMENT
-                                         └─► PO_HOMOLOGATION  agent
-                                              └─► STAKEHOLDER_GATE   human
-                                                   └─► DELIVERY  worker · push + change request
-                                                        └─► COMPLETED
+                └─► PLAN_GATE          human · approve / reject
+                     └─► DEVELOPMENT   agent · commits + dev-report.md
+                          └─► VERIFICATION  worker · install → build → test → lint
+                               ├─ failed  → DEVELOPMENT  (no review or QA session paid)
+                               ├─ errored → FAILED       (environment, not code)
+                               ├─ skipped ─┐
+                               └─ passed ──┴─► CODE_REVIEW  agent · code-review-report.md
+                                                ├─ changes_requested → DEVELOPMENT
+                                                └─► QA        agent · qa-report.md
+                                                     ├─ changes_requested → DEVELOPMENT
+                                                     └─► HUMAN_CODE_REVIEW   human · optional
+                                                          ├─ request_changes → DEVELOPMENT
+                                                          └─► PO_HOMOLOGATION  agent
+                                                               └─► STAKEHOLDER_GATE   human
+                                                                    └─► DELIVERY  worker · push + change request
+                                                                         └─► COMPLETED
 
-Rework from any reviewer shares one budget (REWORK_MAX_CYCLES).
+Rework from any reviewer — including VERIFICATION — shares one budget (REWORK_MAX_CYCLES).
 Other terminals: REJECTED (gate), FAILED (technical), CANCELLED (user)
 ```
 
@@ -253,15 +257,21 @@ Other terminals: REJECTED (gate), FAILED (technical), CANCELLED (user)
 | Product Owner | `brief.md` + repo | `stories.md` | Read, Grep, Glob |
 | Architect | `brief.md`, `stories.md` + repo | `techplan.md` | + Bash (read-only) |
 | Developer | `stories.md`, `techplan.md` (+ reviewer reports on rework) | commits, `dev-report.md` | + Edit, Write |
+| Verification | repository's configured commands | `verification-report.md` | none — the worker, not an agent |
 | Code Reviewer | `stories.md`, `techplan.md`, `dev-report.md`, branch diff | `code-review-report.md` | Read, Grep, Glob, Bash |
-| QA | `stories.md`, `dev-report.md`, branch diff | `qa-report.md` | Read, Grep, Glob, Bash |
-| Homologation | `stories.md`, `qa-report.md`, diff summary | `homolog-report.md` | Read |
+| QA | `stories.md`, `dev-report.md`, branch diff, verification results | `qa-report.md` | Read, Grep, Glob, Bash |
+| Homologation | `stories.md`, `qa-report.md`, diff summary, verification results | `homolog-report.md` | Read |
 
-**Code review runs before QA.** Reviewing a diff is cheap; QA runs the test
-suite, the linter and the build. Catching a defect before paying for that is
-worth the ordering, and a rejection costs one agent run to detect instead of
-two. QA's prompt is correspondingly narrow — it verifies acceptance criteria and
-does not re-review code quality.
+**Verification runs before code review, mechanically.** The pipeline — not an
+agent — runs this repository's configured install/build/test/lint commands
+between Development and Code Review, and routes on the real exit codes: a
+failure sends work straight back to the Developer with no reviewer or QA
+session paid for. QA and homologation receive the real results as an input;
+neither claims to have run the checks itself, and QA's prompt stays narrow —
+it verifies acceptance criteria and does not re-review code quality. Commands
+are configured per repository (autodetected at connection time, editable
+afterwards); a repository with none configured is not blocked, it is
+`skipped` — visibly, never rendered as a pass.
 
 **Human code review is opt-in per task**, chosen at creation. When enabled the
 task parks after QA until you read the diff at `/tasks/{id}/review` and decide.

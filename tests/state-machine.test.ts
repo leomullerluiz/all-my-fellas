@@ -57,10 +57,62 @@ describe("nextTransition", () => {
     ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 1 });
   });
 
-  it("sends development to code review, not straight to QA", () => {
+  it("sends development to verification, not straight to code review", () => {
     expect(
       nextTransition("DEVELOPMENT", { kind: "stage_succeeded", stage: "DEVELOPMENT" }, base),
+    ).toEqual({ type: "run", stage: "VERIFICATION", attempt: 1 });
+  });
+});
+
+describe("verification", () => {
+  it("sends a passed (or skipped) verification to code review", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1 },
+      ),
     ).toEqual({ type: "run", stage: "CODE_REVIEW", attempt: 1 });
+  });
+
+  it("sends a failed verification back to development without touching code review", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict: "changes_requested" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("treats a missing verdict as changes requested", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toMatchObject({ type: "run", stage: "DEVELOPMENT" });
+  });
+
+  it("names the failing command in the terminal reason once the budget is spent", () => {
+    // `executeVerification` supplies `detail` with the failing command and
+    // exit code (spec §9.1's worked example); the generic "Verification
+    // failed" is only a fallback for a signal that omits it.
+    const transition = nextTransition(
+      "VERIFICATION",
+      {
+        kind: "stage_succeeded",
+        stage: "VERIFICATION",
+        reviewVerdict: "changes_requested",
+        detail: "Verification failed (`npm run build` exited 1)",
+      },
+      { ...base, developmentAttempts: 3 },
+    );
+    expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
+    expect((transition as { reason: string }).reason).toContain(
+      "Verification failed (`npm run build` exited 1)",
+    );
   });
 });
 
@@ -142,6 +194,15 @@ describe("the shared rework budget", () => {
   // Every reviewer draws on the same allowance, so the outcome must not depend
   // on which one rejected.
   const rejections = [
+    {
+      name: "verification",
+      signal: {
+        kind: "stage_succeeded",
+        stage: "VERIFICATION",
+        reviewVerdict: "changes_requested",
+      },
+      from: "VERIFICATION",
+    },
     {
       name: "code review",
       signal: {

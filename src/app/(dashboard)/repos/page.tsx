@@ -20,6 +20,11 @@ export default async function ReposPage() {
       createdAt: repo.createdAt,
       taskCount: tasks.filter((task) => task.repoId === repo.id).length,
       hasContext: repo.context != null,
+      verifyInstall: repo.verifyInstall,
+      verifyBuild: repo.verifyBuild,
+      verifyTest: repo.verifyTest,
+      verifyLint: repo.verifyLint,
+      verifyTimeoutSeconds: repo.verifyTimeoutSeconds,
       credential: credentialSource({
         provider,
         credentialRef: repo.credentialRef,

@@ -121,6 +121,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS task_dependencies_pair_idx
 CREATE INDEX IF NOT EXISTS task_dependencies_task_idx ON task_dependencies(task_id);
 CREATE INDEX IF NOT EXISTS task_dependencies_depends_on_idx ON task_dependencies(depends_on_task_id);
 
+CREATE TABLE IF NOT EXISTS verification_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  stage_run_id TEXT NOT NULL REFERENCES stage_runs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  command TEXT NOT NULL,
+  exit_code INTEGER,
+  timed_out INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL,
+  stdout_tail TEXT NOT NULL DEFAULT '',
+  stderr_tail TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS verification_runs_task_idx ON verification_runs(task_id);
+CREATE INDEX IF NOT EXISTS verification_runs_stage_run_idx ON verification_runs(stage_run_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

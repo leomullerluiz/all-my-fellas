@@ -26,9 +26,11 @@ export type PipelineSignal =
    *
    * `reviewVerdict` is shared by `CODE_REVIEW` and `QA`: both produce the same
    * approve / request-changes shape, and two near-identical fields would invite
-   * passing the wrong one.
+   * passing the wrong one. `detail`, when present, replaces the generic rework
+   * reason with one naming what actually happened — `VERIFICATION` is the only
+   * caller with something more specific than "requested changes" to say.
    */
-  | { kind: "stage_succeeded"; stage: Stage; reviewVerdict?: ReviewVerdict }
+  | { kind: "stage_succeeded"; stage: Stage; reviewVerdict?: ReviewVerdict; detail?: string }
   /** An agent (or the delivery step) exhausted its retries. */
   | { kind: "stage_failed"; stage: Stage; error: string }
   /** A human recorded a decision on a gate. */
@@ -64,13 +66,14 @@ export type Transition =
 /**
  * Linear happy-path successor for each agent stage.
  *
- * `CODE_REVIEW` and `QA` branch on a verdict and the gates branch on a human
- * decision, so both are handled explicitly in {@link nextTransition}.
+ * `VERIFICATION`, `CODE_REVIEW` and `QA` branch on a verdict and the gates
+ * branch on a human decision, so all are handled explicitly in
+ * {@link nextTransition}.
  */
 const LINEAR_SUCCESSOR: Partial<Record<Stage, Stage>> = {
   STAKEHOLDER_REFINEMENT: "PO_REFINEMENT",
   PO_REFINEMENT: "ARCHITECTURE",
-  DEVELOPMENT: "CODE_REVIEW",
+  DEVELOPMENT: "VERIFICATION",
   PO_HOMOLOGATION: "STAKEHOLDER_GATE",
   DELIVERY: "COMPLETED",
 };
@@ -186,6 +189,15 @@ export function nextTransition(
     return context.planGateRequired
       ? { type: "await_gate", gate: "PLAN_GATE" }
       : { type: "run", stage: "DEVELOPMENT", attempt: context.developmentAttempts + 1 };
+  }
+
+  if (current === "VERIFICATION") {
+    // `skipped` is folded into `approved` at the call site (`executeVerification`)
+    // — there is no third value here, matching `state-machine.ts`'s existing
+    // rule against a second near-identical field.
+    return signal.reviewVerdict === "approved"
+      ? { type: "run", stage: "CODE_REVIEW", attempt: 1 }
+      : reworkOrFail(context, signal.detail ?? "Verification failed");
   }
 
   if (current === "CODE_REVIEW") {

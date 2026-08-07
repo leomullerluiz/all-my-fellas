@@ -5,12 +5,18 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/field";
 import { capacityBlockedReason } from "@/lib/capacity";
 import { dependencyBlockedReason } from "@/lib/dependencies";
 import { GATE_ALLOWED_DECISIONS, type Gate, type TaskStatus } from "@/server/pipeline/stages";
+import {
+  type VerificationSummary,
+  verificationBadgeLabel,
+  verificationBadgeTone,
+} from "@/server/pipeline/verification-summary";
 
 /** Human gate approval plus the retry / cancel controls. */
 
@@ -53,11 +59,18 @@ export function GatePanel({
   taskId,
   gate,
   diffSummary,
+  verification,
 }: {
   taskId: string;
   gate: Gate;
   /** e.g. "14 files changed, +320 −87" — shown so the size is visible up front. */
   diffSummary?: string | null;
+  /**
+   * Computed from `verification_runs`, not the workspace, so it survives
+   * cleanup. `PLAN_GATE` precedes `DEVELOPMENT`, so it is `undefined` there —
+   * nothing renders rather than showing a badge for a stage that has not run.
+   */
+  verification?: VerificationSummary | null;
 }) {
   const router = useRouter();
   const [comment, setComment] = useState("");
@@ -108,6 +121,14 @@ export function GatePanel({
       </CardHeader>
       <CardBody className="flex flex-col gap-3">
         <p className="text-xs text-muted">{copy.description}</p>
+
+        {verification ? (
+          <div>
+            <Badge tone={verificationBadgeTone(verification)}>
+              {verificationBadgeLabel(verification)}
+            </Badge>
+          </div>
+        ) : null}
 
         {gate === "HUMAN_CODE_REVIEW" ? (
           <div className="flex flex-wrap items-center gap-3">
