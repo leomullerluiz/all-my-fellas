@@ -1,5 +1,6 @@
 import {
   GATE_ALLOWED_DECISIONS,
+  type FailureKind,
   type Gate,
   type GateDecision,
   type Stage,
@@ -47,8 +48,14 @@ export type PipelineSignal =
       homologationVerdict?: HomologationVerdict;
       detail?: string;
     }
-  /** An agent (or the delivery step) exhausted its retries. */
-  | { kind: "stage_failed"; stage: Stage; error: string }
+  /**
+   * An agent (or the delivery step) exhausted its retries.
+   *
+   * `failureKind` defaults to `"stage_error"` (`nextTransition` applies the
+   * default) — every caller but `execute.ts`'s three specific throw sites has
+   * nothing more specific to say.
+   */
+  | { kind: "stage_failed"; stage: Stage; error: string; failureKind?: FailureKind }
   /** A human recorded a decision on a gate. */
   | { kind: "gate_decided"; gate: Gate; decision: GateDecision; comment?: string }
   /** The user cancelled the task. */
@@ -60,11 +67,18 @@ export type PipelineContext = {
   /** PO_HOMOLOGATION runs so far, including the one being handled. */
   homologationAttempts: number;
   /**
-   * Maximum rework cycles allowed. Shared by every source that can send work
-   * back to the Developer: `CODE_REVIEW`, `QA`, `HUMAN_CODE_REVIEW` and
-   * `PO_HOMOLOGATION` (once, per §5.4 of the homologation-verdict spec).
+   * Maximum rework cycles allowed, from settings. Shared by every source that
+   * can send work back to the Developer: `CODE_REVIEW`, `QA`,
+   * `HUMAN_CODE_REVIEW` and `PO_HOMOLOGATION` (once, per §5.4 of the
+   * homologation-verdict spec).
    */
   reworkMaxCycles: number;
+  /**
+   * Extra rework cycles this task has been granted by a retry, on top of
+   * `reworkMaxCycles` — `tasks.rework_budget_grant`. The effective ceiling is
+   * always `reworkMaxCycles + reworkBudgetGrant`.
+   */
+  reworkBudgetGrant: number;
   /**
    * Whether the human plan gate applies. The Architect can waive it for
    * low-criticality work when `autoApproveLowCriticality` is enabled.
@@ -79,8 +93,20 @@ export type Transition =
   | { type: "run"; stage: Stage; attempt: number }
   /** Park the task on a gate and wait for a human. */
   | { type: "await_gate"; gate: Gate }
-  /** Stop the pipeline. */
-  | { type: "terminal"; stage: TerminalStage; reason?: string };
+  /**
+   * Stop the pipeline. `failedStage`/`failureKind` are set only for `FAILED`
+   * — a `cancel` or a gate `reject` carries neither, which is what lets
+   * retry's "no cause recorded" refusal stay a genuine data gap rather than
+   * firing on a deliberate human act (see `NotRetryableError` in
+   * `orchestrator.ts`).
+   */
+  | {
+      type: "terminal";
+      stage: TerminalStage;
+      reason?: string;
+      failedStage?: Stage;
+      failureKind?: FailureKind;
+    };
 
 /**
  * Linear happy-path successor for each agent stage.
@@ -117,9 +143,12 @@ export class InvalidGateDecisionError extends Error {
   }
 }
 
-// A first DEVELOPMENT pass plus N rework cycles means N+1 attempts total.
+/**
+ * A first DEVELOPMENT pass plus N rework cycles means N+1 attempts total.
+ * `reworkBudgetGrant` extends the ceiling per task — see {@link PipelineContext}.
+ */
 function reworkBudgetAvailable(context: PipelineContext): boolean {
-  return context.developmentAttempts <= context.reworkMaxCycles;
+  return context.developmentAttempts <= context.reworkMaxCycles + context.reworkBudgetGrant;
 }
 
 /**
@@ -133,11 +162,20 @@ function reworkBudgetAvailable(context: PipelineContext): boolean {
  */
 function reworkOrFail(context: PipelineContext, reason: string): Transition {
   if (!reworkBudgetAvailable(context)) {
+    const effectiveMax = context.reworkMaxCycles + context.reworkBudgetGrant;
+    // Only mentioned once a retry has actually granted headroom, so a first
+    // exhaustion still reads exactly as it always has.
+    const grantNote =
+      context.reworkBudgetGrant > 0
+        ? ` (${context.reworkMaxCycles} configured + ${context.reworkBudgetGrant} granted by a retry)`
+        : "";
     return {
       type: "terminal",
       stage: "FAILED",
+      failedStage: "DEVELOPMENT",
+      failureKind: "rework_exhausted",
       reason:
-        `${reason}, but the rework budget of ${context.reworkMaxCycles} cycle(s) is ` +
+        `${reason}, but the rework budget of ${effectiveMax} cycle(s)${grantNote} is ` +
         `exhausted. Raise "rework cycles" in Settings to allow another attempt.`,
     };
   }
@@ -163,7 +201,13 @@ export function nextTransition(
   }
 
   if (signal.kind === "stage_failed") {
-    return { type: "terminal", stage: "FAILED", reason: signal.error };
+    return {
+      type: "terminal",
+      stage: "FAILED",
+      reason: signal.error,
+      failedStage: signal.stage,
+      failureKind: signal.failureKind ?? "stage_error",
+    };
   }
 
   if (signal.kind === "start") {
@@ -273,4 +317,67 @@ export function nextTransition(
     return { type: "await_gate", gate: successor };
   }
   return { type: "run", stage: successor, attempt: 1 };
+}
+
+/**
+ * Which stage a retry re-runs for each `FailureKind`, given the stage that
+ * actually failed (`tasks.failed_stage`).
+ *
+ * Total over {@link FailureKind} so a new kind without an entry here fails the
+ * build — see `stories.md` S1/S2. `stage_error` and `artifact_invalid` re-run
+ * the stage that threw; the other three always name a fixed stage regardless
+ * of where the failure was recorded (`reworkOrFail` and the delivery/no-commits
+ * throw sites always set `failedStage` to that same stage anyway).
+ */
+export const RETRY_TARGET: Record<FailureKind, (failedStage: Stage) => Stage> = {
+  stage_error: (failedStage) => failedStage,
+  artifact_invalid: (failedStage) => failedStage,
+  no_commits: () => "DEVELOPMENT",
+  rework_exhausted: () => "DEVELOPMENT",
+  delivery_failed: () => "DELIVERY",
+};
+
+/** Whether a retry of this `FailureKind` grants the task an extra rework cycle. */
+export const GRANTS_REWORK_CYCLE: Record<FailureKind, boolean> = {
+  stage_error: false,
+  artifact_invalid: false,
+  no_commits: false,
+  rework_exhausted: true,
+  delivery_failed: false,
+};
+
+const PRE_DEVELOPMENT_STAGES: readonly Stage[] = [
+  "STAKEHOLDER_REFINEMENT",
+  "PO_REFINEMENT",
+  "ARCHITECTURE",
+];
+
+/**
+ * Whether a retry of `failedStage`/`failureKind` needs the branch (and its
+ * commit history) to still be on disk — i.e. whether it must be refused with
+ * `workspace_gone` once the retention job has removed the workspace.
+ *
+ * `rework_exhausted` and `delivery_failed` always need it: the retried
+ * Development run reads the reviewers' reports against the existing branch
+ * (`gatherInputs`), and a delivery retry pushes commits that must already
+ * exist. The three pre-Development stages never need it — nothing has cloned
+ * yet. `no_commits` never needs it either: `hasCommitsAheadOfBase` can only
+ * fire when the branch holds zero commits ahead of base, so there is nothing
+ * to lose. Everything else — `CODE_REVIEW`, `QA`, `PO_HOMOLOGATION`,
+ * `DELIVERY`, `VERIFICATION`, or `DEVELOPMENT` past its first attempt — needs
+ * the history the earlier stages produced.
+ *
+ * @param failedRunAttempt The attempt number of the run that failed
+ *   (`countStageRuns(taskId, failedStage)` at the moment of failure).
+ */
+export function needsBranchHistory(
+  failedStage: Stage,
+  failureKind: FailureKind,
+  failedRunAttempt: number,
+): boolean {
+  if (failureKind === "rework_exhausted" || failureKind === "delivery_failed") return true;
+  if (failureKind === "no_commits") return false;
+  if (PRE_DEVELOPMENT_STAGES.includes(failedStage)) return false;
+  if (failedStage === "DEVELOPMENT" && failedRunAttempt <= 1) return false;
+  return true;
 }
