@@ -73,6 +73,9 @@ export function NewTaskForm({
 
   const [repoId, setRepoId] = useState(initial?.repoId ?? repos[0]?.id ?? "");
   const [title, setTitle] = useState(initial?.title ?? "");
+  // Create-mode only — overrides the auto-generated branch name. There is no
+  // equivalent on the edit form; see `taskFieldsSchema`'s `branchName` doc.
+  const [branchName, setBranchName] = useState("");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [priority, setPriority] = useState<Priority>(initial?.priority ?? "medium");
   const [requireHumanCodeReview, setRequireHumanCodeReview] = useState(
@@ -116,7 +119,10 @@ export function NewTaskForm({
       form.set("description", description);
       form.set("priority", priority);
       form.set("requireHumanCodeReview", String(requireHumanCodeReview));
-      if (!isEdit) form.set("start", String(start));
+      if (!isEdit) {
+        form.set("start", String(start));
+        if (branchName) form.set("branchName", branchName);
+      }
       for (const file of pendingFiles) form.append("attachments", file);
       for (const dependencyId of dependsOn) form.append("dependsOn", dependencyId);
 
@@ -132,7 +138,7 @@ export function NewTaskForm({
         priority,
         requireHumanCodeReview,
         dependsOn,
-        ...(isEdit ? {} : { start }),
+        ...(isEdit ? {} : { start, ...(branchName ? { branchName } : {}) }),
       };
       response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
         method: isEdit ? "PATCH" : "POST",
@@ -260,6 +266,23 @@ export function NewTaskForm({
                 required
               />
             </Field>
+
+            {isEdit ? null : (
+              <Field
+                label="Branch name"
+                htmlFor="branchName"
+                error={errors.branchName}
+                hint="Optional. Leave blank to let the pipeline generate one from the title."
+              >
+                <Input
+                  id="branchName"
+                  value={branchName}
+                  onChange={(event) => setBranchName(event.target.value)}
+                  placeholder="feature/my-custom-name"
+                  maxLength={200}
+                />
+              </Field>
+            )}
 
             <Field
               label="Description"

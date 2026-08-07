@@ -299,6 +299,70 @@ describe("POST /api/tasks", () => {
     const response = await postMultipart({ ...VALID_BODY, repoId });
     expect(response.status).toBe(201);
   });
+
+  describe("branchName", () => {
+    it("stores a valid custom branch name and falls back to auto-generation when omitted", async () => {
+      const withCustom = await post({ ...VALID_BODY, repoId, branchName: "feature/my-custom-name" });
+      expect(withCustom.status).toBe(201);
+      const withCustomPayload = (await withCustom.json()) as { task: { id: string } };
+      expect(service.getTask(withCustomPayload.task.id)!.customBranchName).toBe(
+        "feature/my-custom-name",
+      );
+
+      const withoutCustom = await post({ ...VALID_BODY, repoId });
+      expect(withoutCustom.status).toBe(201);
+      const withoutCustomPayload = (await withoutCustom.json()) as { task: { id: string } };
+      expect(service.getTask(withoutCustomPayload.task.id)!.customBranchName).toBeNull();
+    });
+
+    it("accepts a bugfix-style valid name unchanged", async () => {
+      const response = await post({ ...VALID_BODY, repoId, branchName: "bugfix-123" });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+      expect(service.getTask(payload.task.id)!.customBranchName).toBe("bugfix-123");
+    });
+
+    it("creates normally even when the chosen name collides with nothing yet (no existence check)", async () => {
+      const response = await post({ ...VALID_BODY, repoId, branchName: "already-taken" });
+      expect(response.status).toBe(201);
+    });
+
+    const INVALID_CASES: Array<{ name: string; branchName: string }> = [
+      { name: "contains a space", branchName: "feature with space" },
+      { name: "contains a forbidden character (~)", branchName: "feature~1" },
+      { name: "contains a forbidden character (^)", branchName: "feature^1" },
+      { name: "contains a forbidden character (:)", branchName: "feature:1" },
+      { name: "contains a forbidden character (?)", branchName: "feature?1" },
+      { name: "contains a forbidden character (*)", branchName: "feature*1" },
+      { name: "contains a forbidden character ([)", branchName: "feature[1" },
+      { name: "contains a forbidden character (`)", branchName: "feature`1" },
+      { name: "contains ..", branchName: "feature..name" },
+      { name: "starts with -", branchName: "-feature" },
+      { name: "starts with .", branchName: ".feature" },
+      { name: "starts with /", branchName: "/feature" },
+      { name: "ends with /", branchName: "feature/" },
+      { name: "ends with .", branchName: "feature." },
+      { name: "ends with .lock", branchName: "feature.lock" },
+      { name: "is longer than 200 characters", branchName: "a".repeat(201) },
+      { name: "is bare @", branchName: "@" },
+    ];
+
+    for (const { name, branchName } of INVALID_CASES) {
+      it(`rejects a branch name that ${name}`, async () => {
+        const response = await post({ ...VALID_BODY, repoId, branchName });
+        expect(response.status).toBe(400);
+        const payload = (await response.json()) as { error: string; details: Record<string, string> };
+        expect(payload.details).toHaveProperty("branchName");
+      });
+    }
+
+    it("treats an empty/whitespace-only value as not provided", async () => {
+      const response = await post({ ...VALID_BODY, repoId, branchName: "   " });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+      expect(service.getTask(payload.task.id)!.customBranchName).toBeNull();
+    });
+  });
 });
 
 describe("POST /api/tasks/:id/start", () => {

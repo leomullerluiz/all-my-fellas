@@ -42,6 +42,7 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     criticality: null,
     requireHumanCodeReview: false,
     branchName: null,
+    customBranchName: null,
     prUrl: null,
     workspacePath: null,
     failureReason: null,

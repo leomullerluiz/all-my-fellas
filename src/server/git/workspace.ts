@@ -76,9 +76,17 @@ export async function prepareWorkspace(options: {
   title: string;
   defaultBranch: string;
   access: RemoteAccess;
+  /**
+   * A developer-chosen branch name, requested at task creation. Used verbatim
+   * (trimmed, no `pipeline/` prefix or task-id suffix) when present; falls
+   * back to `branchNameFor(...)` when omitted or blank, exactly as before
+   * this option existed.
+   */
+  customBranchName?: string | null;
 }): Promise<Workspace> {
   const target = workspacePathFor(options.taskId);
-  const branchName = branchNameFor(options.taskId, options.title);
+  const branchName =
+    options.customBranchName?.trim() || branchNameFor(options.taskId, options.title);
   const { provider, repoUrl, credential } = options.access;
 
   if (!(await pathExists(path.join(target, ".git")))) {

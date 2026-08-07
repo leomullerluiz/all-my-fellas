@@ -115,6 +115,16 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds custom_branch_name to an existing tasks table", () => {
+    const sqlite = freshDatabase("custom-branch-name.db");
+    expect(columns(sqlite, "tasks")).not.toContain("custom_branch_name");
+
+    runMigrations(sqlite);
+
+    expect(columns(sqlite, "tasks")).toContain("custom_branch_name");
+    sqlite.close();
+  });
+
   it("is a no-op when run again", () => {
     const sqlite = freshDatabase("twice.db");
     runMigrations(sqlite);

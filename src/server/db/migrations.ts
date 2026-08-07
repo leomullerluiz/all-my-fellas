@@ -67,6 +67,15 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "repos", "context", "TEXT");
     },
   },
+  {
+    name: "optional developer-chosen branch name at task creation",
+    up: (sqlite) => {
+      // The branch actually checked out (`branch_name`) is still populated
+      // lazily by `prepareWorkspace`; this column records what was asked for,
+      // at creation time, whether or not the task ever gets that far.
+      addColumn(sqlite, "tasks", "custom_branch_name", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

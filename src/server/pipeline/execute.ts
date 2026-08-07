@@ -149,6 +149,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       title: task.title,
       defaultBranch: task.repo.defaultBranch,
       access: remoteAccessFor(task.repo),
+      customBranchName: task.customBranchName,
     });
     workspacePath = workspace.path;
     branchName = workspace.branchName;
