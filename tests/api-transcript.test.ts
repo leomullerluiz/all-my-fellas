@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { redactSecrets } from "@/server/pipeline/audit/redact";
+
 /**
  * `GET /api/tasks/:taskId/runs/:runId/transcript` — S3.
  */
@@ -84,6 +86,49 @@ describe("GET /api/tasks/:id/runs/:runId/transcript", () => {
     expect(body.transcript.limit).toBe(2);
     expect(body.transcript.entries).toHaveLength(2);
     expect(body.transcript.provider).toBe("claude");
+  });
+
+  it("does not corrupt a prompt that was already redacted at write time (execute.ts's path)", async () => {
+    // `execute.ts` redacts the prompt before persisting it (`redactSecrets(...).text`
+    // at the `updateStageRun` call site); the transcript route redacts again on
+    // read for rows that predate write-time redaction. This exercises both
+    // passes together instead of seeding raw, never-redacted text.
+    const task = service.createTask({
+      repoId,
+      title: "Double-redaction task",
+      description: "A description long enough to pass validation upstream.",
+      priority: "medium",
+    });
+    orchestrator.startTask(task.id);
+    const run = service.listStageRuns(task.id).find((candidate) => candidate.stage === "STAKEHOLDER_REFINEMENT")!;
+
+    service.updateStageRun(run.id, {
+      systemPrompt: redactSecrets("You are the Stakeholder. TOKEN=abcdef0123456789").text,
+      userPrompt: redactSecrets("## Task\n\nOPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx").text,
+      model: "claude-sonnet-5",
+      provider: "claude",
+    });
+    service.saveTranscript({
+      stageRunId: run.id,
+      sessionId: "sess_double",
+      transcript: [{ type: "assistant", message: { content: [{ type: "text", text: "TOKEN=abcdef0123456789" }] } }],
+    });
+
+    const request = new Request(`http://localhost/api/tasks/${task.id}/runs/${run.id}/transcript`);
+    const response = await transcriptRoute.GET(request, {
+      params: Promise.resolve({ id: task.id, runId: run.id }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.prompt.system).toContain("TOKEN=[redacted:");
+    expect(body.prompt.system).not.toContain("abcdef0123456789");
+    expect(body.prompt.user).toContain("OPENAI_API_KEY=[redacted:");
+    expect(body.prompt.user).not.toContain("sk-abcdefghijklmnopqrstuvwx");
+    // The tell for the double-redaction bug: a second pass over an already
+    // redacted `NAME=[redacted:N chars]` marker leaves `chars]` stranded.
+    expect(body.prompt.system).not.toMatch(/chars\]\s+chars\]/);
+    expect(body.prompt.user).not.toMatch(/chars\]\s+chars\]/);
   });
 
   it("returns 404 for a runId that belongs to a different task", async () => {

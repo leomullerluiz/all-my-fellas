@@ -43,10 +43,23 @@ function replaceCounting(
  */
 const SECRET_NAME = "[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL)[A-Za-z0-9_]*";
 
-const ASSIGNMENT_PATTERN = new RegExp(`\\b(${SECRET_NAME})\\s*=\\s*("[^"\\n]*"|'[^'\\n]*'|\\S+)`, "gi");
+/**
+ * This module's own output shape (`API_KEY=[redacted:32 chars]`,
+ * `"password": "[redacted:14 chars]"`). Both value alternatives below exclude
+ * it via a leading negative lookahead so a second pass — read-time redaction
+ * over text a write-time pass already redacted — is a no-op rather than a
+ * corrupting re-match: `\S+` would otherwise stop at the space inside the
+ * marker and redact `[redacted:32` a second time, leaving `chars]` stranded.
+ */
+const ALREADY_REDACTED = "\\[redacted:";
+
+const ASSIGNMENT_PATTERN = new RegExp(
+  `\\b(${SECRET_NAME})\\s*=\\s*(?!${ALREADY_REDACTED})("[^"\\n]*"|'[^'\\n]*'|\\S+)`,
+  "gi",
+);
 
 const JSON_PAIR_PATTERN = new RegExp(
-  `"(${SECRET_NAME})"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"`,
+  `"(${SECRET_NAME})"\\s*:\\s*"(?!${ALREADY_REDACTED})([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"`,
   "gi",
 );
 
