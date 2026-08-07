@@ -83,6 +83,13 @@ export const ARTIFACT_SPECS: Record<ArtifactType, ArtifactSpec> = {
     description: "Final acceptance-criteria checklist",
     requiredSections: ["Verdict", "Acceptance Criteria Checklist", "Notes"],
   },
+  diff_summary: {
+    type: "diff_summary",
+    description:
+      "The cheap part of the branch diff — base/head and a per-file status table — " +
+      "persisted before the workspace is cleaned up, rendered by the pipeline, not by an agent",
+    requiredSections: ["Summary", "Files"],
+  },
 };
 
 export class ArtifactValidationError extends Error {

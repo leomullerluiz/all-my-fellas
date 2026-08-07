@@ -2,6 +2,7 @@ import { roleFor } from "../agents/roles";
 import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
 import { requireCredential, resolveCredential } from "../git/credentials";
+import { readDiffIndex } from "../git/diff";
 import { createChangeRequest } from "../git/pull-request";
 import { providerFor } from "../git/providers";
 import {
@@ -11,6 +12,7 @@ import {
   diffAgainstBase,
   diffStatAgainstBase,
   hasCommitsAheadOfBase,
+  headCommitSha,
   prepareWorkspace,
   pushBranch,
   redactRemote,
@@ -40,6 +42,7 @@ import {
   validateArtifact,
 } from "./artifacts";
 import { redactSecrets } from "./audit/redact";
+import { renderDiffSummaryArtifact } from "./diff-summary";
 import { advanceTask } from "./orchestrator";
 import {
   type ArtifactInput,
@@ -612,6 +615,38 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
     stage: "DELIVERY",
     attempt: run.attempt,
   });
+
+  // Written before the push, in its own try/catch: the workspace is
+  // guaranteed present here (the guard above already failed the stage
+  // outright without it), and a delivery that fails at the push or at PR
+  // creation still leaves a record of what was about to ship. Losing this
+  // record is bad; refusing to open a pull request over it is worse — see
+  // spec-audit-trail.md §8.
+  try {
+    const base = task.repo.defaultBranch;
+    const [index, sha] = await Promise.all([
+      readDiffIndex(task.workspacePath, base),
+      headCommitSha(task.workspacePath),
+    ]);
+    const body = validateArtifact(
+      "diff_summary",
+      renderDiffSummaryArtifact({
+        baseBranch: base,
+        headBranch: task.branchName,
+        headCommitSha: sha,
+        index,
+      }),
+    );
+    saveArtifact({ taskId: task.id, stageRunId, type: "diff_summary", contentMd: body });
+    appendEvent(task.id, stageRunId, { type: "artifact_saved", artifactType: "diff_summary" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendEvent(task.id, stageRunId, {
+      type: "log",
+      level: "warn",
+      message: `Could not persist the diff summary before delivery: ${message}`,
+    });
+  }
 
   try {
     await pushBranch(task.workspacePath, task.branchName, remoteAccessFor(task.repo, true));

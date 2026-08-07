@@ -16,6 +16,7 @@ import { summarizeVerification } from "@/server/pipeline/verification-summary";
 import {
   getTaskWithRepo,
   listApprovals,
+  listArtifactVersions,
   listAttachments,
   listDependencies,
   listLatestArtifacts,
@@ -36,6 +37,7 @@ export default async function TaskDetailPage(props: {
 
   const runs = listStageRuns(id);
   const artifacts = listLatestArtifacts(id);
+  const artifactVersions = listArtifactVersions(id);
   const approvals = listApprovals(id);
   const attachments = listAttachments(id);
   const dependsOn = listDependencies(id);
@@ -301,7 +303,7 @@ export default async function TaskDetailPage(props: {
           ) : (
             <LiveLog taskId={task.id} live={live} />
           )}
-          <ArtifactTabs artifacts={artifacts} />
+          <ArtifactTabs artifacts={artifacts} taskId={task.id} versions={artifactVersions} />
         </div>
       </div>
     </div>

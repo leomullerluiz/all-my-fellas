@@ -657,6 +657,86 @@ export function listLatestArtifacts(taskId: string): ArtifactRow[] {
 }
 
 /**
+ * Every version of one artifact type, newest first — the rework history
+ * `listLatestArtifacts` collapses away. See spec-audit-trail.md §7.
+ */
+export function listArtifacts(taskId: string, type: ArtifactType): ArtifactRow[] {
+  return db
+    .select()
+    .from(artifacts)
+    .where(and(eq(artifacts.taskId, taskId), eq(artifacts.type, type)))
+    .orderBy(desc(artifacts.createdAt))
+    .all();
+}
+
+/** One artifact's version metadata, without loading its body. */
+export type ArtifactVersion = {
+  id: string;
+  type: ArtifactType;
+  stageRunId: string;
+  attempt: number;
+  createdAt: number;
+  sizeBytes: number;
+};
+
+/**
+ * Every artifact's version metadata for a task, newest first — for a version
+ * switcher that must not load ~120 KB of Markdown bodies just to render a
+ * list of versions. Joins `stage_runs` for `attempt` and selects
+ * `length(content_md)` rather than the column itself.
+ */
+export function listArtifactVersions(taskId: string): ArtifactVersion[] {
+  return db
+    .select({
+      id: artifacts.id,
+      type: artifacts.type,
+      stageRunId: artifacts.stageRunId,
+      attempt: stageRuns.attempt,
+      createdAt: artifacts.createdAt,
+      sizeBytes: sql<number>`length(${artifacts.contentMd})`,
+    })
+    .from(artifacts)
+    .innerJoin(stageRuns, eq(artifacts.stageRunId, stageRuns.id))
+    .where(eq(artifacts.taskId, taskId))
+    .orderBy(desc(artifacts.createdAt))
+    .all();
+}
+
+/**
+ * Every artifact version for a task, with its body and producing attempt —
+ * the export's source of truth: `listLatestArtifacts` collapses rework
+ * history away, and the export is the one place that must not (§9).
+ */
+export function listAllArtifacts(taskId: string): Array<ArtifactRow & { attempt: number }> {
+  return db
+    .select({
+      id: artifacts.id,
+      taskId: artifacts.taskId,
+      stageRunId: artifacts.stageRunId,
+      type: artifacts.type,
+      contentMd: artifacts.contentMd,
+      createdAt: artifacts.createdAt,
+      attempt: stageRuns.attempt,
+    })
+    .from(artifacts)
+    .innerJoin(stageRuns, eq(artifacts.stageRunId, stageRuns.id))
+    .where(eq(artifacts.taskId, taskId))
+    .orderBy(artifacts.createdAt)
+    .all();
+}
+
+/** One artifact's full body, scoped to `taskId` so a foreign id cannot match. */
+export function getArtifact(taskId: string, artifactId: string): ArtifactRow | null {
+  return (
+    db
+      .select()
+      .from(artifacts)
+      .where(and(eq(artifacts.id, artifactId), eq(artifacts.taskId, taskId)))
+      .get() ?? null
+  );
+}
+
+/**
  * Persists one row per verification command result — the audit record, and
  * what the gate badge and the PR renderer read (see `verification.ts`'s
  * `CommandResult`). A no-op on an empty list, which is the `skipped` case.
@@ -789,6 +869,50 @@ export function latestAgentRun(stageRunId: string): AgentRunRow | null {
       .limit(1)
       .get() ?? null
   );
+}
+
+/**
+ * Replaces `transcript_json` with a tombstone (`{"pruned":true,"prunedAt":…}`)
+ * for every `agent_runs` row older than `cutoffMs` — the retention sweep,
+ * spec-audit-trail.md §11. The row is never deleted: a deleted row would be
+ * indistinguishable from a stage that never had a transcript at all (a
+ * `DELIVERY` run, or one that failed before the provider returned).
+ *
+ * `session_id` and the `stage_runs` prompt columns are untouched — the
+ * prompt is the smaller half of the record and the half that answers "what
+ * was this run given", so it is never pruned regardless of this setting.
+ *
+ * The `NOT LIKE` guard makes a second sweep over the same data a no-op: an
+ * already-tombstoned row's `transcript_json` starts with `{"pruned":true`,
+ * so it is excluded rather than re-tombstoned.
+ */
+export function sweepTranscriptRetention(cutoffMs: number): number {
+  const tombstone = JSON.stringify({ pruned: true, prunedAt: Date.now() });
+  const result = db
+    .update(agentRuns)
+    .set({ transcriptJson: tombstone })
+    .where(
+      and(
+        sql`${agentRuns.createdAt} < ${cutoffMs}`,
+        sql`${agentRuns.transcriptJson} NOT LIKE '{"pruned":true%'`,
+      ),
+    )
+    .run();
+  return result.changes;
+}
+
+export type TranscriptStorageStats = { count: number; totalBytes: number };
+
+/** `count(*)` and `sum(length(transcript_json))` over `agent_runs` — the Settings screen's storage readout. */
+export function transcriptStorageStats(): TranscriptStorageStats {
+  const row = db
+    .select({
+      count: sql<number>`count(*)`,
+      totalBytes: sql<number>`coalesce(sum(length(${agentRuns.transcriptJson})), 0)`,
+    })
+    .from(agentRuns)
+    .get();
+  return { count: row?.count ?? 0, totalBytes: row?.totalBytes ?? 0 };
 }
 
 export function listApprovals(taskId: string): ApprovalRow[] {

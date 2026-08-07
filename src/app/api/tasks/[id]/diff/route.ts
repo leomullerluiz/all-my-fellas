@@ -1,6 +1,7 @@
 import { badRequest, json, notFound, serverError } from "@/server/http/respond";
 import { readDiffIndex, readFilePatch } from "@/server/git/diff";
-import { getTaskWithRepo } from "@/server/tasks/service";
+import { parseDiffSummaryArtifact } from "@/server/pipeline/diff-summary";
+import { getTaskWithRepo, latestArtifact } from "@/server/tasks/service";
 
 /**
  * `GET /api/tasks/:id/diff` — the changed-file index.
@@ -17,6 +18,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const task = getTaskWithRepo(id);
     if (!task) return notFound(`Task ${id} not found.`);
     if (!task.workspacePath) {
+      // The workspace is gone (retention cleanup, or the task never reached a
+      // stage that needs one). The persisted `diff_summary` artifact (§8) is
+      // the durable substitute — a per-file status table, no patch bodies.
+      const summaryArtifact = latestArtifact(id, "diff_summary");
+      const summary = summaryArtifact ? parseDiffSummaryArtifact(summaryArtifact.contentMd) : null;
+
       return json(
         {
           available: false,
@@ -24,6 +31,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
             "This task has no workspace on disk. It either has not reached the Developer " +
             "stage yet, or the workspace was removed after the retention window.",
           prUrl: task.prUrl,
+          summary,
         },
         { status: 200 },
       );

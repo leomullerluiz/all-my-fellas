@@ -155,6 +155,19 @@ export async function diffStatAgainstBase(
   }
 }
 
+/**
+ * The task branch's current commit SHA.
+ *
+ * Read before the push at `DELIVERY` (spec-audit-trail.md §8): after the
+ * workspace is cleaned up this is the only thing left tying the persisted
+ * `diff_summary` artifact to a commit on the remote.
+ */
+export async function headCommitSha(workspacePath: string): Promise<string> {
+  const git = simpleGit(workspacePath);
+  const output = await git.raw(["rev-parse", "HEAD"]);
+  return output.trim();
+}
+
 /** True when the branch has at least one commit the base branch does not. */
 export async function hasCommitsAheadOfBase(
   workspacePath: string,
