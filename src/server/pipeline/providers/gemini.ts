@@ -87,7 +87,13 @@ export async function runGeminiStage(
     { role: "user", parts: [{ text: buildStagePrompt(options.prompt) }] },
   ];
 
-  const transcript: unknown[] = [];
+  // `contents` is the transcript: the model's own turns are pushed onto it
+  // below, but so is the initial user prompt and every function-call result —
+  // the full conversation, not just the half a per-call `response` alone
+  // would carry. See spec-audit-trail.md §12.3. The system instruction is not
+  // part of `contents` in Gemini's API shape; it is captured separately on
+  // `stage_runs.system_prompt` (§4).
+  const transcript: unknown[] = contents;
   let finalText = "";
   let inputTokens = 0;
   let outputTokens = 0;
@@ -101,7 +107,6 @@ export async function runGeminiStage(
       contents,
       config: { systemInstruction: buildSystemPrompt(role), tools },
     });
-    transcript.push(response);
 
     inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
     outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;

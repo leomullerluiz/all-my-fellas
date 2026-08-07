@@ -82,7 +82,11 @@ export async function runOpenAiStage(
     { role: "user", content: buildStagePrompt(options.prompt) },
   ];
 
-  const transcript: unknown[] = [];
+  // `messages` is the transcript: the model's own responses are pushed onto it
+  // below, but so is the system message, the user prompt and every tool
+  // result — the full conversation, not just the half `response` alone would
+  // carry. See spec-audit-trail.md §12.3.
+  const transcript: unknown[] = messages;
   let finalText = "";
   let inputTokens = 0;
   let outputTokens = 0;
@@ -97,8 +101,6 @@ export async function runOpenAiStage(
       tools: tools.length > 0 ? tools : undefined,
       signal: options.abortController?.signal,
     });
-    transcript.push(response);
-
     inputTokens += response.usage?.prompt_tokens ?? 0;
     outputTokens += response.usage?.completion_tokens ?? 0;
 
