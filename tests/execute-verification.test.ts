@@ -147,4 +147,16 @@ describe("executeVerification", () => {
     expect(artifact!.contentMd).toContain("## Output");
     expect(artifact!.contentMd).toContain("Failed");
   });
+
+  it("keeps verification_runs rows after the workspace is deleted (executeCleanup)", async () => {
+    const { task, run } = setUpAtVerification({ verifyInstall: node("process.exit(0)") });
+    await execute.executeVerification(run.id);
+    expect(service.listVerificationRuns(task.id)).toHaveLength(1);
+
+    await execute.executeCleanup(task.id);
+
+    expect(service.getTask(task.id)!.workspacePath).toBeNull();
+    // The audit record outlives the clone — that is the point (spec §6.4).
+    expect(service.listVerificationRuns(task.id)).toHaveLength(1);
+  });
 });
