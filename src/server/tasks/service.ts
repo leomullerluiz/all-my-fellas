@@ -9,6 +9,7 @@ import {
   type RepoRow,
   type StageRunRow,
   type TaskRow,
+  type VerificationRunRow,
   agentRuns,
   approvals,
   artifacts,
@@ -17,6 +18,7 @@ import {
   stageRuns,
   taskDependencies,
   tasks,
+  verificationRuns,
 } from "../db/schema";
 import { appendEvent } from "../events/store";
 import type { ProviderId } from "../git/providers/types";
@@ -31,6 +33,7 @@ import type {
   StageRunStatus,
 } from "../pipeline/stages";
 import { statusForStage } from "../pipeline/stages";
+import type { CommandResult } from "../pipeline/verification";
 
 /** Data access for tasks and their related rows, shared by web and worker. */
 
@@ -467,6 +470,21 @@ export function getStageRun(id: string): StageRunRow | null {
   return db.select().from(stageRuns).where(eq(stageRuns.id, id)).get() ?? null;
 }
 
+/** The stage run for `stage`'s specific `attempt`, or `null` if it never ran. */
+export function getStageRunByAttempt(
+  taskId: string,
+  stage: Stage,
+  attempt: number,
+): StageRunRow | null {
+  return (
+    db
+      .select()
+      .from(stageRuns)
+      .where(and(eq(stageRuns.taskId, taskId), eq(stageRuns.stage, stage), eq(stageRuns.attempt, attempt)))
+      .get() ?? null
+  );
+}
+
 export function createStageRun(input: {
   taskId: string;
   stage: Stage;
@@ -543,6 +561,39 @@ export function latestArtifact(taskId: string, type: ArtifactType): ArtifactRow 
   );
 }
 
+/**
+ * Latest artifact of `type` produced at or after `sinceMs`.
+ *
+ * Used by `gatherInputs` to keep a stale reviewer report out of a Developer
+ * rework prompt: with `VERIFICATION` ahead of `CODE_REVIEW`, a red
+ * verification can send work back to the Developer before any reviewer ran
+ * in that cycle, and `latestArtifact` alone would still find the *previous*
+ * cycle's (already-approved) report. `sinceMs` is the previous `DEVELOPMENT`
+ * run's finish time, so anything from before that is excluded rather than
+ * handed to the model with a caveat it may not read.
+ */
+export function latestArtifactSince(
+  taskId: string,
+  type: ArtifactType,
+  sinceMs: number,
+): ArtifactRow | null {
+  return (
+    db
+      .select()
+      .from(artifacts)
+      .where(
+        and(
+          eq(artifacts.taskId, taskId),
+          eq(artifacts.type, type),
+          sql`${artifacts.createdAt} >= ${sinceMs}`,
+        ),
+      )
+      .orderBy(desc(artifacts.createdAt))
+      .limit(1)
+      .get() ?? null
+  );
+}
+
 /** Latest version of every artifact type produced so far, in pipeline order. */
 export function listLatestArtifacts(taskId: string): ArtifactRow[] {
   const all = db
@@ -555,6 +606,53 @@ export function listLatestArtifacts(taskId: string): ArtifactRow[] {
   const byType = new Map<string, ArtifactRow>();
   for (const artifact of all) byType.set(artifact.type, artifact);
   return [...byType.values()];
+}
+
+/**
+ * Persists one row per verification command result — the audit record, and
+ * what the gate badge and the PR renderer read (see `verification.ts`'s
+ * `CommandResult`). A no-op on an empty list, which is the `skipped` case.
+ */
+export function saveVerificationRuns(
+  taskId: string,
+  stageRunId: string,
+  results: CommandResult[],
+): void {
+  if (results.length === 0) return;
+  db.insert(verificationRuns)
+    .values(
+      results.map((result) => ({
+        id: newId("ver"),
+        taskId,
+        stageRunId,
+        kind: result.kind,
+        command: result.command,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        stdoutTail: result.stdoutTail,
+        stderrTail: result.stderrTail,
+      })),
+    )
+    .run();
+}
+
+/**
+ * Verification rows for a task, oldest first. Reads outlive the workspace —
+ * the whole point, since the clone is deleted on retention but the record of
+ * what passed is what the pull request refers to.
+ */
+export function listVerificationRuns(taskId: string, stageRunId?: string): VerificationRunRow[] {
+  return db
+    .select()
+    .from(verificationRuns)
+    .where(
+      stageRunId
+        ? and(eq(verificationRuns.taskId, taskId), eq(verificationRuns.stageRunId, stageRunId))
+        : eq(verificationRuns.taskId, taskId),
+    )
+    .orderBy(verificationRuns.createdAt)
+    .all();
 }
 
 export function saveTranscript(input: {

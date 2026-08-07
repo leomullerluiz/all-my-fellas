@@ -11,7 +11,12 @@ import {
   requeueOrphanedJobs,
   taskIsActive,
 } from "../server/jobs/queue";
-import { executeAgentStage, executeCleanup, executeDelivery } from "../server/pipeline/execute";
+import {
+  executeAgentStage,
+  executeCleanup,
+  executeDelivery,
+  executeVerification,
+} from "../server/pipeline/execute";
 import { advanceTask } from "../server/pipeline/orchestrator";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
@@ -73,9 +78,21 @@ async function handleJob(job: JobRow): Promise<void> {
       await executeDelivery(stageRunId);
       break;
     }
+    case "verify": {
+      const { stageRunId } = parsePayload<{ stageRunId: string }>(job);
+      await executeVerification(stageRunId);
+      break;
+    }
     case "cleanup_workspace": {
       await executeCleanup(job.taskId);
       break;
+    }
+    default: {
+      // A job kind added to `JOB_KINDS` without a case here used to complete
+      // silently — the job finished, nothing ran, and the task hung on its
+      // stage forever. Throwing turns that into a loud, retried failure.
+      const unreachable: never = job.kind;
+      throw new Error(`No handler for job kind "${unreachable}".`);
     }
   }
 }

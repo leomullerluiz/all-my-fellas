@@ -103,17 +103,21 @@ describe("pipeline orchestration", () => {
     expect(service.getTask(task.id)!.currentStage).toBe("PLAN_GATE");
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
 
-    // First pass: code review passes, QA rejects.
+    // First pass: verification and code review pass, QA rejects.
     completeCurrentStage(task.id); // Development #1
+    expect(service.getTask(task.id)!.currentStage).toBe("VERIFICATION");
+    completeCurrentStage(task.id, "approved"); // Verification #1
     expect(service.getTask(task.id)!.currentStage).toBe("CODE_REVIEW");
     completeCurrentStage(task.id, "approved"); // Code review #1
     expect(service.getTask(task.id)!.currentStage).toBe("QA");
     completeCurrentStage(task.id, "changes_requested"); // QA #1
 
-    // Second pass. The second CODE_REVIEW and QA runs must get attempt 2, not
-    // 1 — the unique index on (task, stage, attempt) would otherwise reject it.
+    // Second pass. The second VERIFICATION, CODE_REVIEW and QA runs must get
+    // attempt 2, not 1 — the unique index on (task, stage, attempt) would
+    // otherwise reject it.
     expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
     completeCurrentStage(task.id); // Development #2
+    completeCurrentStage(task.id, "approved"); // Verification #2
     completeCurrentStage(task.id, "approved"); // Code review #2
     completeCurrentStage(task.id, "approved"); // QA #2
 
@@ -123,9 +127,11 @@ describe("pipeline orchestration", () => {
       ["PO_REFINEMENT", 1],
       ["ARCHITECTURE", 1],
       ["DEVELOPMENT", 1],
+      ["VERIFICATION", 1],
       ["CODE_REVIEW", 1],
       ["QA", 1],
       ["DEVELOPMENT", 2],
+      ["VERIFICATION", 2],
       ["CODE_REVIEW", 2],
       ["QA", 2],
       ["PO_HOMOLOGATION", 1],
@@ -142,11 +148,28 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id); // Architect
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
     completeCurrentStage(task.id); // Development #1
+    completeCurrentStage(task.id, "approved"); // Verification #1
     completeCurrentStage(task.id, "changes_requested"); // Code review #1
 
     expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
     expect(
       service.listStageRuns(task.id).some((run) => run.stage === "QA"),
+    ).toBe(false);
+  });
+
+  it("sends a red verification back without ever reaching code review", () => {
+    const task = newTask("Broken build");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+    completeCurrentStage(task.id); // Development #1
+    completeCurrentStage(task.id, "changes_requested"); // Verification #1
+
+    expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
+    expect(
+      service.listStageRuns(task.id).some((run) => run.stage === "CODE_REVIEW"),
     ).toBe(false);
   });
 
@@ -158,6 +181,7 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id); // Architect
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
     completeCurrentStage(task.id); // Development
+    completeCurrentStage(task.id, "approved"); // Verification
     completeCurrentStage(task.id, "approved"); // Code review
     completeCurrentStage(task.id, "approved"); // QA
     completeCurrentStage(task.id); // Homologation
@@ -192,6 +216,7 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id); // Architect
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
     completeCurrentStage(task.id); // Development
+    completeCurrentStage(task.id, "approved"); // Verification
     completeCurrentStage(task.id, "approved"); // Code review
     completeCurrentStage(task.id, "approved"); // QA
 
@@ -206,6 +231,7 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id); // Architect
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
     completeCurrentStage(task.id); // Development
+    completeCurrentStage(task.id, "approved"); // Verification
     completeCurrentStage(task.id, "approved"); // Code review
     completeCurrentStage(task.id, "approved"); // QA
 
@@ -236,6 +262,7 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id); // Architect
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
     completeCurrentStage(task.id); // Development
+    completeCurrentStage(task.id, "approved"); // Verification
     completeCurrentStage(task.id, "approved"); // Code review
     completeCurrentStage(task.id, "approved"); // QA
 
@@ -261,6 +288,7 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id); // Architect
     orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
     completeCurrentStage(task.id); // Development
+    completeCurrentStage(task.id, "approved"); // Verification
     completeCurrentStage(task.id, "approved"); // Code review
     completeCurrentStage(task.id, "approved"); // QA
 

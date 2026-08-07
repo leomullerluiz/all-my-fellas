@@ -3,7 +3,8 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ArtifactTabs, type ArtifactView } from "@/components/artifact-tabs";
+import { ArtifactTabs, ORDER, type ArtifactView } from "@/components/artifact-tabs";
+import { ARTIFACT_TYPES } from "@/server/pipeline/stages";
 
 afterEach(() => {
   cleanup();
@@ -37,5 +38,12 @@ describe("ArtifactTabs", () => {
     render(<ArtifactTabs artifacts={[]} />);
 
     expect(screen.getByText(/Nothing produced yet/)).toBeTruthy();
+  });
+
+  it("lists every ArtifactType in ORDER — a type missing here sorts first and can never be the default tab", () => {
+    for (const type of ARTIFACT_TYPES) {
+      expect(ORDER).toContain(type);
+    }
+    expect(ORDER.length).toBe(ARTIFACT_TYPES.length);
   });
 });
