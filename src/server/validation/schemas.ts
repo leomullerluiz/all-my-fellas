@@ -140,6 +140,19 @@ export const createRepoSchema = z
       .refine((value) => value === undefined || /^https?:\/\//.test(value), {
         message: "The API base URL must start with http:// or https://.",
       }),
+    /**
+     * Free-text project documentation, handed to every stage prompt so the
+     * Architect and Developer (and everyone else) starts from the project's
+     * stated structure and rules instead of inferring them from the diff.
+     * Capped like `taskFieldsSchema.description`: both are free-text project
+     * documentation of comparable scale.
+     */
+    context: z
+      .string()
+      .trim()
+      .max(20_000)
+      .optional()
+      .transform((value) => (value === "" ? undefined : value)),
   })
   .refine(
     (value) => value.provider !== "generic" || value.credentialRef !== undefined,

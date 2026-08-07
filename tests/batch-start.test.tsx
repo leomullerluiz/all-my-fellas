@@ -25,6 +25,7 @@ const REPO = {
   credentialRef: null,
   credentialUsername: null,
   apiBaseUrl: null,
+  context: null,
   createdAt: 0,
 };
 

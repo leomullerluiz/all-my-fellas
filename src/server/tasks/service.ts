@@ -52,6 +52,7 @@ export function createRepo(input: {
   credentialRef?: string | null;
   credentialUsername?: string | null;
   apiBaseUrl?: string | null;
+  context?: string | null;
 }): RepoRow {
   const row = db
     .insert(repos)
@@ -64,6 +65,7 @@ export function createRepo(input: {
       credentialRef: input.credentialRef ?? null,
       credentialUsername: input.credentialUsername ?? null,
       apiBaseUrl: input.apiBaseUrl ?? null,
+      context: input.context ?? null,
     })
     .returning()
     .get();

@@ -61,6 +61,12 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "repos", "api_base_url", "TEXT");
     },
   },
+  {
+    name: "optional free-text project context on repositories",
+    up: (sqlite) => {
+      addColumn(sqlite, "repos", "context", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };
