@@ -116,3 +116,119 @@ describe("GET /api/repos and /api/repos/:id", () => {
     expect(listed?.context).toBeUndefined();
   });
 });
+
+describe("POST /api/repos — verification command detection", () => {
+  it("still succeeds, with empty suggestions, when the detection clone cannot reach the host", async () => {
+    const response = await post({ ...VALID_BODY, name: "acme/unreachable" });
+    expect(response.status).toBe(201);
+
+    const payload = (await response.json()) as {
+      suggestedCommands?: Record<string, string>;
+      repo: { verifyInstall: string | null; verifyBuild: string | null };
+    };
+    // Detection never writes to the row — only the response carries a
+    // suggestion, and even that is empty here since there is no real host.
+    expect(payload.suggestedCommands).toEqual({});
+    expect(payload.repo.verifyInstall).toBeNull();
+    expect(payload.repo.verifyBuild).toBeNull();
+  });
+});
+
+describe("PATCH /api/repos/:id", () => {
+  async function createRepo(name: string) {
+    const created = await post({ ...VALID_BODY, name });
+    const { repo } = (await created.json()) as { repo: { id: string } };
+    return repo.id;
+  }
+
+  function patch(id: string, body: unknown) {
+    return repoRoute.PATCH(
+      new Request(`http://test/api/repos/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      params(id),
+    );
+  }
+
+  it("updates only the verification fields", async () => {
+    const id = await createRepo("acme/verify-1");
+
+    const response = await patch(id, {
+      verifyInstall: "npm ci",
+      verifyBuild: "npm run build",
+      verifyTest: "npm test",
+      verifyLint: "npm run lint",
+      verifyTimeoutSeconds: 900,
+    });
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as {
+      repo: {
+        verifyInstall: string | null;
+        verifyBuild: string | null;
+        verifyTest: string | null;
+        verifyLint: string | null;
+        verifyTimeoutSeconds: number;
+        url: string;
+      };
+    };
+    expect(payload.repo.verifyInstall).toBe("npm ci");
+    expect(payload.repo.verifyBuild).toBe("npm run build");
+    expect(payload.repo.verifyTest).toBe("npm test");
+    expect(payload.repo.verifyLint).toBe("npm run lint");
+    expect(payload.repo.verifyTimeoutSeconds).toBe(900);
+    expect(payload.repo.url).toBe(VALID_BODY.url);
+  });
+
+  it("rejects a body carrying url or credentialRef with a 400, updating nothing", async () => {
+    const id = await createRepo("acme/verify-2");
+
+    const response = await patch(id, {
+      verifyInstall: "npm ci",
+      url: "https://github.com/acme/hijacked",
+    });
+    expect(response.status).toBe(400);
+
+    const detail = await repoRoute.GET(new Request("http://test/api/repos/x"), params(id));
+    const detailPayload = (await detail.json()) as {
+      repo: { verifyInstall: string | null; url: string };
+    };
+    expect(detailPayload.repo.verifyInstall).toBeNull();
+    expect(detailPayload.repo.url).toBe(VALID_BODY.url);
+  });
+
+  it("rejects a command containing shell syntax", async () => {
+    const id = await createRepo("acme/verify-3");
+
+    const response = await patch(id, { verifyBuild: "npm run build && npm run extra" });
+    expect(response.status).toBe(400);
+  });
+
+  it("normalises an empty string to null, clearing a previously-set command", async () => {
+    const id = await createRepo("acme/verify-4");
+    await patch(id, { verifyInstall: "npm ci" });
+
+    const response = await patch(id, { verifyInstall: "" });
+    expect(response.status).toBe(200);
+
+    const payload = (await response.json()) as { repo: { verifyInstall: string | null } };
+    expect(payload.repo.verifyInstall).toBeNull();
+  });
+
+  it("rejects a timeout outside [30, 3600]", async () => {
+    const id = await createRepo("acme/verify-5");
+
+    const tooLow = await patch(id, { verifyTimeoutSeconds: 10 });
+    expect(tooLow.status).toBe(400);
+
+    const tooHigh = await patch(id, { verifyTimeoutSeconds: 10_000 });
+    expect(tooHigh.status).toBe(400);
+  });
+
+  it("404s for an unknown repository", async () => {
+    const response = await patch("repo_does_not_exist", { verifyInstall: "npm ci" });
+    expect(response.status).toBe(404);
+  });
+});

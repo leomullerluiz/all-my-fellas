@@ -75,6 +75,34 @@ export function createRepo(input: {
   return row;
 }
 
+/**
+ * Updates a repository's verification commands only — the sole reachable
+ * mutation for `repos.verify_*`. `undefined` leaves a field unchanged;
+ * `createRepoSchema`'s command field already normalises a cleared form value
+ * to `undefined` before it reaches here, so there is no way to write `''`.
+ */
+export function updateRepoVerificationCommands(
+  id: string,
+  fields: {
+    verifyInstall?: string;
+    verifyBuild?: string;
+    verifyTest?: string;
+    verifyLint?: string;
+    verifyTimeoutSeconds?: number;
+  },
+): RepoRow | null {
+  const patch: Partial<RepoRow> = {};
+  if ("verifyInstall" in fields) patch.verifyInstall = fields.verifyInstall ?? null;
+  if ("verifyBuild" in fields) patch.verifyBuild = fields.verifyBuild ?? null;
+  if ("verifyTest" in fields) patch.verifyTest = fields.verifyTest ?? null;
+  if ("verifyLint" in fields) patch.verifyLint = fields.verifyLint ?? null;
+  if (fields.verifyTimeoutSeconds !== undefined) patch.verifyTimeoutSeconds = fields.verifyTimeoutSeconds;
+
+  if (Object.keys(patch).length === 0) return getRepo(id);
+
+  return db.update(repos).set(patch).where(eq(repos.id, id)).returning().get() ?? null;
+}
+
 export function deleteRepo(id: string): boolean {
   const inUse = db
     .select({ count: sql<number>`count(*)` })

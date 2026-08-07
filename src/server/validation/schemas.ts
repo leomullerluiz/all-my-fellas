@@ -208,6 +208,44 @@ export const createRepoSchema = z
   );
 export type CreateRepoInput = z.infer<typeof createRepoSchema>;
 
+/**
+ * One configured verification command (`repos.verify_install` etc.).
+ *
+ * These characters are not a sanitiser — the command never reaches a shell
+ * (it is split into argv and spawned with `shell: false`), so there is
+ * nothing to sanitise. They are a contract: a field that accepted `a && b`
+ * and then ran it as a single argv would do nothing useful, and the operator
+ * deserves the error rather than the mystery.
+ */
+const VERIFY_COMMAND_FORBIDDEN = /[;&|`$<>(){}\n\r\\]/;
+
+const verifyCommandSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  // A half-cleared form disables the command rather than storing one that
+  // spawns nothing — the same normalisation every other optional field here
+  // already applies.
+  .transform((value) => (value === "" ? undefined : value))
+  .refine((value) => value === undefined || !VERIFY_COMMAND_FORBIDDEN.test(value), {
+    message:
+      "One command, no shell syntax. To chain steps, add a script to the " +
+      "repository and point this field at it.",
+  });
+
+/** `PATCH /api/repos/:id` — exactly the five verification fields, nothing else. */
+export const updateVerificationCommandsSchema = z
+  .object({
+    verifyInstall: verifyCommandSchema,
+    verifyBuild: verifyCommandSchema,
+    verifyTest: verifyCommandSchema,
+    verifyLint: verifyCommandSchema,
+    verifyTimeoutSeconds: z.number().int().min(30).max(3600).optional(),
+  })
+  .strict();
+export type UpdateVerificationCommandsInput = z.infer<typeof updateVerificationCommandsSchema>;
+
 const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.string().trim().min(1));
 const turnsMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.number().int().min(1).max(500));
 const providersMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.enum(LLM_PROVIDER_IDS));
