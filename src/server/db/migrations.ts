@@ -91,6 +91,29 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "repos", "verify_timeout_seconds", "INTEGER NOT NULL DEFAULT 600");
     },
   },
+  {
+    name: "terminal cause and per-task rework grant",
+    up: (sqlite) => {
+      addColumn(sqlite, "tasks", "failed_stage", "TEXT");
+      addColumn(sqlite, "tasks", "failure_kind", "TEXT");
+      addColumn(sqlite, "tasks", "rework_budget_grant", "INTEGER NOT NULL DEFAULT 0");
+
+      // Backfill, once, from the heuristic retry used to rely on at runtime —
+      // see `spec-retry-recovery.md` §4.5. A `FAILED` row with no matching
+      // `stage_runs` row is left `NULL`; retry refuses those explicitly
+      // (`no_failed_stage`) rather than guessing forever.
+      sqlite.exec(`
+        UPDATE tasks
+           SET failed_stage = (
+                 SELECT r.stage FROM stage_runs r
+                  WHERE r.task_id = tasks.id AND r.status = 'failed'
+               ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1
+               ),
+               failure_kind = 'stage_error'
+         WHERE current_stage = 'FAILED';
+      `);
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

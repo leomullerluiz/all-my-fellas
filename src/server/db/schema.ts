@@ -6,6 +6,7 @@ import type {
   ArtifactType,
   Criticality,
   Difficulty,
+  FailureKind,
   Gate,
   GateDecision,
   Priority,
@@ -92,6 +93,21 @@ export const tasks = sqliteTable(
     workspacePath: text("workspace_path"),
     /** Populated when the task reaches FAILED or REJECTED. */
     failureReason: text("failure_reason"),
+    /**
+     * The stage a retry should re-run, and why it failed. Written by the same
+     * statement that sets `currentStage = 'FAILED'`; cleared on a successful
+     * retry. `NULL` for a `FAILED` row that predates this column (see the
+     * backfill in `migrations.ts`) — retry refuses those explicitly rather
+     * than guessing from `stage_runs`.
+     */
+    failedStage: text("failed_stage").$type<Stage>(),
+    failureKind: text("failure_kind").$type<FailureKind>(),
+    /**
+     * Extra rework cycles a `rework_exhausted` retry has granted this task,
+     * on top of `settings.reworkMaxCycles`. Monotonic and per-task — see
+     * `spec-retry-recovery.md` §6.
+     */
+    reworkBudgetGrant: integer("rework_budget_grant").notNull().default(0),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },

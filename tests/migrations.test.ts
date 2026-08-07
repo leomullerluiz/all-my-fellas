@@ -224,6 +224,116 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds failed_stage, failure_kind and rework_budget_grant to an existing tasks table", () => {
+    const sqlite = freshDatabase("retry-columns.db");
+    for (const column of ["failed_stage", "failure_kind", "rework_budget_grant"]) {
+      expect(columns(sqlite, "tasks")).not.toContain(column);
+    }
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description) VALUES ('t', 'r', 'Old', 'd')",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    expect(columns(sqlite, "tasks")).toContain("failed_stage");
+    expect(columns(sqlite, "tasks")).toContain("failure_kind");
+    expect(columns(sqlite, "tasks")).toContain("rework_budget_grant");
+    const row = sqlite
+      .prepare(
+        "SELECT failed_stage AS stage, failure_kind AS kind, rework_budget_grant AS grant_ FROM tasks WHERE id = 't'",
+      )
+      .get() as { stage: string | null; kind: string | null; grant_: number };
+    expect(row.stage).toBeNull();
+    expect(row.kind).toBeNull();
+    expect(row.grant_).toBe(0);
+    sqlite.close();
+  });
+
+  it("backfills failed_stage from the most recent failed stage_runs row on a pre-existing FAILED task", () => {
+    const sqlite = freshDatabase("backfill-with-run.db");
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description, current_stage) VALUES ('t', 'r', 'Old', 'd', 'FAILED')",
+      )
+      .run();
+    // An earlier failed ARCHITECTURE run, then a later failed DEVELOPMENT run —
+    // the backfill must pick the later one.
+    sqlite
+      .prepare(
+        "INSERT INTO stage_runs (id, task_id, stage, attempt, status, created_at) VALUES ('run1', 't', 'ARCHITECTURE', 1, 'failed', 1000)",
+      )
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO stage_runs (id, task_id, stage, attempt, status, created_at) VALUES ('run2', 't', 'DEVELOPMENT', 2, 'failed', 2000)",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    const row = sqlite
+      .prepare("SELECT failed_stage AS stage, failure_kind AS kind FROM tasks WHERE id = 't'")
+      .get() as { stage: string | null; kind: string | null };
+    expect(row.stage).toBe("DEVELOPMENT");
+    expect(row.kind).toBe("stage_error");
+    sqlite.close();
+  });
+
+  it("leaves failed_stage null for a pre-existing FAILED task with no failed stage_runs row", () => {
+    const sqlite = freshDatabase("backfill-without-run.db");
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    // FAILED via rework exhaustion: every stage_runs row is "done", none "failed".
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description, current_stage) VALUES ('t', 'r', 'Old', 'd', 'FAILED')",
+      )
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO stage_runs (id, task_id, stage, attempt, status, created_at) VALUES ('run1', 't', 'DEVELOPMENT', 1, 'done', 1000)",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    const row = sqlite
+      .prepare("SELECT failed_stage AS stage FROM tasks WHERE id = 't'")
+      .get() as { stage: string | null };
+    expect(row.stage).toBeNull();
+    sqlite.close();
+  });
+
+  it("does not backfill a non-FAILED task", () => {
+    const sqlite = freshDatabase("backfill-not-failed.db");
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description, current_stage) VALUES ('t', 'r', 'Old', 'd', 'COMPLETED')",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    const row = sqlite
+      .prepare("SELECT failed_stage AS stage, failure_kind AS kind FROM tasks WHERE id = 't'")
+      .get() as { stage: string | null; kind: string | null };
+    expect(row.stage).toBeNull();
+    expect(row.kind).toBeNull();
+    sqlite.close();
+  });
+
   it("re-running a migration on a half-applied database is harmless", () => {
     // Simulates a crash between the ALTER and the version bump.
     const sqlite = freshDatabase("half.db");
