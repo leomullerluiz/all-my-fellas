@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, Input, Select } from "@/components/ui/field";
+import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { formatDateTime } from "@/lib/utils";
 
 /** Provider metadata, passed from the server so the client needs no registry. */
@@ -30,6 +30,12 @@ export type RepoRowView = {
   createdAt: number;
   taskCount: number;
   credential: { variable: string; present: boolean };
+  /**
+   * Whether free-text project documentation was entered at connection time.
+   * The list payload never carries the full text — it's fetched on demand
+   * from `/api/repos/:id` when a repo's context is expanded.
+   */
+  hasContext: boolean;
 };
 
 export function RepoManager({
@@ -47,8 +53,12 @@ export function RepoManager({
   const [credentialRef, setCredentialRef] = useState("");
   const [credentialUsername, setCredentialUsername] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
+  const [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [expandedContext, setExpandedContext] = useState<string | null>(null);
+  const [contextText, setContextText] = useState<Record<string, string>>({});
+  const [loadingContext, setLoadingContext] = useState<string | null>(null);
 
   const selected = useMemo(
     () => providers.find((option) => option.id === provider),
@@ -72,6 +82,7 @@ export function RepoManager({
         credentialRef: credentialRef || undefined,
         credentialUsername: credentialUsername || undefined,
         apiBaseUrl: apiBaseUrl || undefined,
+        context: context || undefined,
       }),
     });
     const payload = (await response.json().catch(() => ({}))) as {
@@ -96,6 +107,7 @@ export function RepoManager({
     setCredentialRef("");
     setCredentialUsername("");
     setApiBaseUrl("");
+    setContext("");
 
     const branchMismatch =
       payload.detectedDefaultBranch && payload.detectedDefaultBranch !== defaultBranch;
@@ -126,6 +138,25 @@ export function RepoManager({
 
     setBusy(false);
     router.refresh();
+  }
+
+  async function toggleContext(id: string) {
+    if (expandedContext === id) {
+      setExpandedContext(null);
+      return;
+    }
+
+    if (!(id in contextText)) {
+      setLoadingContext(id);
+      const response = await fetch(`/api/repos/${id}`);
+      const payload = (await response.json().catch(() => ({}))) as {
+        repo?: { context: string | null };
+      };
+      setContextText((current) => ({ ...current, [id]: payload.repo?.context ?? "" }));
+      setLoadingContext(null);
+    }
+
+    setExpandedContext(id);
   }
 
   return (
@@ -245,6 +276,22 @@ export function RepoManager({
               />
             </Field>
 
+            <Field
+              label="Context (optional)"
+              htmlFor="repo-context"
+              error={errors.context}
+              hint="Describe the project's architecture, layout, and conventions. Given to the Architect and Developer (and every other stage) as a starting point instead of guessing from the diff."
+            >
+              <Textarea
+                id="repo-context"
+                value={context}
+                onChange={(event) => setContext(event.target.value)}
+                rows={6}
+                placeholder="Next.js app router, business logic under src/server. SQLite via Drizzle. Route handlers stay thin and delegate to src/server/tasks/service.ts…"
+                maxLength={20_000}
+              />
+            </Field>
+
             <Button type="submit" disabled={busy}>
               {busy ? "Saving…" : "Add repository"}
             </Button>
@@ -262,13 +309,34 @@ export function RepoManager({
           ) : (
             <ul className="flex flex-col divide-y divide-border">
               {repos.map((repo) => (
-                <li key={repo.id} className="flex flex-wrap items-center gap-3 py-3 first:pt-0">
+                <li key={repo.id} className="flex flex-wrap items-start gap-3 py-3 first:pt-0">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{repo.name}</p>
                     <p className="truncate font-mono text-[11px] text-muted">{repo.url}</p>
                     <p className="mt-0.5 text-[11px] text-muted">
                       base {repo.defaultBranch} · added {formatDateTime(repo.createdAt)}
                     </p>
+                    {repo.hasContext ? (
+                      <>
+                        <button
+                          type="button"
+                          className="mt-1 text-[11px] text-accent underline-offset-2 hover:underline"
+                          onClick={() => toggleContext(repo.id)}
+                          disabled={loadingContext === repo.id}
+                        >
+                          {loadingContext === repo.id
+                            ? "Loading…"
+                            : expandedContext === repo.id
+                              ? "Hide context"
+                              : "Show context"}
+                        </button>
+                        {expandedContext === repo.id ? (
+                          <p className="mt-1 whitespace-pre-wrap rounded-md border border-border bg-surface-raised p-2 text-[11px] text-foreground">
+                            {contextText[repo.id]}
+                          </p>
+                        ) : null}
+                      </>
+                    ) : null}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -282,6 +350,16 @@ export function RepoManager({
                       }
                     >
                       {repo.credential.variable} {repo.credential.present ? "✓" : "missing"}
+                    </Badge>
+                    <Badge
+                      tone={repo.hasContext ? "success" : "neutral"}
+                      title={
+                        repo.hasContext
+                          ? "Agents receive this repository's context at every stage."
+                          : "No context provided for this repository."
+                      }
+                    >
+                      {repo.hasContext ? "Context ✓" : "No context"}
                     </Badge>
                     <Badge tone={repo.taskCount > 0 ? "neutral" : "neutral"}>
                       {repo.taskCount} task{repo.taskCount === 1 ? "" : "s"}

@@ -391,6 +391,18 @@ a real git repository, the sandbox guardrails, and the provider layer — URL
 parsing per host, credential resolution, and that no secret survives into a
 clone URL, a log line or a browser link.
 
+## Local commit checks
+
+`git commit` runs a [Husky](https://typicode.github.io/husky/) `pre-commit` hook
+that builds the project (`npm run build`), runs the unit test suite (`npm test`)
+and lints (`npm run lint`), in that order, stopping at the first failure. A
+commit is only created once all three pass. The hook is scoped to the root
+project only — it does not run or block on the `site/` sub-project's own
+scripts.
+
+The hook installs itself: `npm install` runs the root `prepare` script, which
+sets up `.husky/`, so there is no separate setup step after cloning.
+
 ## Known limits
 
 - Single user, no authentication. Do not expose the port publicly.

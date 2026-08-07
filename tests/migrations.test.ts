@@ -98,6 +98,23 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds context to an existing repos table, defaulting to null", () => {
+    const sqlite = freshDatabase("context.db");
+    expect(columns(sqlite, "repos")).not.toContain("context");
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+
+    runMigrations(sqlite);
+
+    expect(columns(sqlite, "repos")).toContain("context");
+    const row = sqlite.prepare("SELECT context FROM repos WHERE id = 'r'").get() as {
+      context: string | null;
+    };
+    expect(row.context).toBeNull();
+    sqlite.close();
+  });
+
   it("adds custom_branch_name to an existing tasks table", () => {
     const sqlite = freshDatabase("custom-branch-name.db");
     expect(columns(sqlite, "tasks")).not.toContain("custom_branch_name");

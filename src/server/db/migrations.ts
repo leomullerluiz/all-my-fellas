@@ -62,6 +62,12 @@ const MIGRATIONS: readonly Migration[] = [
     },
   },
   {
+    name: "optional free-text project context on repositories",
+    up: (sqlite) => {
+      addColumn(sqlite, "repos", "context", "TEXT");
+    },
+  },
+  {
     name: "optional developer-chosen branch name at task creation",
     up: (sqlite) => {
       // The branch actually checked out (`branch_name`) is still populated

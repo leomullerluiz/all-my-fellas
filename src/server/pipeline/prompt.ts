@@ -24,6 +24,8 @@ export type StagePromptInput = {
     description: string;
     priority: string;
     repoName: string;
+    /** Free-text project documentation entered when the repo was connected. */
+    repoContext: string | null;
     branchName: string | null;
   };
   artifacts: ArtifactInput[];
@@ -106,6 +108,10 @@ export function buildStagePrompt(input: StagePromptInput): string {
         .join("\n"),
     ),
   );
+
+  if (task.repoContext) {
+    parts.push(section("Repository context", task.repoContext));
+  }
 
   parts.push(section("Original request", task.description));
 

@@ -1,3 +1,4 @@
+import { ProviderTestButton } from "@/components/provider-test-button";
 import { SettingsForm } from "@/components/settings-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,13 +58,15 @@ export default async function SettingsPage() {
             <span className="text-xs text-muted">LLM providers (Settings → Model per role):</span>
             <div className="flex flex-wrap gap-1.5">
               {(Object.keys(llmCredentials) as Array<keyof typeof llmCredentials>).map((id) => (
-                <Badge
-                  key={id}
-                  tone={llmCredentials[id].mode === "missing" ? "danger" : "success"}
-                  title={llmCredentials[id].label}
-                >
-                  {LLM_PROVIDER_LABELS[id]} {llmCredentials[id].mode === "missing" ? "✗" : "✓"}
-                </Badge>
+                <div key={id} className="flex items-center gap-1.5">
+                  <Badge
+                    tone={llmCredentials[id].mode === "missing" ? "danger" : "success"}
+                    title={llmCredentials[id].label}
+                  >
+                    {LLM_PROVIDER_LABELS[id]} {llmCredentials[id].mode === "missing" ? "✗" : "✓"}
+                  </Badge>
+                  <ProviderTestButton provider={id} />
+                </div>
               ))}
             </div>
           </div>

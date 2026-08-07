@@ -29,6 +29,8 @@ export default async function NewTaskPage() {
     );
   }
 
+  // Every repository's candidates: the form narrows them to whichever repo is
+  // selected, so changing "Repository" does not need a round trip.
   const dependencyOptions = listDependencyOptions();
 
   return <NewTaskForm repos={repos} capacity={capacity()} dependencyOptions={dependencyOptions} />;

@@ -39,7 +39,7 @@ export const taskFieldsSchema = z.object({
     .string()
     .trim()
     .min(20, "Describe the feature in at least 20 characters.")
-    .max(20_000),
+    .max(50_000),
   priority: z.enum(PRIORITIES).default("medium"),
   /** Park at HUMAN_CODE_REVIEW before delivery. Not changeable after start. */
   requireHumanCodeReview: z.boolean().default(false),
@@ -184,6 +184,19 @@ export const createRepoSchema = z
       .refine((value) => value === undefined || /^https?:\/\//.test(value), {
         message: "The API base URL must start with http:// or https://.",
       }),
+    /**
+     * Free-text project documentation, handed to every stage prompt so the
+     * Architect and Developer (and everyone else) starts from the project's
+     * stated structure and rules instead of inferring them from the diff.
+     * Capped like `taskFieldsSchema.description`: both are free-text project
+     * documentation of comparable scale.
+     */
+    context: z
+      .string()
+      .trim()
+      .max(20_000)
+      .optional()
+      .transform((value) => (value === "" ? undefined : value)),
   })
   .refine(
     (value) => value.provider !== "generic" || value.credentialRef !== undefined,
@@ -221,6 +234,12 @@ export const updateSettingsSchema = z.object({
   quotaLimits: quotaLimitsSchema.optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
+
+/** `POST /api/settings/test-provider` — which LLM backend to send `"test"` to. */
+export const testProviderSchema = z.object({
+  provider: z.enum(LLM_PROVIDER_IDS),
+});
+export type TestProviderInput = z.infer<typeof testProviderSchema>;
 
 export const usageQuerySchema = z.object({
   /** Rolling window in days; omitted means all time. */

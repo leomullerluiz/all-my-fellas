@@ -17,6 +17,15 @@ pipeline does not block the save — but Settings shows a **credential
 missing** badge next to that role, and the stage will fail fast (see below)
 the next time it actually runs.
 
+**Test connection.** Each provider's badge in Settings → Credentials has its
+own **Test connection** button. It sends the literal message `"test"` to
+that provider — outside the pipeline entirely, no task or workspace involved
+— and toasts the reply (`"<Provider> responded: <text>"`) or a human-readable
+error (missing credential, provider error, timeout after 20s). It uses a
+small fixed model per provider for speed, not whatever model a role is
+configured with, so it can fail or succeed independently of a role's own
+setup.
+
 ---
 
 ## Claude (Anthropic)

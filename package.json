@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prepare": "husky",
     "dev": "concurrently -n web,worker -c cyan,magenta \"next dev\" \"tsx watch src/worker/index.ts\"",
     "dev:web": "next dev",
     "dev:worker": "tsx watch src/worker/index.ts",
@@ -51,6 +52,7 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
+    "husky": "^9.1.7",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "tsx": "^4.23.4",
