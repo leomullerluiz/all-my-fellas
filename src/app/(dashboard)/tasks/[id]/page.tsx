@@ -12,6 +12,7 @@ import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
 import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
+import { summarizeVerification } from "@/server/pipeline/verification-summary";
 import {
   getTaskWithRepo,
   listApprovals,
@@ -19,6 +20,7 @@ import {
   listDependencies,
   listLatestArtifacts,
   listStageRuns,
+  listVerificationRuns,
   totalCostForTask,
 } from "@/server/tasks/service";
 
@@ -55,6 +57,17 @@ export default async function TaskDetailPage(props: {
       diffSummary = null;
     }
   }
+
+  // Computed from `verification_runs`, not the workspace, so it survives
+  // cleanup. `VERIFICATION` always precedes `HUMAN_CODE_REVIEW`, so a run
+  // exists by the time the gate is reached.
+  const latestVerificationRunId = runs.filter((run) => run.stage === "VERIFICATION").at(-1)?.id;
+  const verificationSummary =
+    task.currentStage === "HUMAN_CODE_REVIEW"
+      ? summarizeVerification(
+          latestVerificationRunId ? listVerificationRuns(task.id, latestVerificationRunId) : [],
+        )
+      : null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -127,7 +140,12 @@ export default async function TaskDetailPage(props: {
           been recorded — re-offering the form would invite a second, stale
           decision. */}
       {task.status === "awaiting_gate" && isGate(task.currentStage) ? (
-        <GatePanel taskId={task.id} gate={task.currentStage} diffSummary={diffSummary} />
+        <GatePanel
+          taskId={task.id}
+          gate={task.currentStage}
+          diffSummary={diffSummary}
+          verification={verificationSummary}
+        />
       ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
