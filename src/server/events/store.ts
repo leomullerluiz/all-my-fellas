@@ -12,6 +12,9 @@ import type { Stage } from "../pipeline/stages";
  * two processes, which is what keeps the MVP free of a queue or broker.
  */
 
+/** The four commands the `VERIFICATION` stage can run, in execution order. */
+export type VerificationKind = "install" | "build" | "test" | "lint";
+
 export type PipelineEvent =
   | { type: "task_created"; title: string }
   | { type: "task_started" }
@@ -30,7 +33,67 @@ export type PipelineEvent =
   | { type: "git"; message: string }
   | { type: "pr_opened"; url: string }
   | { type: "task_finished"; stage: Stage; reason?: string }
-  | { type: "log"; level: "info" | "warn" | "error"; message: string };
+  | { type: "log"; level: "info" | "warn" | "error"; message: string }
+  /** What the `VERIFICATION` stage is about to run, before anything spawns. */
+  | { type: "verification_started"; commands: VerificationKind[] }
+  | { type: "verification_command_started"; kind: VerificationKind; command: string }
+  /** Buffered — see `runVerification`'s flush interval, not one event per line. */
+  | { type: "verification_output"; kind: VerificationKind; stream: "stdout" | "stderr"; chunk: string }
+  | {
+      type: "verification_command_finished";
+      kind: VerificationKind;
+      exitCode: number | null;
+      durationMs: number;
+      timedOut: boolean;
+    }
+  | {
+      type: "verification_finished";
+      status: "passed" | "failed" | "skipped" | "errored";
+      reason?: string;
+    };
+
+/**
+ * Every `PipelineEvent` variant's `type`, derived from the union rather than
+ * hand-maintained. Consumers that dispatch or subscribe per event name (the
+ * SSE route, `LiveLog`) iterate this instead of their own list, so a new
+ * variant added above cannot compile while still being unreachable in the UI
+ * — the exact gap a hand-maintained array left open for the five variants
+ * this type was introduced for.
+ *
+ * `Record<PipelineEvent["type"], true>` rather than a plain `as const` array:
+ * a mapped-type `Record` over a literal union desugars to one required
+ * property per member, so `satisfies` rejects both a missing and an
+ * extraneous key at compile time — a plain array assertion only catches the
+ * "extra" direction.
+ */
+const PIPELINE_EVENT_TYPE_SET = {
+  task_created: true,
+  task_started: true,
+  task_edited: true,
+  stage_started: true,
+  stage_finished: true,
+  stage_failed: true,
+  agent_text: true,
+  agent_thinking: true,
+  agent_tool_use: true,
+  agent_tool_denied: true,
+  artifact_saved: true,
+  gate_opened: true,
+  gate_decided: true,
+  git: true,
+  pr_opened: true,
+  task_finished: true,
+  log: true,
+  verification_started: true,
+  verification_command_started: true,
+  verification_output: true,
+  verification_command_finished: true,
+  verification_finished: true,
+} satisfies Record<PipelineEvent["type"], true>;
+
+export const PIPELINE_EVENT_TYPES = Object.keys(
+  PIPELINE_EVENT_TYPE_SET,
+) as PipelineEvent["type"][];
 
 export type StoredEvent = {
   seq: number;

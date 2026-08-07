@@ -27,7 +27,7 @@ import {
   updateTask,
   updateTaskFields,
 } from "../tasks/service";
-import type { TaskRow } from "../db/schema";
+import type { JobKind, TaskRow } from "../db/schema";
 import {
   InvalidGateDecisionError,
   InvalidTransitionError,
@@ -76,6 +76,16 @@ function contextFor(task: TaskRow): PipelineContext {
 }
 
 /**
+ * Job kind for stages that are not executed by `executeAgentStage`. Anything
+ * missing here defaults to `"run_stage"` — the shape `DELIVERY` established
+ * before `VERIFICATION` needed the same thing.
+ */
+const NON_AGENT_JOB_KINDS: Partial<Record<Stage, JobKind>> = {
+  DELIVERY: "deliver",
+  VERIFICATION: "verify",
+};
+
+/**
  * Creates the stage run for `stage` and queues the job that will execute it.
  *
  * The attempt number is derived from how many runs the stage already has rather
@@ -92,7 +102,7 @@ function scheduleStage(taskId: string, stage: Stage): void {
   const run = createStageRun({ taskId, stage, attempt, maxTurns });
   enqueueJob({
     taskId,
-    kind: stage === "DELIVERY" ? "deliver" : "run_stage",
+    kind: NON_AGENT_JOB_KINDS[stage] ?? "run_stage",
     payload: { stageRunId: run.id },
   });
 }

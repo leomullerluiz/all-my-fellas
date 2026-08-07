@@ -57,10 +57,42 @@ describe("nextTransition", () => {
     ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 1 });
   });
 
-  it("sends development to code review, not straight to QA", () => {
+  it("sends development to verification, not straight to code review", () => {
     expect(
       nextTransition("DEVELOPMENT", { kind: "stage_succeeded", stage: "DEVELOPMENT" }, base),
+    ).toEqual({ type: "run", stage: "VERIFICATION", attempt: 1 });
+  });
+});
+
+describe("verification", () => {
+  it("sends a passed (or skipped) verification to code review", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1 },
+      ),
     ).toEqual({ type: "run", stage: "CODE_REVIEW", attempt: 1 });
+  });
+
+  it("sends a failed verification back to development without touching code review", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict: "changes_requested" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("treats a missing verdict as changes requested", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION" },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toMatchObject({ type: "run", stage: "DEVELOPMENT" });
   });
 });
 
@@ -142,6 +174,15 @@ describe("the shared rework budget", () => {
   // Every reviewer draws on the same allowance, so the outcome must not depend
   // on which one rejected.
   const rejections = [
+    {
+      name: "verification",
+      signal: {
+        kind: "stage_succeeded",
+        stage: "VERIFICATION",
+        reviewVerdict: "changes_requested",
+      },
+      from: "VERIFICATION",
+    },
     {
       name: "code review",
       signal: {

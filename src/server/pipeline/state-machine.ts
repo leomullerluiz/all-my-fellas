@@ -64,13 +64,14 @@ export type Transition =
 /**
  * Linear happy-path successor for each agent stage.
  *
- * `CODE_REVIEW` and `QA` branch on a verdict and the gates branch on a human
- * decision, so both are handled explicitly in {@link nextTransition}.
+ * `VERIFICATION`, `CODE_REVIEW` and `QA` branch on a verdict and the gates
+ * branch on a human decision, so all are handled explicitly in
+ * {@link nextTransition}.
  */
 const LINEAR_SUCCESSOR: Partial<Record<Stage, Stage>> = {
   STAKEHOLDER_REFINEMENT: "PO_REFINEMENT",
   PO_REFINEMENT: "ARCHITECTURE",
-  DEVELOPMENT: "CODE_REVIEW",
+  DEVELOPMENT: "VERIFICATION",
   PO_HOMOLOGATION: "STAKEHOLDER_GATE",
   DELIVERY: "COMPLETED",
 };
@@ -186,6 +187,15 @@ export function nextTransition(
     return context.planGateRequired
       ? { type: "await_gate", gate: "PLAN_GATE" }
       : { type: "run", stage: "DEVELOPMENT", attempt: context.developmentAttempts + 1 };
+  }
+
+  if (current === "VERIFICATION") {
+    // `skipped` is folded into `approved` at the call site (`executeVerification`)
+    // — there is no third value here, matching `state-machine.ts`'s existing
+    // rule against a second near-identical field.
+    return signal.reviewVerdict === "approved"
+      ? { type: "run", stage: "CODE_REVIEW", attempt: 1 }
+      : reworkOrFail(context, "Verification failed");
   }
 
   if (current === "CODE_REVIEW") {
