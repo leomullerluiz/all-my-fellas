@@ -63,6 +63,14 @@ export const tasks = sqliteTable(
       .notNull()
       .default(false),
     branchName: text("branch_name"),
+    /**
+     * The branch name a developer asked for at creation time, before it is
+     * known whether the task will ever reach a workspace-needing stage.
+     * `branchName` above stays lazily populated exactly as before; this
+     * column only records intent. See `prepareWorkspace` for how the two
+     * combine.
+     */
+    customBranchName: text("custom_branch_name"),
     prUrl: text("pr_url"),
     workspacePath: text("workspace_path"),
     /** Populated when the task reaches FAILED or REJECTED. */
