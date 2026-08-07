@@ -45,6 +45,17 @@ export const repos = sqliteTable("repos", {
    * means none was provided.
    */
   context: text("context"),
+  /**
+   * Operator-configured verification commands, run by the worker's
+   * `VERIFICATION` stage rather than claimed by any agent. `NULL` means "no
+   * such command" — see `verification.ts` and `createRepoSchema`'s command
+   * field, which normalises `''` to `undefined` before it reaches here.
+   */
+  verifyInstall: text("verify_install"),
+  verifyBuild: text("verify_build"),
+  verifyTest: text("verify_test"),
+  verifyLint: text("verify_lint"),
+  verifyTimeoutSeconds: integer("verify_timeout_seconds").notNull().default(600),
   createdAt: integer("created_at").notNull().default(now),
 });
 
@@ -240,12 +251,44 @@ export const taskDependencies = sqliteTable(
   ],
 );
 
+/**
+ * One row per mechanical verification command (install/build/test/lint),
+ * owned by the `VERIFICATION` stage run that produced it. The audit record:
+ * outlives the workspace (see `executeCleanup`), so "what passed" is always
+ * answerable after the clone is gone.
+ */
+export const verificationRuns = sqliteTable(
+  "verification_runs",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    stageRunId: text("stage_run_id")
+      .notNull()
+      .references(() => stageRuns.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<"install" | "build" | "test" | "lint">().notNull(),
+    command: text("command").notNull(),
+    /** `NULL` when the process was killed by the timeout. */
+    exitCode: integer("exit_code"),
+    timedOut: integer("timed_out", { mode: "boolean" }).notNull().default(false),
+    durationMs: integer("duration_ms").notNull(),
+    stdoutTail: text("stdout_tail").notNull().default(""),
+    stderrTail: text("stderr_tail").notNull().default(""),
+    createdAt: integer("created_at").notNull().default(now),
+  },
+  (table) => [
+    index("verification_runs_task_idx").on(table.taskId),
+    index("verification_runs_stage_run_idx").on(table.stageRunId),
+  ],
+);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
 
-export const JOB_KINDS = ["run_stage", "deliver", "cleanup_workspace"] as const;
+export const JOB_KINDS = ["run_stage", "deliver", "verify", "cleanup_workspace"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
 export const JOB_STATUSES = ["pending", "claimed", "done", "failed"] as const;
@@ -280,3 +323,4 @@ export type TaskDependencyRow = typeof taskDependencies.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
+export type VerificationRunRow = typeof verificationRuns.$inferSelect;

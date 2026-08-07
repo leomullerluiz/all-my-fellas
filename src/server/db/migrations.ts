@@ -76,6 +76,21 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "tasks", "custom_branch_name", "TEXT");
     },
   },
+  {
+    name: "per-repository verification commands",
+    up: (sqlite) => {
+      // `NULL` means "no such command" — see `createRepoSchema`'s command
+      // field, which normalises a cleared form field to `undefined` so it
+      // never reaches this column as `''`.
+      addColumn(sqlite, "repos", "verify_install", "TEXT");
+      addColumn(sqlite, "repos", "verify_build", "TEXT");
+      addColumn(sqlite, "repos", "verify_test", "TEXT");
+      addColumn(sqlite, "repos", "verify_lint", "TEXT");
+      // A NOT NULL column needs a default to be addable by ALTER TABLE in
+      // SQLite; 600s matches `VerificationOutcome`'s runner default.
+      addColumn(sqlite, "repos", "verify_timeout_seconds", "INTEGER NOT NULL DEFAULT 600");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };
