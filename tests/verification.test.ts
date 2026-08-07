@@ -198,6 +198,53 @@ describe("runVerification — timeouts", () => {
     // than awaited to completion.
     expect(elapsedMs).toBeLessThan(15_000);
   }, 20_000);
+
+  it("kills the whole process tree, including a grandchild the direct child spawned", async () => {
+    // `npm`, `pnpm` and `poetry` all do their real work in a grandchild —
+    // killing only the direct child orphans it and the timeout accomplishes
+    // nothing (spec §11.3). The direct child here spawns one of its own,
+    // records its pid, then sleeps well past the configured timeout; after
+    // `runVerification` resolves, the grandchild must actually be dead, not
+    // just unreferenced.
+    const pidFile = path.join(tempDir, "grandchild.pid");
+    const script = [
+      'const fs = require("fs");',
+      'const { spawn } = require("child_process");',
+      'const gc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });',
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(gc.pid));`,
+      "setTimeout(() => {}, 30000);",
+    ].join("\n");
+    const repo = repoFixture({ verifyInstall: node(script), verifyTimeoutSeconds: 2 });
+
+    const { emit } = collectEvents();
+    const outcome = await runVerification(repo, workspacePath, emit);
+
+    expect(outcome.status).toBe("errored");
+    if (outcome.status === "errored") {
+      expect(outcome.results[0].timedOut).toBe(true);
+      expect(outcome.results[0].exitCode).toBeNull();
+    }
+
+    const grandchildPid = Number(fs.readFileSync(pidFile, "utf8"));
+    expect(Number.isInteger(grandchildPid)).toBe(true);
+
+    // Reaping is asynchronous (SIGTERM, then a grace period before SIGKILL),
+    // so poll rather than assume — but it must finish well inside the 5s
+    // grace period, proving SIGTERM (or `taskkill /t`) reached the
+    // grandchild directly rather than only the direct child dying on its
+    // own and leaving the grandchild running.
+    const deadline = Date.now() + 8_000;
+    let alive = true;
+    while (alive && Date.now() < deadline) {
+      try {
+        process.kill(grandchildPid, 0);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      } catch {
+        alive = false;
+      }
+    }
+    expect(alive).toBe(false);
+  }, 20_000);
 });
 
 describe("runVerification — output capture", () => {
