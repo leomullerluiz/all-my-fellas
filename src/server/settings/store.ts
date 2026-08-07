@@ -31,7 +31,8 @@ export type AppSettings = {
   maxParallelTasks: number;
   /**
    * Maximum rework cycles, shared by every reviewer that can send work back to
-   * the Developer: code review, QA and a human `request_changes`.
+   * the Developer: code review, QA, a human `request_changes` and — once —
+   * PO_HOMOLOGATION.
    */
   reworkMaxCycles: number;
   /** Skip the human plan gate when the Architect rates criticality as low. */

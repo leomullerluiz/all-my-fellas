@@ -162,4 +162,8 @@ describe("extractHomologationVerdict", () => {
   it("fails closed on anything else", () => {
     expect(extractHomologationVerdict("## Verdict\n\nMostly there.\n")).toBe("rejected");
   });
+
+  it("does not read 'not accepted' as an acceptance", () => {
+    expect(extractHomologationVerdict("## Verdict\n\nVerdict: not accepted\n")).toBe("rejected");
+  });
 });

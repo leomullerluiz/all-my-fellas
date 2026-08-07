@@ -5,7 +5,7 @@ import {
   CRITICALITIES,
   DIFFICULTIES,
 } from "./stages";
-import type { ReviewVerdict } from "./state-machine";
+import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 
 /**
  * Artifact contracts.
@@ -201,7 +201,7 @@ export function extractReviewVerdict(report: string): ReviewVerdict {
 }
 
 /** Extracts the homologation verdict; same fail-closed rule as QA. */
-export function extractHomologationVerdict(report: string): "accepted" | "rejected" {
+export function extractHomologationVerdict(report: string): HomologationVerdict {
   const value = readField(report, "Verdict")?.toLowerCase() ?? "";
   return /\baccepted\b/.test(value) && !/not\s+accepted/.test(value) ? "accepted" : "rejected";
 }

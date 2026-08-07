@@ -182,7 +182,11 @@ export type GateDecision = (typeof GATE_DECISIONS)[number];
 export const GATE_ALLOWED_DECISIONS: Record<Gate, readonly GateDecision[]> = {
   PLAN_GATE: ["approve", "reject"],
   HUMAN_CODE_REVIEW: ["approve", "request_changes", "reject"],
-  STAKEHOLDER_GATE: ["approve", "reject"],
+  // `request_changes` here is a re-admission: a homologation-driven escalation
+  // can land at this gate carrying a machine rejection, and a stakeholder must
+  // be able to send it back to the Developer rather than only approve or
+  // terminally reject verified work.
+  STAKEHOLDER_GATE: ["approve", "request_changes", "reject"],
 };
 
 /** Short label used in the kanban column headers and timelines. */

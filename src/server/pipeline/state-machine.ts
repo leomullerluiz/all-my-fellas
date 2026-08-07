@@ -18,6 +18,14 @@ import {
 /** Verdict emitted by a reviewing stage — `CODE_REVIEW` or `QA`. */
 export type ReviewVerdict = "approved" | "changes_requested";
 
+/**
+ * Verdict emitted by `PO_HOMOLOGATION`. Deliberately not a `ReviewVerdict`: a
+ * review rejection is a defect report, this one is a claim that the wrong
+ * thing was built, and the pipeline routes them differently (rework once,
+ * then escalate, never fail the task).
+ */
+export type HomologationVerdict = "accepted" | "rejected";
+
 export type PipelineSignal =
   /** The task was just created and should enter the first stage. */
   | { kind: "start" }
@@ -26,11 +34,19 @@ export type PipelineSignal =
    *
    * `reviewVerdict` is shared by `CODE_REVIEW` and `QA`: both produce the same
    * approve / request-changes shape, and two near-identical fields would invite
-   * passing the wrong one. `detail`, when present, replaces the generic rework
-   * reason with one naming what actually happened — `VERIFICATION` is the only
-   * caller with something more specific than "requested changes" to say.
+   * passing the wrong one. `homologationVerdict` is its own field rather than
+   * folded into `reviewVerdict` — see the type's doc comment. `detail`, when
+   * present, replaces the generic rework reason with one naming what actually
+   * happened — `VERIFICATION` is the only caller with something more specific
+   * than "requested changes" to say.
    */
-  | { kind: "stage_succeeded"; stage: Stage; reviewVerdict?: ReviewVerdict; detail?: string }
+  | {
+      kind: "stage_succeeded";
+      stage: Stage;
+      reviewVerdict?: ReviewVerdict;
+      homologationVerdict?: HomologationVerdict;
+      detail?: string;
+    }
   /** An agent (or the delivery step) exhausted its retries. */
   | { kind: "stage_failed"; stage: Stage; error: string }
   /** A human recorded a decision on a gate. */
@@ -41,9 +57,12 @@ export type PipelineSignal =
 export type PipelineContext = {
   /** Number of DEVELOPMENT runs already performed (1 after the first pass). */
   developmentAttempts: number;
+  /** PO_HOMOLOGATION runs so far, including the one being handled. */
+  homologationAttempts: number;
   /**
    * Maximum rework cycles allowed. Shared by every source that can send work
-   * back to the Developer: `CODE_REVIEW`, `QA` and `HUMAN_CODE_REVIEW`.
+   * back to the Developer: `CODE_REVIEW`, `QA`, `HUMAN_CODE_REVIEW` and
+   * `PO_HOMOLOGATION` (once, per §5.4 of the homologation-verdict spec).
    */
   reworkMaxCycles: number;
   /**
@@ -66,15 +85,14 @@ export type Transition =
 /**
  * Linear happy-path successor for each agent stage.
  *
- * `VERIFICATION`, `CODE_REVIEW` and `QA` branch on a verdict and the gates
- * branch on a human decision, so all are handled explicitly in
- * {@link nextTransition}.
+ * `VERIFICATION`, `CODE_REVIEW`, `QA` and `PO_HOMOLOGATION` branch on a
+ * verdict and the gates branch on a human decision, so all are handled
+ * explicitly in {@link nextTransition}.
  */
 const LINEAR_SUCCESSOR: Partial<Record<Stage, Stage>> = {
   STAKEHOLDER_REFINEMENT: "PO_REFINEMENT",
   PO_REFINEMENT: "ARCHITECTURE",
   DEVELOPMENT: "VERIFICATION",
-  PO_HOMOLOGATION: "STAKEHOLDER_GATE",
   DELIVERY: "COMPLETED",
 };
 
@@ -99,16 +117,22 @@ export class InvalidGateDecisionError extends Error {
   }
 }
 
+// A first DEVELOPMENT pass plus N rework cycles means N+1 attempts total.
+function reworkBudgetAvailable(context: PipelineContext): boolean {
+  return context.developmentAttempts <= context.reworkMaxCycles;
+}
+
 /**
  * Sends work back to the Developer, or fails the task when the shared rework
  * budget is spent.
  *
  * `CODE_REVIEW`, `QA` and a human `request_changes` all land here, so the
  * budget is genuinely shared rather than one allowance per reviewer.
+ * `PO_HOMOLOGATION` draws on the same budget predicate but never fails the
+ * task — see the dedicated `PO_HOMOLOGATION` branch in {@link nextTransition}.
  */
 function reworkOrFail(context: PipelineContext, reason: string): Transition {
-  // A first DEVELOPMENT pass plus N rework cycles means N+1 attempts total.
-  if (context.developmentAttempts > context.reworkMaxCycles) {
+  if (!reworkBudgetAvailable(context)) {
     return {
       type: "terminal",
       stage: "FAILED",
@@ -215,12 +239,36 @@ export function nextTransition(
       : { type: "run", stage: "PO_HOMOLOGATION", attempt: 1 };
   }
 
+  if (current === "PO_HOMOLOGATION") {
+    if (signal.homologationVerdict === "accepted") {
+      return { type: "await_gate", gate: "STAKEHOLDER_GATE" };
+    }
+    // Fail closed: a missing verdict (a caller that forgot to extract one) is
+    // treated exactly like an explicit rejection, not like an acceptance.
+    if (context.homologationAttempts <= 1 && reworkBudgetAvailable(context)) {
+      return {
+        type: "run",
+        stage: "DEVELOPMENT",
+        attempt: context.developmentAttempts + 1,
+      };
+    }
+    // Second rejection, or no budget left. Escalate rather than fail: the
+    // branch passed code review and QA, and only a human can decide whether
+    // "not what we asked for" means ship it, rework it, or drop it.
+    return { type: "await_gate", gate: "STAKEHOLDER_GATE" };
+  }
+
   const successor = LINEAR_SUCCESSOR[current];
   if (!successor) throw new InvalidTransitionError(current, signal);
 
   if (successor === "COMPLETED") {
     return { type: "terminal", stage: "COMPLETED" };
   }
+  // Defensive and currently unreachable: no `LINEAR_SUCCESSOR` value is a gate
+  // since `PO_HOMOLOGATION` (the only stage that used to map to one) is now
+  // handled explicitly above. Kept because the table's type still permits a
+  // gate value, and the failure mode without this guard — `applyTransition`
+  // scheduling a job for a gate stage — is worse than the dead branch.
   if (isGate(successor)) {
     return { type: "await_gate", gate: successor };
   }

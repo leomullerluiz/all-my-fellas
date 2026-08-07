@@ -243,11 +243,14 @@ CREATED
                                                      └─► HUMAN_CODE_REVIEW   human · optional
                                                           ├─ request_changes → DEVELOPMENT
                                                           └─► PO_HOMOLOGATION  agent
-                                                               └─► STAKEHOLDER_GATE   human
+                                                               ├─ rejected (1st pass, budget left) → DEVELOPMENT
+                                                               ├─ rejected (2nd pass, or budget spent) ─┐
+                                                               └─ accepted ──────────────────────────────┴─► STAKEHOLDER_GATE   human
+                                                                    ├─ request_changes → DEVELOPMENT
                                                                     └─► DELIVERY  worker · push + change request
                                                                          └─► COMPLETED
 
-Rework from any reviewer — including VERIFICATION — shares one budget (REWORK_MAX_CYCLES).
+Rework from any reviewer — including VERIFICATION and PO_HOMOLOGATION — shares one budget (REWORK_MAX_CYCLES).
 Other terminals: REJECTED (gate), FAILED (technical), CANCELLED (user)
 ```
 
@@ -280,8 +283,13 @@ persisted as `human-review.md` so it actually reaches their prompt.
 
 Every artifact must contain a fixed set of `##` sections, validated by the worker
 before the pipeline advances. A malformed artifact fails the stage rather than
-being passed on. The QA and homologation verdicts fail closed: anything that
-cannot be parsed as a pass is treated as a rejection.
+being passed on. The code review, QA and homologation verdicts all fail closed:
+anything that cannot be parsed as a pass is treated as a rejection. A code
+review or QA rejection returns the work to the Developer. A homologation
+rejection does too — once — and then parks the task at the stakeholder gate
+with the rejection in view: a repeated homologation failure is usually a
+problem with the acceptance criteria rather than the code, and no agent in the
+pipeline can rewrite those.
 
 The plan gate can be waived for low-criticality work (Settings → *Automatic plan
 gate*); the delivery gate is always manual.
