@@ -11,7 +11,13 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/field";
 import { capacityBlockedReason } from "@/lib/capacity";
 import { dependencyBlockedReason } from "@/lib/dependencies";
-import { GATE_ALLOWED_DECISIONS, type Gate, type TaskStatus } from "@/server/pipeline/stages";
+import type { RetryAvailability } from "@/server/pipeline/orchestrator";
+import {
+  GATE_ALLOWED_DECISIONS,
+  STAGE_LABELS,
+  type Gate,
+  type TaskStatus,
+} from "@/server/pipeline/stages";
 import {
   type VerificationSummary,
   verificationBadgeLabel,
@@ -204,6 +210,7 @@ export function TaskControls({
   notStarted,
   capacity,
   dependsOn = [],
+  retry = null,
 }: {
   taskId: string;
   taskTitle: string;
@@ -212,12 +219,31 @@ export function TaskControls({
   capacity: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
   /** This task's prerequisites, so Start can be disabled independently of capacity. */
   dependsOn?: Array<{ title: string; status: string }>;
+  /**
+   * Whether — and how — this failed task can be retried, computed server-side
+   * by `retryAvailability`. `null` for any status other than `failed`, or when
+   * the caller has not computed it. Replaces the old `status === "failed"`
+   * heuristic, which offered a button that always 409s in the common case
+   * (`spec-retry-recovery.md` §3.1's defect 4).
+   */
+  retry?: RetryAvailability | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
 
   const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
-  const canRetry = status === "failed";
+  // `retry` reflects `retryAvailability`'s answer for whatever status the task
+  // is actually at (e.g. `not_failed` for a running task) — only meaningful,
+  // and only rendered, once the task has actually failed.
+  const showRetrySection = status === "failed" && retry !== null;
+  const retryCapacityReason =
+    showRetrySection && retry && !retry.available && retry.code === "capacity"
+      ? capacityBlockedReason(capacity)
+      : null;
+  const retryOtherReason =
+    showRetrySection && retry && !retry.available && retry.code !== "capacity"
+      ? retry.reason
+      : null;
 
   const dependencyReason = dependencyBlockedReason(dependsOn);
   // The dependency gate is hard and unconditional, so it takes precedence
@@ -285,19 +311,31 @@ export function TaskControls({
     );
   }
 
-  if (!canCancel && !canRetry) return null;
+  if (!canCancel && !showRetrySection) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {canRetry ? (
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={busy !== null || !capacity.slotAvailable}
-          title={blockedReason ?? undefined}
-          onClick={() => call("retry", `/api/tasks/${taskId}/retry`)}
-        >
-          {busy === "retry" ? "Retrying…" : "Retry failed stage"}
+      {showRetrySection && retry?.available ? (
+        <div className="flex flex-col gap-1">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy !== null}
+            onClick={() => call("retry", `/api/tasks/${taskId}/retry`)}
+          >
+            {busy === "retry" ? "Retrying…" : `Retry ${STAGE_LABELS[retry.stage]}`}
+          </Button>
+          {retry.grantsReworkCycles > 0 ? (
+            <span className="text-[11px] text-warning">
+              Grants {retry.grantsReworkCycles} extra rework cycle
+              {retry.grantsReworkCycles === 1 ? "" : "s"} ({retry.reworkMaxCycles} total).
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {showRetrySection && retryCapacityReason ? (
+        <Button variant="secondary" size="sm" disabled title={retryCapacityReason}>
+          Retry failed stage
         </Button>
       ) : null}
       {canCancel ? (
@@ -316,6 +354,11 @@ export function TaskControls({
       {status === "gate_queued" && blockedReason ? (
         <span className="text-xs text-muted">{blockedReason}</span>
       ) : null}
+      {/* Explaining beats an inert control: `capacity` still shows a disabled
+          button above (matching Start), but every other refusal code shows no
+          button at all, only why (`spec-retry-recovery.md` §11). */}
+      {retryCapacityReason ? <span className="text-xs text-muted">{retryCapacityReason}</span> : null}
+      {retryOtherReason ? <span className="text-xs text-muted">{retryOtherReason}</span> : null}
     </div>
   );
 }

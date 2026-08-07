@@ -13,6 +13,7 @@ import {
   TaskNotFoundError,
   deleteCreatedTask,
   editTask,
+  retryAvailability,
 } from "@/server/pipeline/orchestrator";
 import {
   getRepo,
@@ -47,6 +48,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       })),
       costUsd: totalCostForTask(id),
       dependsOn: listDependencies(id),
+      retry: retryAvailability(id),
     });
   } catch (error) {
     return serverError(error);

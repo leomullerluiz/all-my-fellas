@@ -112,3 +112,90 @@ describe("TaskControls gate_queued status (S2)", () => {
     expect(screen.queryByText("Could not cancel the task.")).toBeNull();
   });
 });
+
+describe("TaskControls retry availability (S3)", () => {
+  const capacity = { slotAvailable: true, limit: 1, blocking: [] };
+
+  it("renders a stage-labelled, enabled button when available", () => {
+    render(
+      <TaskControls
+        taskId="task_6"
+        taskTitle="Failed task"
+        status="failed"
+        notStarted={false}
+        capacity={capacity}
+        retry={{
+          available: true,
+          stage: "DEVELOPMENT",
+          attempt: 4,
+          cause: "rework_exhausted",
+          grantsReworkCycles: 1,
+          reworkMaxCycles: 3,
+        }}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Retry Developer" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText(/Grants 1 extra rework cycle \(3 total\)\./)).toBeTruthy();
+  });
+
+  it("does not show the grant line when grantsReworkCycles is 0", () => {
+    render(
+      <TaskControls
+        taskId="task_7"
+        taskTitle="Failed task"
+        status="failed"
+        notStarted={false}
+        capacity={capacity}
+        retry={{
+          available: true,
+          stage: "CODE_REVIEW",
+          attempt: 2,
+          cause: "stage_error",
+          grantsReworkCycles: 0,
+          reworkMaxCycles: 2,
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Retry Code review" })).toBeTruthy();
+    expect(screen.queryByText(/Grants/)).toBeNull();
+  });
+
+  it("renders a disabled button with the blocking task's title visible as text for capacity", () => {
+    render(
+      <TaskControls
+        taskId="task_8"
+        taskTitle="Failed task"
+        status="failed"
+        notStarted={false}
+        capacity={{ slotAvailable: false, limit: 1, blocking: [{ title: "Running task" }] }}
+        retry={{ available: false, code: "capacity", reason: "No capacity slot is free right now." }}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Retry failed stage" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/Running task is still running\./)).toBeTruthy();
+  });
+
+  it.each(["not_failed", "no_failed_stage", "workspace_gone"] as const)(
+    "renders no button, only the reason, for %s",
+    (code) => {
+      render(
+        <TaskControls
+          taskId="task_9"
+          taskTitle="Failed task"
+          status="failed"
+          notStarted={false}
+          capacity={capacity}
+          retry={{ available: false, code, reason: `Refused: ${code}.` }}
+        />,
+      );
+
+      expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+      expect(screen.getByText(`Refused: ${code}.`)).toBeTruthy();
+    },
+  );
+});
