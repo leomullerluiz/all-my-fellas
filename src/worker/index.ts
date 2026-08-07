@@ -18,6 +18,7 @@ import {
   executeVerification,
 } from "../server/pipeline/execute";
 import { advanceTask } from "../server/pipeline/orchestrator";
+import { runMaintenanceSweep } from "../server/pipeline/audit/retention";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
 import { getStageRun, markStageRunStatus } from "../server/tasks/service";
@@ -34,9 +35,12 @@ const TICK_MS = 1_000;
 /** Transient failures are retried twice with backoff before the task fails. */
 const MAX_JOB_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [5_000, 20_000];
+/** How often the transcript retention sweep runs, beyond the one at startup. */
+const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 
 let shuttingDown = false;
 let activeJob: JobRow | null = null;
+let nextMaintenanceAt = 0;
 
 function log(level: "info" | "warn" | "error", message: string): void {
   const stamp = new Date().toISOString();
@@ -159,6 +163,24 @@ function handleJobFailure(job: JobRow, error: unknown): void {
   }
 }
 
+/**
+ * Runs the transcript retention sweep (§11) if it is due, and schedules the
+ * next one. Called between jobs, not concurrently with one — a multi-megabyte
+ * `UPDATE` has no business racing an active agent stage.
+ */
+function runMaintenanceIfDue(): void {
+  const now = Date.now();
+  if (now < nextMaintenanceAt) return;
+  nextMaintenanceAt = now + MAINTENANCE_INTERVAL_MS;
+
+  try {
+    const { swept } = runMaintenanceSweep();
+    if (swept > 0) log("info", `Transcript retention sweep pruned ${swept} run(s).`);
+  } catch (error) {
+    log("error", `Transcript retention sweep failed: ${String(error)}`);
+  }
+}
+
 async function tick(): Promise<void> {
   const { maxParallelTasks } = getSettings();
   const job = claimNextJob(maxParallelTasks);
@@ -193,11 +215,17 @@ async function main(): Promise<void> {
   const requeued = requeueOrphanedJobs();
   if (requeued > 0) log("info", `Requeued ${requeued} job(s) left claimed by a previous run.`);
 
+  // Once at startup, next to `requeueOrphanedJobs` — the worker already owns
+  // long-running maintenance at boot. `runMaintenanceIfDue` schedules the next
+  // run itself, so this also sets `nextMaintenanceAt` for the loop below.
+  runMaintenanceIfDue();
+
   log("info", "Worker ready.");
 
   while (!shuttingDown) {
     try {
       await tick();
+      runMaintenanceIfDue();
     } catch (error) {
       log("error", `Unexpected error in worker loop: ${String(error)}`);
     }

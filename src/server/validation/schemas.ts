@@ -284,6 +284,8 @@ export const updateSettingsSchema = z.object({
   qaMaxCycles: z.number().int().min(0).max(10).optional(),
   autoApprovePlanForLowCriticality: z.boolean().optional(),
   workspaceRetentionDays: z.number().int().min(0).max(365).optional(),
+  /** `null` clears the setting — keep transcripts forever. */
+  transcriptRetentionDays: z.number().int().min(0).max(3650).nullable().optional(),
   theme: z.enum(THEMES).optional(),
   quotaLimits: quotaLimitsSchema.optional(),
 });

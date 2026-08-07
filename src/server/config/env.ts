@@ -28,6 +28,13 @@ function floatOrNull(name: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function intOrNull(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
  * Turns `DATABASE_URL` into an absolute filesystem path. Accepts both the
  * `file:./data/pipeline.db` URL form and a bare relative/absolute path.
@@ -140,9 +147,12 @@ export type RuntimeLimits = {
   maxParallelTasks: number;
   reworkMaxCycles: number;
   workspaceRetentionDays: number;
+  /** Days to keep full transcripts. `null` keeps them forever — see resolveLimits. */
+  transcriptRetentionDays: number | null;
 };
 
 export function resolveLimits(): RuntimeLimits {
+  const rawTranscriptRetention = intOrNull("TRANSCRIPT_RETENTION_DAYS");
   return {
     maxParallelTasks: Math.max(1, int("MAX_PARALLEL_TASKS", 1)),
     // Renamed from QA_MAX_CYCLES now that code review and the human gate share
@@ -150,6 +160,12 @@ export function resolveLimits(): RuntimeLimits {
     // keep working.
     reworkMaxCycles: Math.max(0, int("REWORK_MAX_CYCLES", int("QA_MAX_CYCLES", 2))),
     workspaceRetentionDays: Math.max(0, int("WORKSPACE_RETENTION_DAYS", 7)),
+    // `null` (unset, or an invalid value) keeps transcripts forever — the
+    // opposite default from `workspaceRetentionDays`. A workspace is a
+    // reproducible cache; a transcript is not reproducible at all, and this
+    // is the audit trail the README sells as a reason to use the tool. See
+    // spec-audit-trail.md §11.
+    transcriptRetentionDays: rawTranscriptRetention === null ? null : Math.max(0, rawTranscriptRetention),
   };
 }
 

@@ -7,7 +7,7 @@ import { LLM_PROVIDER_LABELS, resolveAllLlmCredentials } from "@/server/config/l
 import { configuredCredentialVariables, conventionalEnvVars } from "@/server/git/credentials";
 import { PROVIDERS, providerFor } from "@/server/git/providers";
 import { getSettings } from "@/server/settings/store";
-import { listRepos } from "@/server/tasks/service";
+import { listRepos, transcriptStorageStats } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +25,7 @@ export default async function SettingsPage() {
     );
     return { ...entry, inUse: users.length > 0, count: users.length };
   });
+  const transcriptStorage = transcriptStorageStats();
   const custom = configuredCredentialVariables(repos.map((repo) => repo.credentialRef))
     .filter((variable) => !conventional.some((entry) => entry.variable === variable))
     .map((variable) => ({
@@ -112,7 +113,7 @@ export default async function SettingsPage() {
         </CardBody>
       </Card>
 
-      <SettingsForm initial={settings} llmCredentials={llmCredentials} />
+      <SettingsForm initial={settings} llmCredentials={llmCredentials} transcriptStorage={transcriptStorage} />
     </div>
   );
 }
