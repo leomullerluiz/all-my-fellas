@@ -19,7 +19,7 @@ export const taskFieldsSchema = z.object({
     .string()
     .trim()
     .min(20, "Describe the feature in at least 20 characters.")
-    .max(20_000),
+    .max(50_000),
   priority: z.enum(PRIORITIES).default("medium"),
   /** Park at HUMAN_CODE_REVIEW before delivery. Not changeable after start. */
   requireHumanCodeReview: z.boolean().default(false),
