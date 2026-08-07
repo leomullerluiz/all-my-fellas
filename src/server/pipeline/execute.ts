@@ -34,6 +34,7 @@ import {
   updateTask,
 } from "../tasks/service";
 import {
+  extractHomologationVerdict,
   extractPlanEstimate,
   extractReviewVerdict,
   validateArtifact,
@@ -42,7 +43,7 @@ import { advanceTask } from "./orchestrator";
 import { type ArtifactInput, truncateForPrompt } from "./prompt";
 import { runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, isAgentStage } from "./stages";
-import type { ReviewVerdict } from "./state-machine";
+import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
 
 /**
@@ -121,7 +122,7 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
     // ended.
     const previousDevelopmentRun = getStageRunByAttempt(taskId, "DEVELOPMENT", attempt - 1);
     const cycleStart = previousDevelopmentRun?.finishedAt ?? previousDevelopmentRun?.createdAt ?? 0;
-    for (const type of ["code_review_report", "qa_report", "human_review"] as const) {
+    for (const type of ["code_review_report", "qa_report", "homolog_report", "human_review"] as const) {
       const artifact = latestArtifactSince(taskId, type, cycleStart);
       if (artifact) inputs.push({ type, content: artifact.contentMd });
     }
@@ -287,6 +288,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
   });
 
   let reviewVerdict: ReviewVerdict | undefined;
+  let homologationVerdict: HomologationVerdict | undefined;
 
   if (run.stage === "ARCHITECTURE") {
     const estimate = extractPlanEstimate(content);
@@ -327,6 +329,15 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     });
   }
 
+  if (run.stage === "PO_HOMOLOGATION") {
+    homologationVerdict = extractHomologationVerdict(content);
+    appendEvent(task.id, stageRunId, {
+      type: "log",
+      level: homologationVerdict === "accepted" ? "info" : "warn",
+      message: `${role.name} verdict: ${homologationVerdict}.`,
+    });
+  }
+
   markStageRunStatus(stageRunId, "done");
   appendEvent(task.id, stageRunId, {
     type: "stage_finished",
@@ -335,7 +346,12 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     costUsd: result.costUsd,
   });
 
-  advanceTask(task.id, { kind: "stage_succeeded", stage: run.stage, reviewVerdict });
+  advanceTask(task.id, {
+    kind: "stage_succeeded",
+    stage: run.stage,
+    reviewVerdict,
+    homologationVerdict,
+  });
 }
 
 function resultLine(result: CommandResult): string {

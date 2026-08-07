@@ -9,6 +9,7 @@ import {
 
 const base: PipelineContext = {
   developmentAttempts: 0,
+  homologationAttempts: 0,
   reworkMaxCycles: 2,
   planGateRequired: true,
   humanCodeReviewRequired: false,
@@ -307,7 +308,7 @@ describe("gates", () => {
   });
 
   it("refuses request_changes on gates that do not review code", () => {
-    for (const gate of ["PLAN_GATE", "STAKEHOLDER_GATE"] as const) {
+    for (const gate of ["PLAN_GATE"] as const) {
       expect(() =>
         nextTransition(
           gate,
@@ -316,6 +317,36 @@ describe("gates", () => {
         ),
       ).toThrow(InvalidGateDecisionError);
     }
+  });
+
+  it("sends a request_changes at the stakeholder gate back to development", () => {
+    expect(
+      nextTransition(
+        "STAKEHOLDER_GATE",
+        {
+          kind: "gate_decided",
+          gate: "STAKEHOLDER_GATE",
+          decision: "request_changes",
+          comment: "The stories asked for X, not Y",
+        },
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("fails a request_changes at the stakeholder gate once the budget is spent", () => {
+    const transition = nextTransition(
+      "STAKEHOLDER_GATE",
+      {
+        kind: "gate_decided",
+        gate: "STAKEHOLDER_GATE",
+        decision: "request_changes",
+        comment: "Still not right",
+      },
+      { ...base, developmentAttempts: 3 },
+    );
+    expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
+    expect((transition as { reason: string }).reason).toContain("rework budget");
   });
 
   it("refuses a gate decision for a gate the task is not on", () => {
@@ -329,17 +360,104 @@ describe("gates", () => {
   });
 });
 
-describe("the tail of the pipeline", () => {
-  it("parks on the stakeholder gate after homologation", () => {
+describe("homologation", () => {
+  it("parks an accepted verdict on the stakeholder gate", () => {
     expect(
       nextTransition(
         "PO_HOMOLOGATION",
-        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION" },
-        base,
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "accepted" },
+        { ...base, developmentAttempts: 1, homologationAttempts: 1 },
       ),
     ).toEqual({ type: "await_gate", gate: "STAKEHOLDER_GATE" });
   });
 
+  it("sends a first rejection back to development, sharing the rework budget", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "rejected" },
+        { ...base, developmentAttempts: 1, homologationAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("escalates a second rejection to the stakeholder gate instead of reworking again", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "rejected" },
+        { ...base, developmentAttempts: 2, homologationAttempts: 2 },
+      ),
+    ).toEqual({ type: "await_gate", gate: "STAKEHOLDER_GATE" });
+  });
+
+  it("escalates a first rejection when the rework budget is already spent", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "rejected" },
+        { ...base, developmentAttempts: 3, homologationAttempts: 1 },
+      ),
+    ).toEqual({ type: "await_gate", gate: "STAKEHOLDER_GATE" });
+  });
+
+  it("never fails the task outright, whatever the attempt count or budget", () => {
+    const cases = [
+      { developmentAttempts: 1, homologationAttempts: 1 },
+      { developmentAttempts: 2, homologationAttempts: 2 },
+      { developmentAttempts: 3, homologationAttempts: 1 },
+      { developmentAttempts: 5, homologationAttempts: 3 },
+    ];
+    for (const context of cases) {
+      const transition = nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "rejected" },
+        { ...base, ...context },
+      );
+      expect(transition.type).not.toBe("terminal");
+    }
+  });
+
+  it("fails closed: a missing verdict is treated as a rejection, not an acceptance", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION" },
+        { ...base, developmentAttempts: 1, homologationAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+
+  it("ignores a reviewVerdict on a PO_HOMOLOGATION signal and a homologationVerdict elsewhere", () => {
+    // A `reviewVerdict` of "approved" must not count as homologation acceptance.
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        {
+          kind: "stage_succeeded",
+          stage: "PO_HOMOLOGATION",
+          reviewVerdict: "approved",
+        } as never,
+        { ...base, developmentAttempts: 1, homologationAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+
+    // A `homologationVerdict` on a QA signal must not be read as its verdict.
+    expect(
+      nextTransition(
+        "QA",
+        {
+          kind: "stage_succeeded",
+          stage: "QA",
+          homologationVerdict: "accepted",
+        } as never,
+        { ...base, developmentAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+});
+
+describe("the tail of the pipeline", () => {
   it("completes after delivery", () => {
     expect(
       nextTransition("DELIVERY", { kind: "stage_succeeded", stage: "DELIVERY" }, base),

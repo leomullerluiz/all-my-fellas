@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { ArtifactType } from "@/server/pipeline/stages";
+
 /**
  * Integration coverage for the orchestrator against a real SQLite file.
  *
@@ -64,7 +66,11 @@ function newTask(title: string, requireHumanCodeReview = false) {
 }
 
 /** Marks the task's current stage run done, mirroring what the worker does. */
-function completeCurrentStage(taskId: string, reviewVerdict?: "approved" | "changes_requested") {
+function completeCurrentStage(
+  taskId: string,
+  reviewVerdict?: "approved" | "changes_requested",
+  homologationVerdict?: "accepted" | "rejected",
+) {
   const task = service.getTask(taskId)!;
   const run = service
     .listStageRuns(taskId)
@@ -75,6 +81,7 @@ function completeCurrentStage(taskId: string, reviewVerdict?: "approved" | "chan
     kind: "stage_succeeded",
     stage: task.currentStage,
     reviewVerdict,
+    homologationVerdict,
   });
 }
 
@@ -184,7 +191,7 @@ describe("pipeline orchestration", () => {
     completeCurrentStage(task.id, "approved"); // Verification
     completeCurrentStage(task.id, "approved"); // Code review
     completeCurrentStage(task.id, "approved"); // QA
-    completeCurrentStage(task.id); // Homologation
+    completeCurrentStage(task.id, undefined, "accepted"); // Homologation
 
     expect(service.getTask(task.id)!.currentStage).toBe("STAKEHOLDER_GATE");
     expect(service.getTask(task.id)!.status).toBe("awaiting_gate");
@@ -356,5 +363,241 @@ describe("pipeline orchestration", () => {
       ["STAKEHOLDER_REFINEMENT", 2],
     ]);
     expect(service.getTask(task.id)!.status).toBe("running");
+  });
+});
+
+describe("homologation-driven rework", () => {
+  it("reworks once on a first rejection, then escalates on a second", () => {
+    const task = newTask("Wrong acceptance criteria");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+    completeCurrentStage(task.id); // Development #1
+    completeCurrentStage(task.id, "approved"); // Verification #1
+    completeCurrentStage(task.id, "approved"); // Code review #1
+    completeCurrentStage(task.id, "approved"); // QA #1
+    expect(service.getTask(task.id)!.currentStage).toBe("PO_HOMOLOGATION");
+
+    completeCurrentStage(task.id, undefined, "rejected"); // Homologation #1
+    expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
+    expect(service.getTask(task.id)!.status).toBe("running");
+
+    // Second pass. VERIFICATION, CODE_REVIEW, QA and PO_HOMOLOGATION must all
+    // get attempt 2, not collide on the unique (task, stage, attempt) index.
+    completeCurrentStage(task.id); // Development #2
+    completeCurrentStage(task.id, "approved"); // Verification #2
+    completeCurrentStage(task.id, "approved"); // Code review #2
+    completeCurrentStage(task.id, "approved"); // QA #2
+    expect(service.getTask(task.id)!.currentStage).toBe("PO_HOMOLOGATION");
+
+    completeCurrentStage(task.id, undefined, "rejected"); // Homologation #2 — escalates
+
+    const escalated = service.getTask(task.id)!;
+    expect(escalated.currentStage).toBe("STAKEHOLDER_GATE");
+    expect(escalated.status).toBe("awaiting_gate");
+    expect(escalated.failureReason).toBeNull();
+
+    const stages = service.listStageRuns(task.id).map((run) => [run.stage, run.attempt]);
+    expect(stages).toEqual([
+      ["STAKEHOLDER_REFINEMENT", 1],
+      ["PO_REFINEMENT", 1],
+      ["ARCHITECTURE", 1],
+      ["DEVELOPMENT", 1],
+      ["VERIFICATION", 1],
+      ["CODE_REVIEW", 1],
+      ["QA", 1],
+      ["PO_HOMOLOGATION", 1],
+      ["DEVELOPMENT", 2],
+      ["VERIFICATION", 2],
+      ["CODE_REVIEW", 2],
+      ["QA", 2],
+      ["PO_HOMOLOGATION", 2],
+    ]);
+  });
+
+  it("lets a stakeholder request changes on an escalated rejection, resuming DEVELOPMENT", () => {
+    const task = newTask("Escalated, then reworked by the stakeholder");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+    completeCurrentStage(task.id); // Development #1
+    completeCurrentStage(task.id, "approved"); // Verification #1
+    completeCurrentStage(task.id, "approved"); // Code review #1
+    completeCurrentStage(task.id, "approved"); // QA #1
+    completeCurrentStage(task.id, undefined, "rejected"); // Homologation #1 — reworks
+
+    completeCurrentStage(task.id); // Development #2
+    completeCurrentStage(task.id, "approved"); // Verification #2
+    completeCurrentStage(task.id, "approved"); // Code review #2
+    completeCurrentStage(task.id, "approved"); // QA #2
+    completeCurrentStage(task.id, undefined, "rejected"); // Homologation #2 — escalates
+
+    expect(service.getTask(task.id)!.currentStage).toBe("STAKEHOLDER_GATE");
+
+    orchestrator.decideGate({
+      taskId: task.id,
+      gate: "STAKEHOLDER_GATE",
+      decision: "request_changes",
+      comment: "Criterion 3 really was in scope — please implement it.",
+    });
+
+    const feedback = service.latestArtifact(task.id, "human_review");
+    expect(feedback).not.toBeNull();
+    expect(feedback!.contentMd).toContain("Criterion 3 really was in scope");
+    expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
+    expect(service.getTask(task.id)!.status).toBe("running");
+  });
+
+  it("refuses request_changes on the stakeholder gate without a comment", () => {
+    const task = newTask("Silent stakeholder rejection");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+    completeCurrentStage(task.id); // Development
+    completeCurrentStage(task.id, "approved"); // Verification
+    completeCurrentStage(task.id, "approved"); // Code review
+    completeCurrentStage(task.id, "approved"); // QA
+    completeCurrentStage(task.id, undefined, "accepted"); // Homologation
+
+    expect(() =>
+      orchestrator.decideGate({
+        taskId: task.id,
+        gate: "STAKEHOLDER_GATE",
+        decision: "request_changes",
+        comment: "   ",
+      }),
+    ).toThrow(orchestrator.GateError);
+
+    expect(service.getTask(task.id)!.currentStage).toBe("STAKEHOLDER_GATE");
+  });
+
+  it("gives the Developer the homolog_report on a homologation-driven rework, positioned after qa_report and before human_review", () => {
+    const task = newTask("Rework input ordering");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+    completeCurrentStage(task.id); // Development #1
+
+    // Manually persist the reports each reviewer produces, the same way
+    // `executeAgentStage` does, so the recency filter has something to gather.
+    const verify1 = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "VERIFICATION")
+      .at(-1)!;
+    service.saveArtifact({
+      taskId: task.id,
+      stageRunId: verify1.id,
+      type: "verification_report",
+      contentMd: "## Outcome\n\nPassed.\n\n## Commands\n\nNone.\n\n## Output\n\nNone.\n",
+    });
+    completeCurrentStage(task.id, "approved"); // Verification #1
+
+    const review1 = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "CODE_REVIEW")
+      .at(-1)!;
+    service.saveArtifact({
+      taskId: task.id,
+      stageRunId: review1.id,
+      type: "code_review_report",
+      contentMd: "## Verdict\n\nVerdict: approved\n\n## Summary\n\nFine.\n",
+    });
+    completeCurrentStage(task.id, "approved"); // Code review #1
+
+    const qa1 = service.listStageRuns(task.id).filter((run) => run.stage === "QA").at(-1)!;
+    service.saveArtifact({
+      taskId: task.id,
+      stageRunId: qa1.id,
+      type: "qa_report",
+      contentMd: "## Verdict\n\nVerdict: approved\n\n## Checks\n\nAll green.\n",
+    });
+    completeCurrentStage(task.id, "approved"); // QA #1
+
+    const homolog1 = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "PO_HOMOLOGATION")
+      .at(-1)!;
+    service.saveArtifact({
+      taskId: task.id,
+      stageRunId: homolog1.id,
+      type: "homolog_report",
+      contentMd:
+        "## Verdict\n\nVerdict: rejected\n\n## Acceptance Criteria Checklist\n\nCriterion 3: not met.\n",
+    });
+    completeCurrentStage(task.id, undefined, "rejected"); // Homologation #1 — reworks
+
+    expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
+
+    // Everything gatherInputs would collect for this rework, in the order it
+    // assembles them: verification_report, then the reviewers' reports
+    // (code_review_report, qa_report, homolog_report), then human_review.
+    // `gatherInputs` itself is not exported (see
+    // `stale-artifact-filtering.test.ts`), so this exercises the same
+    // `latestArtifactSince` primitive it is built from.
+    const previousDevelopmentRun = service.getStageRunByAttempt(task.id, "DEVELOPMENT", 1);
+    const cycleStart = previousDevelopmentRun!.finishedAt ?? previousDevelopmentRun!.createdAt ?? 0;
+
+    const order: Array<[ArtifactType, boolean]> = [
+      ["verification_report", true],
+      ["code_review_report", true],
+      ["qa_report", true],
+      ["homolog_report", true],
+      ["human_review", false],
+    ];
+    for (const [type, expectPresent] of order) {
+      const artifact = service.latestArtifactSince(task.id, type, cycleStart);
+      expect(artifact !== null).toBe(expectPresent);
+    }
+    const homologReport = service.latestArtifactSince(task.id, "homolog_report", cycleStart);
+    expect(homologReport!.contentMd).toContain("Criterion 3: not met");
+  });
+
+  it("excludes a homolog_report written before the previous DEVELOPMENT run from a later rework", () => {
+    const task = newTask("Stale homolog report");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+    completeCurrentStage(task.id); // Development #1
+    completeCurrentStage(task.id, "approved"); // Verification #1
+    completeCurrentStage(task.id, "approved"); // Code review #1
+    completeCurrentStage(task.id, "approved"); // QA #1
+
+    const homolog1 = service
+      .listStageRuns(task.id)
+      .filter((run) => run.stage === "PO_HOMOLOGATION")
+      .at(-1)!;
+    service.saveArtifact({
+      taskId: task.id,
+      stageRunId: homolog1.id,
+      type: "homolog_report",
+      contentMd: "## Verdict\n\nVerdict: rejected\n\n## Acceptance Criteria Checklist\n\nStale.\n",
+    });
+    completeCurrentStage(task.id, undefined, "rejected"); // Homologation #1 — reworks
+
+    // Development #2 finishes, but this cycle's reviewers reject before
+    // reaching homologation again — no new homolog_report exists for cycle 3.
+    completeCurrentStage(task.id); // Development #2
+    completeCurrentStage(task.id, "approved"); // Verification #2
+    completeCurrentStage(task.id, "changes_requested"); // Code review #2 — back to DEVELOPMENT #3
+
+    expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
+
+    const previousDevelopmentRun = service.getStageRunByAttempt(task.id, "DEVELOPMENT", 2);
+    const cycleStart = previousDevelopmentRun!.finishedAt ?? previousDevelopmentRun!.createdAt ?? 0;
+
+    // The naive "latest of all time" lookup would still find cycle 1's report.
+    expect(service.latestArtifact(task.id, "homolog_report")).not.toBeNull();
+    // The recency-filtered lookup gatherInputs actually uses excludes it.
+    expect(service.latestArtifactSince(task.id, "homolog_report", cycleStart)).toBeNull();
   });
 });

@@ -69,6 +69,7 @@ function contextFor(task: TaskRow): PipelineContext {
   );
   return {
     developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
+    homologationAttempts: countStageRuns(task.id, "PO_HOMOLOGATION"),
     reworkMaxCycles: settings.reworkMaxCycles,
     planGateRequired,
     humanCodeReviewRequired: task.requireHumanCodeReview,

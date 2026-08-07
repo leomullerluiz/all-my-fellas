@@ -41,7 +41,7 @@ const GATE_COPY: Record<
   STAKEHOLDER_GATE: {
     title: "Approve delivery",
     description:
-      "QA and homologation are done. Approving pushes the branch and opens a pull request — the merge still happens on GitHub.",
+      "QA and homologation are done. Approving pushes the branch and opens a pull request — the merge still happens on GitHub. If homologation rejected the change, requesting changes sends it back to the Developer with your comment instead of forcing an approve-or-reject choice on verified work.",
     approve: "Approve and deliver",
     approvedToast: "Delivery approved",
   },
