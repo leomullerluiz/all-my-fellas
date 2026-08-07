@@ -39,9 +39,17 @@ import {
   extractReviewVerdict,
   validateArtifact,
 } from "./artifacts";
+import { redactSecrets } from "./audit/redact";
 import { advanceTask } from "./orchestrator";
-import { type ArtifactInput, truncateForPrompt } from "./prompt";
-import { runStage } from "./run-stage";
+import {
+  type ArtifactInput,
+  type StagePromptInput,
+  MAX_PROMPT_CHARS,
+  buildStagePrompt,
+  buildSystemPrompt,
+  truncateForPrompt,
+} from "./prompt";
+import { StageExecutionError, runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, isAgentStage } from "./stages";
 import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
@@ -220,6 +228,34 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
 
   const inputs = gatherInputs(task.id, run.stage, run.attempt);
 
+  const promptInput: StagePromptInput = {
+    role,
+    task: {
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      priority: task.priority,
+      repoName: task.repo.name,
+      repoContext: task.repo.context,
+      branchName,
+    },
+    artifacts: inputs,
+    supplements,
+    attempt: run.attempt,
+  };
+
+  // Persisted before the provider is invoked, not after: the case where the
+  // prompt matters most — a stage that fails — is the case where it would
+  // otherwise never reach `stage_runs` at all. See spec-audit-trail.md §4.
+  // The builders run again inside the provider (`runStage`); that duplication
+  // is pure string assembly over a cached file and costs nothing measurable.
+  updateStageRun(stageRunId, {
+    systemPrompt: redactSecrets(buildSystemPrompt(role)).text,
+    userPrompt: redactSecrets(truncateForPrompt(buildStagePrompt(promptInput), MAX_PROMPT_CHARS)).text,
+    model,
+    provider,
+  });
+
   let result;
   try {
     result = await runStage(provider, {
@@ -227,25 +263,28 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       model,
       maxTurns,
       workspacePath,
-      prompt: {
-        role,
-        task: {
-          id: task.id,
-          title: task.title,
-          description: task.description,
-          priority: task.priority,
-          repoName: task.repo.name,
-          repoContext: task.repo.context,
-          branchName,
-        },
-        artifacts: inputs,
-        supplements,
-        attempt: run.attempt,
-      },
+      prompt: promptInput,
       onEvent: (event) => appendEvent(task.id, stageRunId, event),
     });
   } catch (error) {
     const message = redactRemote(error instanceof Error ? error.message : String(error));
+
+    // Every provider builds a partial result for exactly this case
+    // (`StageExecutionError.partial`) — the transcript of a failed run is the
+    // one most worth having, and today it is thrown away. See §12.2.
+    if (error instanceof StageExecutionError && error.partial.transcript) {
+      saveTranscript({
+        stageRunId,
+        sessionId: error.partial.sessionId ?? null,
+        transcript: error.partial.transcript,
+      });
+      updateStageRun(stageRunId, {
+        inputTokens: error.partial.inputTokens ?? 0,
+        outputTokens: error.partial.outputTokens ?? 0,
+        costUsd: error.partial.costUsd ?? 0,
+      });
+    }
+
     markStageRunStatus(stageRunId, "failed", { error: message });
     throw new StageJobError(message);
   }

@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { newId } from "../db/ids";
 import {
+  type AgentRunRow,
   type ApprovalRow,
   type ArtifactRow,
   type AttachmentRow,
@@ -22,6 +23,7 @@ import {
 } from "../db/schema";
 import { appendEvent } from "../events/store";
 import type { ProviderId } from "../git/providers/types";
+import { redactSecrets } from "../pipeline/audit/redact";
 import type {
   ArtifactType,
   Criticality,
@@ -630,6 +632,16 @@ export function latestArtifactSince(
   );
 }
 
+/** Every artifact produced by one stage run, oldest first — for the run detail page. */
+export function listArtifactsForStageRun(stageRunId: string): ArtifactRow[] {
+  return db
+    .select()
+    .from(artifacts)
+    .where(eq(artifacts.stageRunId, stageRunId))
+    .orderBy(artifacts.createdAt)
+    .all();
+}
+
 /** Latest version of every artifact type produced so far, in pipeline order. */
 export function listLatestArtifacts(taskId: string): ArtifactRow[] {
   const all = db
@@ -691,19 +703,92 @@ export function listVerificationRuns(taskId: string, stageRunId?: string): Verif
     .all();
 }
 
+/**
+ * Byte cap on a stored transcript, regardless of the retention setting — see
+ * spec-audit-trail.md §11. A `DEVELOPMENT` run with a generous `maxTurns`
+ * reading and writing source files is otherwise unbounded.
+ */
+export const MAX_TRANSCRIPT_BYTES = 8_000_000;
+
+/**
+ * Drops elements from the middle of an over-sized transcript array, keeping
+ * as much of the head and the tail as fits — the setup and the outcome are
+ * the informative ends. Leaves the result a valid JSON array rather than
+ * truncating the serialised string mid-element.
+ */
+function capTranscript(transcript: unknown): { transcript: unknown; truncated: boolean } {
+  if (!Array.isArray(transcript)) return { transcript, truncated: false };
+  if (Buffer.byteLength(JSON.stringify(transcript), "utf8") <= MAX_TRANSCRIPT_BYTES) {
+    return { transcript, truncated: false };
+  }
+
+  const marker = { truncated: true, reason: "transcript exceeded MAX_TRANSCRIPT_BYTES; middle entries dropped" };
+  let budget = MAX_TRANSCRIPT_BYTES - Buffer.byteLength(JSON.stringify(marker), "utf8");
+  const head: unknown[] = [];
+  const tail: unknown[] = [];
+  let i = 0;
+  let j = transcript.length - 1;
+  let fromHead = true;
+
+  while (i <= j && budget > 0) {
+    const candidate = fromHead ? transcript[i] : transcript[j];
+    const size = Buffer.byteLength(JSON.stringify(candidate), "utf8") + 1; // +1 for the array comma
+    if (size > budget) break;
+    if (fromHead) {
+      head.push(candidate);
+      i++;
+    } else {
+      tail.unshift(candidate);
+      j--;
+    }
+    budget -= size;
+    fromHead = !fromHead;
+  }
+
+  return { transcript: [...head, marker, ...tail], truncated: true };
+}
+
 export function saveTranscript(input: {
   stageRunId: string;
   sessionId: string | null;
   transcript: unknown;
 }): void {
+  const { transcript: capped } = capTranscript(input.transcript);
+  const { text: redacted } = redactSecrets(JSON.stringify(capped));
+
   db.insert(agentRuns)
     .values({
       id: newId("agent"),
       stageRunId: input.stageRunId,
       sessionId: input.sessionId,
-      transcriptJson: JSON.stringify(input.transcript),
+      transcriptJson: redacted,
     })
     .run();
+}
+
+/** Every `agent_runs` row for one stage run, oldest first — see §12.5: a
+ * retried job can leave more than one row behind, so a reader must pick the
+ * newest rather than assume a single `.get()`. */
+export function listAgentRunsByStageRun(stageRunId: string): AgentRunRow[] {
+  return db
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.stageRunId, stageRunId))
+    .orderBy(agentRuns.createdAt)
+    .all();
+}
+
+/** The newest `agent_runs` row for one stage run, or `null` if it never had one. */
+export function latestAgentRun(stageRunId: string): AgentRunRow | null {
+  return (
+    db
+      .select()
+      .from(agentRuns)
+      .where(eq(agentRuns.stageRunId, stageRunId))
+      .orderBy(desc(agentRuns.createdAt))
+      .limit(1)
+      .get() ?? null
+  );
 }
 
 export function listApprovals(taskId: string): ApprovalRow[] {
