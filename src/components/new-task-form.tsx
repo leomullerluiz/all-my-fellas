@@ -12,8 +12,8 @@ import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
 export type RepoOption = { id: string; name: string; defaultBranch: string };
 
-/** A task selectable as a prerequisite: title plus its repo name for context. */
-export type DependencyOption = { id: string; title: string; repoName: string };
+/** A task selectable as a prerequisite: title plus the repo it belongs to. */
+export type DependencyOption = { id: string; title: string; repoId: string; repoName: string };
 
 /** Accepted by both the picker's `accept` attribute and server-side validation. */
 export const ATTACHMENT_ACCEPT =
@@ -46,7 +46,10 @@ export type TaskFormProps = {
   initial?: Partial<TaskFormValues>;
   /** Whether a concurrency slot is free, for the "Start now" button. */
   capacity?: { slotAvailable: boolean; limit: number; blocking: Array<{ title: string }> };
-  /** Every other task, selectable as a prerequisite (self already excluded by the caller). */
+  /**
+   * Every other task, across every repository, selectable as a prerequisite
+   * (self already excluded by the caller). Narrowed here to the selected repo.
+   */
   dependencyOptions?: DependencyOption[];
 };
 
@@ -89,6 +92,10 @@ export function NewTaskForm({
 
   const selectedRepo = repos.find((repo) => repo.id === repoId);
   const isEdit = mode === "edit";
+
+  // A prerequisite only makes sense against the same codebase, so the picker
+  // follows the "Repository" select rather than listing every open task.
+  const repoDependencyOptions = dependencyOptions.filter((option) => option.repoId === repoId);
 
   const blockedReason = capacity.slotAvailable
     ? null
@@ -185,6 +192,19 @@ export function NewTaskForm({
     setDependsOn((prev) => (checked ? [...prev, id] : prev.filter((value) => value !== id)));
   }
 
+  /**
+   * Switching repository drops the prerequisites picked for the previous one —
+   * they are no longer offered, so leaving them in state would submit
+   * cross-repo dependencies the user can neither see nor uncheck.
+   */
+  function changeRepo(nextRepoId: string) {
+    setRepoId(nextRepoId);
+    const selectable = new Set(
+      dependencyOptions.filter((option) => option.repoId === nextRepoId).map((option) => option.id),
+    );
+    setDependsOn((prev) => prev.filter((id) => selectable.has(id)));
+  }
+
   /** Removes an already-uploaded attachment without a full page reload. */
   async function removeExistingAttachment(attachmentId: string) {
     setRemovingId(attachmentId);
@@ -214,7 +234,7 @@ export function NewTaskForm({
               <Select
                 id="repoId"
                 value={repoId}
-                onChange={(event) => setRepoId(event.target.value)}
+                onChange={(event) => changeRepo(event.target.value)}
                 required
               >
                 {repos.map((repo) => (
@@ -340,28 +360,37 @@ export function NewTaskForm({
                 label="Depends on"
                 htmlFor="dependsOn"
                 error={errors.dependsOn}
-                hint="This task cannot be started until every selected task reaches Completed."
+                hint="Open tasks in the selected repository. This task cannot be started until every selected one reaches Completed."
               >
-                <ul
-                  id="dependsOn"
-                  className="flex max-h-40 flex-col gap-1 overflow-auto rounded-md border border-border bg-surface px-2.5 py-1.5"
-                >
-                  {dependencyOptions.map((option) => (
-                    <li key={option.id}>
-                      <label className="flex items-center gap-2 py-0.5 text-xs">
-                        <input
-                          type="checkbox"
-                          checked={dependsOn.includes(option.id)}
-                          onChange={(event) => toggleDependency(option.id, event.target.checked)}
-                        />
-                        <span className="truncate">
-                          {option.title}{" "}
-                          <span className="text-muted">({option.repoName})</span>
-                        </span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
+                {repoDependencyOptions.length > 0 ? (
+                  <ul
+                    id="dependsOn"
+                    className="flex max-h-40 flex-col gap-1 overflow-auto rounded-md border border-border bg-surface px-2.5 py-1.5"
+                  >
+                    {repoDependencyOptions.map((option) => (
+                      <li key={option.id}>
+                        <label className="flex items-center gap-2 py-0.5 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={dependsOn.includes(option.id)}
+                            onChange={(event) => toggleDependency(option.id, event.target.checked)}
+                          />
+                          <span className="truncate">
+                            {option.title}{" "}
+                            <span className="text-muted">({option.repoName})</span>
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p
+                    id="dependsOn"
+                    className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted"
+                  >
+                    No other open task in {selectedRepo?.name ?? "this repository"}.
+                  </p>
+                )}
               </Field>
             ) : null}
 

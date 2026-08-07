@@ -110,20 +110,49 @@ export function listTasks(filter?: { status?: string }): TaskWithRepo[] {
 }
 
 /** A task offered as a selectable prerequisite in the "Depends on" picker. */
-export type DependencyOption = { id: string; title: string; repoName: string };
+export type DependencyOption = { id: string; title: string; repoId: string; repoName: string };
+
+/**
+ * Statuses that disqualify a task as a prerequisite: `completed` because a
+ * finished task is not a meaningful one, and the other three because they can
+ * never reach `COMPLETED` — picking one would park the dependent task forever
+ * (see `incompleteDependencies`).
+ */
+const UNSELECTABLE_DEPENDENCY_STATUSES: ReadonlySet<TaskRow["status"]> = new Set([
+  "completed",
+  "rejected",
+  "failed",
+  "cancelled",
+]);
 
 /**
  * Candidates for the "Depends on" picker: every task except `excludeId`
- * (the task being edited cannot depend on itself) and every task already
- * `completed` (a finished task is not a meaningful prerequisite).
+ * (the task being edited cannot depend on itself) and every task in an
+ * unselectable status.
+ *
+ * `repoId` narrows the result to a single repository, since a prerequisite is
+ * only meaningful against the code the task itself will change. Passing
+ * nothing (or an empty string) returns candidates across every repository —
+ * which is what the forms ask for, so the client can re-filter as the
+ * "Repository" select changes without another round trip.
  *
  * Relies on `tasks.status` staying in lockstep with `currentStage` — enforced
  * by convention in `setTaskStage`/`statusForStage`, not by a constraint.
  */
-export function listDependencyOptions(excludeId?: string): DependencyOption[] {
+export function listDependencyOptions(excludeId?: string, repoId?: string): DependencyOption[] {
   return listTasks()
-    .filter((task) => task.status !== "completed" && task.status !== "rejected" && task.status !== "failed" && task.status !== "cancelled" && task.id !== excludeId)
-    .map((task) => ({ id: task.id, title: task.title, repoName: task.repo.name }));
+    .filter(
+      (task) =>
+        !UNSELECTABLE_DEPENDENCY_STATUSES.has(task.status) &&
+        task.id !== excludeId &&
+        (!repoId || task.repoId === repoId),
+    )
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      repoId: task.repoId,
+      repoName: task.repo.name,
+    }));
 }
 
 /** A file ready to persist: already read into memory and validated. */
