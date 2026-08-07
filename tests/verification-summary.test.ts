@@ -62,6 +62,18 @@ describe("summarizeVerification", () => {
     const unspawnable = [row({ kind: "install", exitCode: null, timedOut: false })];
     expect(summarizeVerification(unspawnable)).toMatchObject({ status: "errored" });
   });
+
+  it("is errored — never failed — for a real non-zero install exit code", () => {
+    // `runVerification` itself classifies a non-zero `install` exit as
+    // `errored`, never `failed` (§6.3, environment not code). The summary
+    // must draw the same line rather than treating any non-zero exit as a
+    // code failure regardless of which command produced it.
+    const rows = [row({ kind: "install", command: "npm ci", exitCode: 1 })];
+    expect(summarizeVerification(rows)).toEqual({
+      status: "errored",
+      reason: "`npm ci` exited 1",
+    });
+  });
 });
 
 describe("verificationBadgeTone", () => {

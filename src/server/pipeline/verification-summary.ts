@@ -31,6 +31,17 @@ export function summarizeVerification(rows: VerificationRunRow[]): VerificationS
     };
   }
 
+  // A non-zero `install` exit is an environment failure, never a code
+  // failure — the same distinction `runVerification` draws (§6.3). Anything
+  // else non-zero (build, test, lint) is a real verdict on the code.
+  const environmentFailure = rows.find((row) => row.kind === "install" && row.exitCode !== 0);
+  if (environmentFailure) {
+    return {
+      status: "errored",
+      reason: `\`${environmentFailure.command}\` exited ${environmentFailure.exitCode}`,
+    };
+  }
+
   const failed = rows.find((row) => row.exitCode !== 0);
   if (failed) {
     return { status: "failed", failedCommand: failed.command, exitCode: failed.exitCode };
