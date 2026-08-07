@@ -45,7 +45,7 @@ export type CardMenuDependency = { id: string; title: string; status: string };
 
 type Action = "start" | "cancel" | "delete" | null;
 
-const dropdownMenuItemClassName = cn(
+export const dropdownMenuItemClassName = cn(
   "focus:text-accent-foreground relative flex w-full cursor-default items-center rounded-sm px-2 py-1.5",
   "text-left text-xs outline-hidden select-none",
   "data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50",

@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { TaskSelectCheckbox } from "@/components/batch-start";
+import { ClosedTaskCardMenu } from "@/components/closed-task-card-menu";
 import { PulseDot } from "@/components/pulse-dot";
 import {
   TaskCardMenu,
@@ -38,6 +39,9 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
   const needsAttention = task.status === "awaiting_gate";
   const isGateQueued = task.status === "gate_queued";
   const notStarted = task.currentStage === "CREATED";
+  // Every card shown under "Not delivered" — rejected, failed, or cancelled
+  // alike — gets the "Move to Created" menu instead of a plain indicator.
+  const isClosed = ["REJECTED", "FAILED", "CANCELLED"].includes(task.currentStage);
   // On-queue tasks share `currentStage === "CREATED"` with freshly-created
   // ones (see the board-splitting comment below), but they're already queued
   // and shouldn't be selectable for a batch start.
@@ -88,6 +92,8 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
             title={capacityBlockedReason(capacity) ?? "Approved, waiting for a slot to free up"}
             aria-label="Approved, waiting for a slot to free up"
           />
+        ) : isClosed ? (
+          <ClosedTaskCardMenu taskId={task.id} taskTitle={task.title} />
         ) : null}
       </div>
 

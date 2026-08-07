@@ -169,3 +169,57 @@ describe("TaskBoard column split", () => {
     expect(countIn("On Queue")).toBe("1");
   });
 });
+
+/**
+ * S1 — every card in "Not delivered" (`REJECTED`/`FAILED`/`CANCELLED`) gets
+ * an options menu; every other column's header controls are unaffected.
+ */
+describe("TaskBoard 'Not delivered' options menu", () => {
+  it.each(["REJECTED", "FAILED", "CANCELLED"] as const)(
+    "renders a 'Task actions' trigger for a %s card under 'Not delivered'",
+    (stage) => {
+      renderBoard([
+        makeTask({ id: `task_${stage}`, title: `Closed ${stage}`, currentStage: stage, status: stage.toLowerCase() as never }),
+      ]);
+
+      const closedColumn = column("Not delivered");
+      expect(within(closedColumn).getByText(`Closed ${stage}`)).toBeTruthy();
+      expect(within(closedColumn).getByRole("button", { name: "Task actions" })).toBeTruthy();
+    },
+  );
+
+  it("keeps the title link independently clickable, as a sibling of the trigger", () => {
+    renderBoard([
+      makeTask({ id: "task_rejected", title: "Rejected one", currentStage: "REJECTED", status: "rejected" }),
+    ]);
+
+    const closedColumn = column("Not delivered");
+    const titleLink = within(closedColumn).getByRole("link", { name: "Rejected one" });
+    const trigger = within(closedColumn).getByRole("button", { name: "Task actions" });
+    expect(titleLink).toBeTruthy();
+    expect(trigger.closest("a")).toBeNull();
+    expect(titleLink.closest("button")).toBeNull();
+  });
+
+  it("opens 'Move to Created' from a closed card's menu", async () => {
+    renderBoard([
+      makeTask({ id: "task_failed", title: "Failed one", currentStage: "FAILED", status: "failed" }),
+    ]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Task actions" }));
+
+    expect(screen.getByRole("menuitem", { name: "Move to Created" })).toBeTruthy();
+  });
+
+  it("does not add the closed-column menu to running, gate, or queued indicators", () => {
+    renderBoard([
+      makeTask({ id: "task_running", title: "Running one", currentStage: "DEVELOPMENT", status: "running" }),
+      makeTask({ id: "task_gate", title: "Gate one", currentStage: "PLAN_GATE", status: "awaiting_gate" }),
+    ]);
+
+    expect(screen.queryByRole("button", { name: "Task actions" })).toBeNull();
+    expect(screen.getByTitle("An agent is running")).toBeTruthy();
+    expect(screen.getByTitle("Waiting for your approval")).toBeTruthy();
+  });
+});
