@@ -11,6 +11,26 @@ import { THEMES } from "../settings/store";
  * forms so both sides validate against the same rules.
  */
 
+/**
+ * A close but not exhaustive subset of `git check-ref-format`'s rules — just
+ * enough to catch what would otherwise fail obscurely at `checkoutBranch`
+ * time. Returns the violation message, or `null` when `value` (already
+ * trimmed) is legal.
+ */
+function branchNameViolation(value: string): string | null {
+  if (value === "@") return "That is not a valid branch name.";
+  if (value.length > 200) return "Branch names can be at most 200 characters.";
+  if (/[\s~^:?*[`]/.test(value)) {
+    return "Branch names cannot contain spaces or any of ~ ^ : ? * [ `.";
+  }
+  if (value.includes("..")) return "Branch names cannot contain \"..\".";
+  if (/^[-./]/.test(value)) return "Branch names cannot start with -, ., or /.";
+  if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) {
+    return "Branch names cannot end with /, ., or .lock.";
+  }
+  return null;
+}
+
 /** The fields a task carries, shared by creation and editing. */
 export const taskFieldsSchema = z.object({
   repoId: z.string().min(1, "Select a repository."),
@@ -23,6 +43,30 @@ export const taskFieldsSchema = z.object({
   priority: z.enum(PRIORITIES).default("medium"),
   /** Park at HUMAN_CODE_REVIEW before delivery. Not changeable after start. */
   requireHumanCodeReview: z.boolean().default(false),
+  /**
+   * Overrides the auto-generated `pipeline/{taskId}-{slug}` branch. Only the
+   * create path (`POST /api/tasks`) reads it — see `service.ts`'s
+   * `createTask` and `EditableTaskFields`, which deliberately does not carry
+   * it, since editing a task's branch after creation is out of scope.
+   *
+   * A blank/whitespace-only value is treated as "not provided", matching the
+   * fallback-to-auto-generation behavior; only a non-empty value is checked
+   * against git's ref-name rules.
+   */
+  branchName: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => (value === "" ? undefined : value))
+    .transform((value, ctx) => {
+      if (value === undefined) return undefined;
+      const violation = branchNameViolation(value);
+      if (violation) {
+        ctx.addIssue({ code: "custom", message: violation });
+        return z.NEVER;
+      }
+      return value;
+    }),
   /**
    * Ids of tasks that must reach `COMPLETED` before this one can be started.
    *
