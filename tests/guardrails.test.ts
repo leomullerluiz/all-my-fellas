@@ -130,6 +130,14 @@ describe("createPermissionGuard", () => {
       ).resolves.toMatchObject({ behavior: "deny" });
     });
 
+    it("denies Grep when its glob field (not just pattern) names a credential file", async () => {
+      // `pathsInInput` reads both `pattern` and `glob` — Grep's schema carries
+      // its file filter in `glob`, separate from the search `pattern` itself.
+      await expect(
+        developerGuard("Grep", { pattern: "TODO", glob: "**/.env" }, options),
+      ).resolves.toMatchObject({ behavior: "deny" });
+    });
+
     it("still allows a non-credential path — the check is path-shaped, not name-substring-shaped", async () => {
       await expect(
         developerGuard("Read", { file_path: "src/server/config/env.ts" }, options),
