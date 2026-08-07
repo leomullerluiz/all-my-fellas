@@ -149,3 +149,25 @@ describe("normalizeTranscript — provider fallback", () => {
     expect(entries[0].unrecognised).toBe(true);
   });
 });
+
+describe("normalizeTranscript — write-time truncation marker", () => {
+  it("reports truncated: true when the array contains capTranscript's marker, without the caller passing it explicitly", () => {
+    // `service.ts`'s `capTranscript` drops middle entries and splices in
+    // `{ truncated: true, reason: "…" }` in their place (§11). The route must
+    // not have to remember to pass a separate flag for this to surface.
+    const fixture = [
+      { type: "result", subtype: "success", result: "head" },
+      { truncated: true, reason: "transcript exceeded MAX_TRANSCRIPT_BYTES; middle entries dropped" },
+      { type: "result", subtype: "success", result: "tail" },
+    ];
+
+    const { truncated } = normalizeTranscript("claude", fixture);
+    expect(truncated).toBe(true);
+  });
+
+  it("does not mistake an ordinary record for the marker", () => {
+    const fixture = [{ type: "result", subtype: "success", result: "x", truncated: false }];
+    const { truncated } = normalizeTranscript("claude", fixture);
+    expect(truncated).toBe(false);
+  });
+});

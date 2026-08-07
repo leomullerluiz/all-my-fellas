@@ -285,6 +285,22 @@ function mapGemini(raw: unknown[]): TranscriptEntry[] {
 
 // ---- Sniffing (rows written before `stage_runs.provider` existed) --------
 
+/**
+ * Recognises `capTranscript`'s own marker (`service.ts`'s `{ truncated: true,
+ * reason: "…" }`), written into the array in place of the entries it dropped.
+ * Detected here rather than trusted only via the `truncated` parameter, since
+ * a caller that forgets to pass it (or a row where retention appended a
+ * marker of its own) must still surface as truncated rather than silently not.
+ */
+function isTruncationMarker(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.truncated === true &&
+    typeof value.reason === "string" &&
+    Object.keys(value).length === 2
+  );
+}
+
 function sniffProvider(raw: unknown[]): LlmProviderId | "unknown" {
   const first = raw.find((entry) => isRecord(entry)) as Record<string, unknown> | undefined;
   if (!first) return "unknown";
@@ -326,5 +342,7 @@ export function normalizeTranscript(
           ? mapGemini(raw)
           : raw.map((entry, index) => ({ index, role: "system" as const, kind: "meta" as const, text: JSON.stringify(entry), unrecognised: true as const }));
 
-  return { provider: resolved, entries, truncated };
+  const markerPresent = raw.some(isTruncationMarker);
+
+  return { provider: resolved, entries, truncated: truncated || markerPresent };
 }
