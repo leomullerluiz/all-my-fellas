@@ -124,4 +124,18 @@ describe("executeTool — denials", () => {
     const result = await executeTool("Bash", { command: "git push origin main" }, developer, workspacePath);
     expect(result.isError).toBe(true);
   });
+
+  // S2 — the same credential-path check `guardrails.test.ts` exercises
+  // against `createPermissionGuard` directly, proven here over the shared
+  // path OpenAI/Gemini tool calls actually run through.
+  it("denies a Read against a credential file", async () => {
+    const result = await executeTool("Read", { file_path: ".env" }, developer, workspacePath);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("credential material");
+  });
+
+  it("denies a Glob whose pattern names a credential file", async () => {
+    const result = await executeTool("Glob", { pattern: "**/.env" }, developer, workspacePath);
+    expect(result.isError).toBe(true);
+  });
 });

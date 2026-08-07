@@ -103,4 +103,48 @@ describe("createPermissionGuard", () => {
       behavior: "deny",
     });
   });
+
+  // S2 — the credential-read gap (spec-audit-trail.md §10.1, §12.4): Bash was
+  // already denied against these paths; Read/Glob/Grep were not.
+  describe("credential paths", () => {
+    const developerGuard = createPermissionGuard(developer, WORKSPACE);
+
+    it.each([".env", ".env.production", "id_rsa", ".ssh/config", ".npmrc"])(
+      "denies Read against %s",
+      async (target) => {
+        await expect(developerGuard("Read", { file_path: target }, options)).resolves.toMatchObject({
+          behavior: "deny",
+        });
+      },
+    );
+
+    it("denies Glob when the pattern itself names a credential file", async () => {
+      await expect(
+        developerGuard("Glob", { pattern: "**/.env" }, options),
+      ).resolves.toMatchObject({ behavior: "deny" });
+    });
+
+    it("denies Grep when the pattern names a credential file", async () => {
+      await expect(
+        developerGuard("Grep", { pattern: ".env" }, options),
+      ).resolves.toMatchObject({ behavior: "deny" });
+    });
+
+    it("still allows a non-credential path — the check is path-shaped, not name-substring-shaped", async () => {
+      await expect(
+        developerGuard("Read", { file_path: "src/server/config/env.ts" }, options),
+      ).resolves.toMatchObject({ behavior: "allow" });
+      await expect(
+        developerGuard("Grep", { pattern: "TODO", path: "src" }, options),
+      ).resolves.toMatchObject({ behavior: "allow" });
+    });
+
+    it("denial carries the guard's specific reason, not a generic string", async () => {
+      const verdict = await developerGuard("Read", { file_path: ".env" }, options);
+      expect(verdict).toMatchObject({ behavior: "deny" });
+      if (verdict?.behavior === "deny") {
+        expect(verdict.message).toContain("credential material");
+      }
+    });
+  });
 });
