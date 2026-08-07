@@ -16,6 +16,15 @@
 export type RedactionResult = { text: string; hits: number };
 
 /**
+ * How many distinct regex rules `redactSecrets` runs — reported in the export
+ * payload (§9) alongside `hits`, so a consumer can tell what was checked
+ * without reading this module: the remote-credential and Basic-auth-header
+ * shapes `redactRemote` already covers, PEM blocks, `"name": "value"` JSON
+ * pairs, `NAME=value` assignments, and known token prefixes.
+ */
+export const PATTERN_COUNT = 6;
+
+/**
  * Applies `pattern` to `text`, counting how many times `replacer` ran.
  *
  * `replacer` receives the full match first, then each capture group —
