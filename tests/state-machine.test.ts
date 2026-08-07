@@ -94,6 +94,26 @@ describe("verification", () => {
       ),
     ).toMatchObject({ type: "run", stage: "DEVELOPMENT" });
   });
+
+  it("names the failing command in the terminal reason once the budget is spent", () => {
+    // `executeVerification` supplies `detail` with the failing command and
+    // exit code (spec §9.1's worked example); the generic "Verification
+    // failed" is only a fallback for a signal that omits it.
+    const transition = nextTransition(
+      "VERIFICATION",
+      {
+        kind: "stage_succeeded",
+        stage: "VERIFICATION",
+        reviewVerdict: "changes_requested",
+        detail: "Verification failed (`npm run build` exited 1)",
+      },
+      { ...base, developmentAttempts: 3 },
+    );
+    expect(transition).toMatchObject({ type: "terminal", stage: "FAILED" });
+    expect((transition as { reason: string }).reason).toContain(
+      "Verification failed (`npm run build` exited 1)",
+    );
+  });
 });
 
 describe("code review", () => {

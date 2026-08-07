@@ -148,6 +148,29 @@ describe("executeVerification", () => {
     expect(artifact!.contentMd).toContain("Failed");
   });
 
+  it("names the failing command in the task's failureReason once the rework budget is exhausted", async () => {
+    const { task, run } = setUpAtVerification({
+      verifyInstall: node("process.exit(0)"),
+      verifyBuild: node("process.exit(1)"),
+    });
+
+    // Three prior DEVELOPMENT runs exhausts the default two-cycle budget
+    // (reworkOrFail fails once developmentAttempts > reworkMaxCycles).
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      service.createStageRun({ taskId: task.id, stage: "DEVELOPMENT", attempt });
+    }
+
+    await execute.executeVerification(run.id);
+
+    const finished = service.getTask(task.id)!;
+    expect(finished.currentStage).toBe("FAILED");
+    // Not the generic "Verification failed" alone — the command and its exit
+    // code, per spec §9.1's worked example.
+    expect(finished.failureReason).toContain("`" + node("process.exit(1)") + "`");
+    expect(finished.failureReason).toContain("exited 1");
+    expect(finished.failureReason).toContain("rework budget");
+  });
+
   it("keeps verification_runs rows after the workspace is deleted (executeCleanup)", async () => {
     const { task, run } = setUpAtVerification({ verifyInstall: node("process.exit(0)") });
     await execute.executeVerification(run.id);

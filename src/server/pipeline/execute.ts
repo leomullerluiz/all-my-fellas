@@ -456,7 +456,17 @@ export async function executeVerification(stageRunId: string): Promise<void> {
   const reviewVerdict: ReviewVerdict =
     outcome.status === "passed" || outcome.status === "skipped" ? "approved" : "changes_requested";
 
-  advanceTask(task.id, { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict });
+  // Named, not generic: if the rework budget is spent on this failure, the
+  // terminal message should say which command broke rather than just that
+  // "verification failed" (spec §9.1's worked example).
+  const detail =
+    outcome.status === "failed"
+      ? `Verification failed (${outcome.failed
+          .map((result) => `\`${result.command}\` exited ${result.exitCode}`)
+          .join(", ")})`
+      : undefined;
+
+  advanceTask(task.id, { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict, detail });
 }
 
 function pullRequestResultCell(run: { exitCode: number | null; timedOut: boolean }): string {

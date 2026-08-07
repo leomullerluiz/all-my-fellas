@@ -26,9 +26,11 @@ export type PipelineSignal =
    *
    * `reviewVerdict` is shared by `CODE_REVIEW` and `QA`: both produce the same
    * approve / request-changes shape, and two near-identical fields would invite
-   * passing the wrong one.
+   * passing the wrong one. `detail`, when present, replaces the generic rework
+   * reason with one naming what actually happened — `VERIFICATION` is the only
+   * caller with something more specific than "requested changes" to say.
    */
-  | { kind: "stage_succeeded"; stage: Stage; reviewVerdict?: ReviewVerdict }
+  | { kind: "stage_succeeded"; stage: Stage; reviewVerdict?: ReviewVerdict; detail?: string }
   /** An agent (or the delivery step) exhausted its retries. */
   | { kind: "stage_failed"; stage: Stage; error: string }
   /** A human recorded a decision on a gate. */
@@ -195,7 +197,7 @@ export function nextTransition(
     // rule against a second near-identical field.
     return signal.reviewVerdict === "approved"
       ? { type: "run", stage: "CODE_REVIEW", attempt: 1 }
-      : reworkOrFail(context, "Verification failed");
+      : reworkOrFail(context, signal.detail ?? "Verification failed");
   }
 
   if (current === "CODE_REVIEW") {
