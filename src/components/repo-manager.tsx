@@ -119,6 +119,8 @@ export function RepoManager({
       warning?: string;
       verified?: boolean;
       detectedDefaultBranch?: string;
+      repo?: { id: string };
+      suggestedCommands?: Partial<Record<"install" | "build" | "test" | "lint", string>>;
     };
 
     setBusy(false);
@@ -150,6 +152,25 @@ export function RepoManager({
     } else {
       toast.warning(`Saved, but the access check failed: ${payload.warning ?? "unknown reason"}`);
     }
+
+    // Detection never saves anything (§5.2) — the suggestion is prefilled into
+    // the commands panel and the operator still has to press Save.
+    const suggestions = payload.suggestedCommands;
+    if (payload.repo && suggestions && Object.values(suggestions).some((command) => command)) {
+      setCommandFields((current) => ({
+        ...current,
+        [payload.repo!.id]: {
+          verifyInstall: suggestions.install ?? "",
+          verifyBuild: suggestions.build ?? "",
+          verifyTest: suggestions.test ?? "",
+          verifyLint: suggestions.lint ?? "",
+          verifyTimeoutSeconds: "600",
+        },
+      }));
+      setEditingCommands(payload.repo.id);
+      toast.info("Detected verification commands from the repository — review and save them below.");
+    }
+
     router.refresh();
   }
 
