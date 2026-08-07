@@ -490,8 +490,13 @@ function verificationSection(taskId: string): string {
   ].join("\n");
 }
 
-/** Builds the pull request body from the stories and the developer report. */
-function buildPullRequestBody(taskId: string, taskTitle: string): string {
+/**
+ * Builds the pull request body from the stories and the developer report.
+ *
+ * Exported for `tests/execute-pr-body.test.ts` — the only other caller,
+ * `executeDelivery`, needs a real git push and provider API call to reach it.
+ */
+export function buildPullRequestBody(taskId: string, taskTitle: string): string {
   const stories = latestArtifact(taskId, "stories")?.contentMd ?? "";
   const devReport = latestArtifact(taskId, "dev_report")?.contentMd ?? "";
   const qaReport = latestArtifact(taskId, "qa_report")?.contentMd ?? "";
