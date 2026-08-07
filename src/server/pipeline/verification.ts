@@ -3,6 +3,7 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { resolveWorkspacesDir } from "../config/env";
 import type { RepoRow } from "../db/schema";
 import type { PipelineEvent, VerificationKind } from "../events/store";
+import { redactRemote } from "../git/workspace";
 import { isInsideWorkspace } from "./guardrails";
 
 /**
@@ -182,7 +183,7 @@ function runCommand(options: RunCommandOptions): Promise<CommandResult> {
     } catch (error) {
       // A command absent from PATH (or otherwise unspawnable) is `errored`,
       // never a silent zero-exit or an empty result — see spec §10.4.
-      const message = error instanceof Error ? error.message : String(error);
+      const message = redactRemote(error instanceof Error ? error.message : String(error));
       resolve({
         kind,
         command,
@@ -220,7 +221,11 @@ function runCommand(options: RunCommandOptions): Promise<CommandResult> {
     }, FLUSH_INTERVAL_MS);
 
     function onData(stream: "stdout" | "stderr", data: Buffer): void {
-      const text = data.toString("utf8");
+      // Redacted before it is captured or streamed at all — see spec §11.3.
+      // Install/build output can legitimately echo a credential-bearing remote
+      // URL (a private git dependency failing to resolve, for instance), and
+      // this text reaches the database, the live SSE log and the PR body.
+      const text = redactRemote(data.toString("utf8"));
       if (stream === "stdout") stdoutCaptured = appendCapped(stdoutCaptured, text, MAX_CAPTURED_CHARS);
       else stderrCaptured = appendCapped(stderrCaptured, text, MAX_CAPTURED_CHARS);
 

@@ -221,6 +221,34 @@ describe("runVerification — output capture", () => {
   });
 });
 
+describe("runVerification — redaction", () => {
+  it("redacts a credential-bearing remote URL from both persisted and streamed output", async () => {
+    // Install/build output can legitimately echo a credential-bearing URL —
+    // e.g. a private git dependency failing to resolve. Spec §11.3 requires
+    // every persisted and streamed chunk to pass through `redactRemote`.
+    const repo = repoFixture({
+      verifyInstall: node(
+        'process.stdout.write("Cloning https://x-access-token:ghp_secretvalue123@github.com/acme/private.git\\n"); process.exit(1)',
+      ),
+    });
+    const { events, emit } = collectEvents();
+    const outcome = await runVerification(repo, workspacePath, emit);
+
+    expect(outcome.status).toBe("errored");
+    if (outcome.status === "errored") {
+      const [result] = outcome.results;
+      expect(result.stdoutTail).not.toContain("ghp_secretvalue123");
+      expect(result.stdoutTail).toContain("https://***@github.com/acme/private.git");
+    }
+
+    const streamed = events
+      .filter((event) => event.type === "verification_output")
+      .map((event) => (event.type === "verification_output" ? event.chunk : ""))
+      .join("");
+    expect(streamed).not.toContain("ghp_secretvalue123");
+  });
+});
+
 describe("runVerification — environment allowlist", () => {
   it("gives the child CI and PATH but never a credential-shaped variable", async () => {
     const originalToken = process.env.GITHUB_TOKEN;
