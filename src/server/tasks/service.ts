@@ -571,6 +571,14 @@ export function saveArtifact(input: {
       stageRunId: input.stageRunId,
       type: input.type,
       contentMd: input.contentMd,
+      // Explicit, millisecond-resolution `Date.now()` rather than the column's
+      // `unixepoch() * 1000` default, which is only second-resolution — SQLite's
+      // `unixepoch()` truncates to whole seconds regardless of the `* 1000`.
+      // `latestArtifactSince` compares this column against a `Date.now()`-sourced
+      // `sinceMs`, so both sides need real millisecond precision or an artifact
+      // saved within the same wall-clock second as the cycle boundary could be
+      // wrongly excluded as stale.
+      createdAt: Date.now(),
     })
     .returning()
     .get();

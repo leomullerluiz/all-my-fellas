@@ -31,8 +31,6 @@ afterAll(async () => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 describe("stale reviewer artifacts across a VERIFICATION-triggered rework cycle", () => {
   it("excludes cycle 1's code_review_report once VERIFICATION sends cycle 2 back with no review", async () => {
     const repo = service.createRepo({
@@ -63,12 +61,6 @@ describe("stale reviewer artifacts across a VERIFICATION-triggered rework cycle"
       type: "code_review_report",
       contentMd: "## Verdict\n\nVerdict: approved\n\n## Summary\n\nLooks fine.\n",
     });
-
-    // `artifacts.created_at` defaults to `unixepoch() * 1000` — second
-    // resolution, unlike `stage_runs.finished_at`'s `Date.now()` — so the
-    // gap between steps has to clear a full second for the comparison to be
-    // unambiguous, both here and in production.
-    await sleep(1_100);
 
     // Cycle 2: DEVELOPMENT #2 finishes, but VERIFICATION #2 fails — no
     // CODE_REVIEW run happens in this cycle at all.
@@ -109,20 +101,8 @@ describe("stale reviewer artifacts across a VERIFICATION-triggered rework cycle"
     const dev1 = service.createStageRun({ taskId: task.id, stage: "DEVELOPMENT", attempt: 1 });
     service.markStageRunStatus(dev1.id, "done");
 
-    // `artifacts.created_at` defaults to `unixepoch() * 1000` — second
-    // resolution, unlike `stage_runs.finished_at`'s `Date.now()` — so the
-    // gap between steps has to clear a full second for the comparison to be
-    // unambiguous, both here and in production.
-    await sleep(1_100);
-
     const dev2 = service.createStageRun({ taskId: task.id, stage: "DEVELOPMENT", attempt: 2 });
     service.markStageRunStatus(dev2.id, "done");
-
-    // `artifacts.created_at` defaults to `unixepoch() * 1000` — second
-    // resolution, unlike `stage_runs.finished_at`'s `Date.now()` — so the
-    // gap between steps has to clear a full second for the comparison to be
-    // unambiguous, both here and in production.
-    await sleep(1_100);
 
     const review = service.createStageRun({ taskId: task.id, stage: "CODE_REVIEW", attempt: 1 });
     service.markStageRunStatus(review.id, "done");
