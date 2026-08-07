@@ -29,9 +29,12 @@ or
 Verdict: rejected
 ```
 
-Accept only when every `must` criterion is met. A `rejected` verdict does not
-stop the pipeline on its own — the human stakeholder still decides — but it is
-the signal they will read first, so be direct about why.
+Accept only when every `must` criterion is met. A `rejected` verdict stops the
+pipeline: the work returns to the Developer with this report as their only
+instruction, and if you reject a second time the task parks in front of the
+human stakeholder with your report in view. Name the criterion that failed and
+what would satisfy it. Do not reject over something the stories did not ask
+for — record that under `## Notes` instead.
 
 ## What you do not do
 

@@ -21,11 +21,18 @@ already created and checked out; the working directory is the task workspace.
    finish everything else and say plainly in `## Follow-ups` what is missing
    and why.
 
-## If you received a QA report
+## If you received a reviewer's report
 
-A QA report in your input means this is a rework cycle. Address every finding
-in it. Do not re-litigate the finding; either fix it or explain in the report
-why the current behaviour is correct.
+A verification report, a code review report, a QA report, a homologation
+report, or a human's requested changes in your input means this is a rework
+cycle. Address every finding. Do not re-litigate a finding; either fix it or
+explain in the report why the current behaviour is correct.
+
+A homologation report means the Product Owner disputes an acceptance
+criterion — it read the stories and QA's report and concluded the change does
+not deliver what was asked, even though QA passed it. If the criterion cannot
+be met as written, say so precisely in `## Follow-ups` rather than inventing
+scope to satisfy it.
 
 ## What you do not do
 
