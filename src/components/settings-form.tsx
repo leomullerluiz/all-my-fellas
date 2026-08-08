@@ -316,6 +316,39 @@ export function SettingsForm({
                 </span>
               </label>
             </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted">No-approval automation</span>
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={settings.noApprovalAutomation}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      noApprovalAutomation: event.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  Let tasks run through to a PR with <strong>no human gates at all</strong> — see
+                  the warning below.
+                </span>
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-1.5 rounded-md border border-danger/40 bg-danger/10 p-3 text-xs text-danger sm:col-span-2">
+              <span className="font-semibold">⚠ Security warning</span>
+              <span>
+                Enabling <strong>No-approval automation</strong> skips both plan review (the plan
+                gate) and final PR approval (the stakeholder gate) for every task — the pipeline
+                will implement and open a pull request without anyone approving the plan or the
+                delivered change along the way. A second homologation rejection (or one with no
+                rework budget left) still stops at the stakeholder gate; every other gate does
+                not. Only enable this if you fully trust the automation to ship unreviewed code.
+              </span>
+            </div>
           </div>
         </CardBody>
       </Card>
