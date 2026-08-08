@@ -81,6 +81,7 @@ function contextFor(task: TaskRow): PipelineContext {
     reworkBudgetGrant: task.reworkBudgetGrant,
     planGateRequired,
     humanCodeReviewRequired: task.requireHumanCodeReview,
+    noApprovalGatesEnabled: settings.noApprovalAutomation,
   };
 }
 
@@ -129,6 +130,9 @@ export function applyTransition(taskId: string, transition: Transition): void {
         failedStage: null,
         failureKind: null,
       });
+      if (transition.bypassedGate) {
+        appendEvent(taskId, null, { type: "gate_bypassed", gate: transition.bypassedGate });
+      }
       scheduleStage(taskId, transition.stage);
       break;
     }
