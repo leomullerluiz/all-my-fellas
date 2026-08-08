@@ -37,6 +37,16 @@ export type AppSettings = {
   reworkMaxCycles: number;
   /** Skip the human plan gate when the Architect rates criticality as low. */
   autoApprovePlanForLowCriticality: boolean;
+  /**
+   * Instance-wide kill switch for `PLAN_GATE` and `STAKEHOLDER_GATE`: when
+   * enabled, every task skips both, running straight through to `DELIVERY`
+   * without a human ever approving the plan or the final PR. The
+   * `PO_HOMOLOGATION` escalation branch (second rejection, or the rework
+   * budget exhausted) still parks on `STAKEHOLDER_GATE` regardless — see
+   * `state-machine.ts`. Defaults to `false`; there is no per-user or
+   * per-project scoping, since the codebase has no such model.
+   */
+  noApprovalAutomation: boolean;
   /** Pre-selected value of "require human code review" on the new-task form. */
   humanCodeReviewDefault: boolean;
   /** Per-stage turn ceiling; caps the cost of a runaway agent. */
@@ -82,6 +92,9 @@ export function defaultSettings(): AppSettings {
     // The pipeline already has two mandatory human gates; a third by default
     // would triple the interaction cost of every task.
     humanCodeReviewDefault: false,
+    // Off by default: skipping both approval gates instance-wide is a
+    // deliberate, explicit opt-in, not something a fresh install should do.
+    noApprovalAutomation: false,
     maxTurns: {
       STAKEHOLDER_REFINEMENT: 6,
       PO_REFINEMENT: 12,
