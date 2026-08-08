@@ -74,6 +74,8 @@ export type TaskExport = {
     criticality: string | null;
     requireHumanCodeReview: boolean;
     prUrl: string | null;
+    /** `'created'` | `'manual'` | `null` — what `prUrl` actually is. See stories.md S1. */
+    deliveryOutcome: string | null;
   };
   repo: { name: string; provider: string; defaultBranch: string };
   stageRuns: ExportedStageRun[];
@@ -206,6 +208,7 @@ export function buildTaskExport(taskId: string, options: { includeTranscripts?: 
       criticality: task.criticality,
       requireHumanCodeReview: task.requireHumanCodeReview,
       prUrl: task.prUrl,
+      deliveryOutcome: task.deliveryOutcome,
     },
     // Explicitly the three fields the record needs — never `credentialRef`,
     // `credentialUsername` or `apiBaseUrl` (§9.1: a variable name is not a

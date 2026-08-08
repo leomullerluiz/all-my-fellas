@@ -211,6 +211,67 @@ const ACTION_SUCCESS_TOAST: Record<string, string> = {
 };
 
 /**
+ * Shown instead of the "Open {noun} ↗" link when `deliveryOutcome ===
+ * 'manual'` — the branch pushed, but the change request did not open
+ * automatically. See stories.md S1.
+ *
+ * "Try again" re-invokes only the change-request call against the
+ * already-pushed branch (`POST /api/tasks/:id/deliver-retry`); it does not
+ * push again and does not create a new `DELIVERY` stage run.
+ */
+export function DeliveryOutcomeBanner({
+  taskId,
+  reason,
+  compareUrl,
+  noun,
+}: {
+  taskId: string;
+  reason: string | null;
+  compareUrl: string;
+  noun: string;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  async function tryAgain() {
+    setBusy(true);
+    const response = await fetch(`/api/tasks/${taskId}/deliver-retry`, { method: "POST" });
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      toast.error(payload.error ?? `Could not open the ${noun}.`);
+      setBusy(false);
+      return;
+    }
+
+    toast.success(`${noun[0].toUpperCase()}${noun.slice(1)} opened.`);
+    setBusy(false);
+    router.refresh();
+  }
+
+  return (
+    <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+      <p className="font-medium text-foreground">
+        Branch pushed — the {noun} was not opened.
+      </p>
+      {reason ? <p className="mt-1">{reason}</p> : null}
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <a
+          href={compareUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent underline-offset-2 hover:underline"
+        >
+          Open the compare page ↗
+        </a>
+        <Button variant="secondary" size="sm" disabled={busy} onClick={tryAgain}>
+          {busy ? "Trying again…" : "Try again"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Detail-page controls.
  *
  * A not-yet-started task gets Start / Edit / Delete and deliberately no Cancel:
