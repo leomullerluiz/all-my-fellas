@@ -1,4 +1,4 @@
-import { type Options, type SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import { type CanUseTool, type Options, type SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
 
 import { resolveProviderAuth } from "../../config/env";
 import { createPermissionGuard } from "../guardrails";
@@ -25,6 +25,23 @@ import { StageExecutionError, type RunStageOptions, type StageExecutionResult } 
  * `allowedTools` is deliberately empty: nothing is auto-approved, so the
  * permission guard is consulted for every tool call.
  */
+/**
+ * Wraps the shared guard so a denial reaches the live log and the transcript
+ * with the guard's own reason, at the moment it is decided — rather than the
+ * generic string the `result` frame's `permission_denials` list carries with
+ * no way to tell which rule fired. See spec-audit-trail.md §6.3.
+ */
+function buildGuard(options: RunStageOptions): CanUseTool {
+  const guard = createPermissionGuard(options.role, options.workspacePath);
+  return async (toolName, input, guardOptions) => {
+    const verdict = await guard(toolName, input, guardOptions);
+    if (verdict?.behavior === "deny") {
+      options.onEvent({ type: "agent_tool_denied", tool: toolName, reason: verdict.message });
+    }
+    return verdict;
+  };
+}
+
 function buildOptions(options: RunStageOptions): Options {
   const { role, workspacePath } = options;
 
@@ -34,7 +51,7 @@ function buildOptions(options: RunStageOptions): Options {
     tools: role.allowedTools,
     allowedTools: [],
     permissionMode: role.permissionMode,
-    canUseTool: createPermissionGuard(role, workspacePath),
+    canUseTool: buildGuard(options),
     cwd: workspacePath ?? process.cwd(),
     maxTurns: options.maxTurns,
     abortController: options.abortController,
@@ -107,13 +124,10 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
         outputTokens = message.usage.output_tokens ?? 0;
         numTurns = message.num_turns;
 
-        for (const denial of message.permission_denials) {
-          options.onEvent({
-            type: "agent_tool_denied",
-            tool: denial.tool_name,
-            reason: "Blocked by the pipeline sandbox.",
-          });
-        }
+        // Each denial was already surfaced with its real reason by `buildGuard`
+        // at the moment `canUseTool` decided it; `permission_denials` here is
+        // just the SDK's own after-the-fact tally and carries no reason string
+        // worth re-emitting.
 
         if (message.subtype !== "success") {
           throw new StageExecutionError(

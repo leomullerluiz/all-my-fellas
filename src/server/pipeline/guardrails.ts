@@ -15,6 +15,29 @@ import type { RoleDefinition } from "../agents/roles";
 /** Tools whose input carries a filesystem path we must confine to the workspace. */
 const PATH_TOOLS = new Set(["Read", "Edit", "Write", "NotebookEdit", "Glob", "Grep"]);
 
+/**
+ * Path fragments that identify credential material, shared between the Bash
+ * denylist and the path-tool check below.
+ *
+ * `Bash("cat .env")` was already denied by `DENIED_BASH_PATTERNS`; these two
+ * entries are the same rule, factored out so `Read`/`Glob`/`Grep` are held to
+ * it too — see spec-audit-trail.md §10.1 and §12.4.
+ */
+const CREDENTIAL_PATH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\.env(\.[a-z]+)?\b/, reason: "environment files may hold credentials" },
+  // `id_rsa`/`id_ed25519` start with a word character, so a shared `\b...\b`
+  // around every alternative works for them. `.ssh/`, `.aws/` and `.npmrc`
+  // start with `.` — a non-word character — so a *leading* `\b` only matches
+  // when the character right before it happens to be a word character, which
+  // is never true for a bare path like ".ssh/config" or a path starting right
+  // after a "/". Only the trailing boundary is reliable for those three, the
+  // same shape `.env`'s own pattern above already uses.
+  { pattern: /\bid_rsa\b|\bid_ed25519\b/, reason: "credential material" },
+  { pattern: /\.ssh\//, reason: "credential material" },
+  { pattern: /\.aws\//, reason: "credential material" },
+  { pattern: /\.npmrc\b/, reason: "credential material" },
+];
+
 /** Bash prefixes the read-only roles (Architect, QA) may run. */
 const READ_ONLY_BASH_ALLOWLIST = [
   "git status",
@@ -77,8 +100,7 @@ const DENIED_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
     reason: "provider CLI access is reserved for the worker",
   },
   { pattern: /\bnpm\s+publish\b/, reason: "publishing is out of scope for the pipeline" },
-  { pattern: /\.env(\.[a-z]+)?\b/, reason: "environment files may hold credentials" },
-  { pattern: /\b(id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc)\b/, reason: "credential material" },
+  ...CREDENTIAL_PATH_PATTERNS,
   { pattern: /\bprintenv\b|\benv\s*$|\bset\s*$/, reason: "dumping the environment" },
   {
     /**
@@ -110,15 +132,26 @@ export function isInsideWorkspace(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-/** Collects every value in a tool input that looks like a filesystem path. */
+/**
+ * Collects every value in a tool input that looks like a filesystem path.
+ *
+ * `pattern` and `glob` are here for `Glob`/`Grep`: those tools carry their
+ * target in those fields, not `file_path` — `Glob({ pattern: "**\/.env" })`
+ * carries no key this list omitted before would have caught.
+ */
 function pathsInInput(input: Record<string, unknown>): string[] {
-  const keys = ["file_path", "path", "notebook_path", "filePath"];
+  const keys = ["file_path", "path", "notebook_path", "filePath", "pattern", "glob"];
   const found: string[] = [];
   for (const key of keys) {
     const value = input[key];
     if (typeof value === "string" && value.length > 0) found.push(value);
   }
   return found;
+}
+
+/** True when `candidate` names credential material (`.env`, `id_rsa`, `.ssh/`, …). */
+function isCredentialPath(candidate: string): boolean {
+  return CREDENTIAL_PATH_PATTERNS.some(({ pattern }) => pattern.test(candidate));
 }
 
 export function checkBashCommand(
@@ -196,6 +229,11 @@ export function createPermissionGuard(
 
     if (PATH_TOOLS.has(toolName)) {
       for (const candidate of pathsInInput(input)) {
+        if (isCredentialPath(candidate)) {
+          return deny(
+            `Path "${candidate}" looks like credential material and cannot be read by an agent.`,
+          );
+        }
         if (!isInsideWorkspace(workspacePath, candidate)) {
           return deny(
             `Path "${candidate}" is outside the task workspace and cannot be accessed.`,

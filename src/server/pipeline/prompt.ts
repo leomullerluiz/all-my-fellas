@@ -16,6 +16,14 @@ import { ARTIFACT_FILENAMES, type ArtifactType } from "./stages";
 
 export type ArtifactInput = { type: ArtifactType; content: string };
 
+/**
+ * Bounds the user prompt persisted to `stage_runs.user_prompt` (§4). A
+ * `DEVELOPMENT` rework can embed five artifacts plus a diff supplement —
+ * hundreds of KB — and this is the record of what was actually sent, not a
+ * value recomputed from the artifacts it duplicates.
+ */
+export const MAX_PROMPT_CHARS = 400_000;
+
 export type StagePromptInput = {
   role: RoleDefinition;
   task: {

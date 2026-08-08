@@ -12,6 +12,8 @@ import type { Cadence, ProviderAuth } from "@/server/config/env";
 import { LLM_PROVIDER_IDS, LLM_PROVIDER_LABELS, type LlmProviderId } from "@/server/config/llm-providers";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
 import type { AppSettings } from "@/server/settings/store";
+import type { TranscriptStorageStats } from "@/server/tasks/service";
+import { formatBytes } from "@/lib/utils";
 
 const QUOTA_MODES = [
   { mode: "subscription" as const, label: "Claude subscription" },
@@ -25,13 +27,16 @@ const QUOTA_MODES = [
 export function SettingsForm({
   initial,
   llmCredentials,
+  transcriptStorage,
 }: {
   initial: AppSettings;
   llmCredentials: Record<LlmProviderId, ProviderAuth>;
+  transcriptStorage: TranscriptStorageStats;
 }) {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
+  const [vacuuming, setVacuuming] = useState(false);
 
   function setModel(stage: AgentStage, value: string) {
     setSettings((current) => ({
@@ -86,6 +91,20 @@ export function SettingsForm({
     }
 
     toast.success("Saved. The worker picks the new values up on its next job.");
+    router.refresh();
+  }
+
+  async function runVacuum() {
+    setVacuuming(true);
+    const response = await fetch("/api/settings/vacuum", { method: "POST" });
+    setVacuuming(false);
+
+    if (!response.ok) {
+      const payload = (await response.json()) as { error?: string };
+      toast.error(payload.error ?? "Could not run VACUUM.");
+      return;
+    }
+    toast.success("VACUUM complete.");
     router.refresh();
   }
 
@@ -256,6 +275,27 @@ export function SettingsForm({
               />
             </Field>
 
+            <Field
+              label="Transcript retention (days)"
+              htmlFor="transcriptRetentionDays"
+              hint="How long full agent transcripts are kept before being replaced with a tombstone. Blank keeps them forever — the default, since a transcript cannot be reconstructed once pruned."
+            >
+              <Input
+                id="transcriptRetentionDays"
+                type="number"
+                min={0}
+                max={3650}
+                value={settings.transcriptRetentionDays ?? ""}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setSettings((current) => ({
+                    ...current,
+                    transcriptRetentionDays: raw === "" ? null : Number(raw),
+                  }));
+                }}
+              />
+            </Field>
+
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-muted">Automatic plan gate</span>
               <label className="flex items-start gap-2 text-xs">
@@ -327,6 +367,23 @@ export function SettingsForm({
               </div>
             ))}
           </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Transcript storage</CardTitle>
+          <CardDescription>
+            {transcriptStorage.count} transcript{transcriptStorage.count === 1 ? "" : "s"} ·{" "}
+            {formatBytes(transcriptStorage.totalBytes)} in <code className="font-mono">agent_runs</code>.
+            The retention sweep above (if configured) replaces old transcripts with a tombstone; this
+            button rewrites the database file to reclaim the freed space.
+          </CardDescription>
+        </CardHeader>
+        <CardBody>
+          <Button type="button" variant="secondary" disabled={vacuuming} onClick={() => void runVacuum()}>
+            {vacuuming ? "Running VACUUM…" : "Run VACUUM"}
+          </Button>
         </CardBody>
       </Card>
 

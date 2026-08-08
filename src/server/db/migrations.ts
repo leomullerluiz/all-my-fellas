@@ -114,6 +114,17 @@ const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    name: "prompt, model and provider captured per stage run",
+    up: (sqlite) => {
+      // All four nullable: a row written before this migration never had a
+      // prompt, and inventing one would be a lie — see spec-audit-trail.md §4.
+      addColumn(sqlite, "stage_runs", "system_prompt", "TEXT");
+      addColumn(sqlite, "stage_runs", "user_prompt", "TEXT");
+      addColumn(sqlite, "stage_runs", "model", "TEXT");
+      addColumn(sqlite, "stage_runs", "provider", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

@@ -6,6 +6,7 @@ import simpleGit, { type SimpleGit } from "simple-git";
 
 import { resolveGitIdentity, resolveWorkspacesDir } from "../config/env";
 import { slugify } from "../db/ids";
+import { remoteGit } from "./client";
 import type { GitCredential, RepositoryProvider } from "./providers/types";
 
 /**
@@ -107,9 +108,10 @@ export async function prepareWorkspace(options: {
     await fs.mkdir(path.dirname(target), { recursive: true });
 
     const transport = provider.transport(repoUrl, credential);
-    // `configArgs` carries the credential for header-transport providers; it is
-    // empty for the URL form. Either way it lives only in this argv.
-    await simpleGit().raw([
+    // `configArgs` denies git any interactive credential fallback, and for
+    // header-transport providers also carries the credential. Either way it
+    // lives only in this argv.
+    await remoteGit().raw([
       ...transport.configArgs,
       "clone",
       "--depth",
@@ -168,6 +170,19 @@ export async function diffStatAgainstBase(
   }
 }
 
+/**
+ * The task branch's current commit SHA.
+ *
+ * Read before the push at `DELIVERY` (spec-audit-trail.md §8): after the
+ * workspace is cleaned up this is the only thing left tying the persisted
+ * `diff_summary` artifact to a commit on the remote.
+ */
+export async function headCommitSha(workspacePath: string): Promise<string> {
+  const git = simpleGit(workspacePath);
+  const output = await git.raw(["rev-parse", "HEAD"]);
+  return output.trim();
+}
+
 /** True when the branch has at least one commit the base branch does not. */
 export async function hasCommitsAheadOfBase(
   workspacePath: string,
@@ -207,7 +222,7 @@ export async function pushBranch(
   access: RemoteAccess,
 ): Promise<void> {
   const transport = access.provider.transport(access.repoUrl, access.credential);
-  const git = simpleGit(workspacePath);
+  const git = remoteGit(workspacePath);
   try {
     await git.raw([
       ...transport.configArgs,

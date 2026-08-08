@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { blob, index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+import type { LlmProviderId } from "../config/llm-providers";
 import type { ProviderId } from "../git/providers/types";
 import type {
   ArtifactType,
@@ -135,6 +136,16 @@ export const stageRuns = sqliteTable(
     outputTokens: integer("output_tokens").notNull().default(0),
     costUsd: real("cost_usd").notNull().default(0),
     error: text("error"),
+    /**
+     * The exact prompt this run was given — see `spec-audit-trail.md` §4.
+     * Written immediately before the provider is invoked, not after, so a run
+     * that fails still has it. `NULL` on rows written before this migration
+     * and on the `DELIVERY` run, which never calls `runStage`.
+     */
+    systemPrompt: text("system_prompt"),
+    userPrompt: text("user_prompt"),
+    model: text("model"),
+    provider: text("provider").$type<LlmProviderId>(),
     createdAt: integer("created_at").notNull().default(now),
   },
   (table) => [
@@ -340,3 +351,4 @@ export type EventRow = typeof events.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type VerificationRunRow = typeof verificationRuns.$inferSelect;
+export type AgentRunRow = typeof agentRuns.$inferSelect;

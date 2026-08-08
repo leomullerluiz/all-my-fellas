@@ -152,6 +152,38 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds the four prompt/model/provider columns to an existing stage_runs table", () => {
+    const sqlite = freshDatabase("prompt-columns.db");
+    for (const column of ["system_prompt", "user_prompt", "model", "provider"]) {
+      expect(columns(sqlite, "stage_runs")).not.toContain(column);
+    }
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare("INSERT INTO tasks (id, repo_id, title, description) VALUES ('t', 'r', 'Old', 'd')")
+      .run();
+    sqlite
+      .prepare("INSERT INTO stage_runs (id, task_id, stage) VALUES ('run_1', 't', 'DEVELOPMENT')")
+      .run();
+
+    runMigrations(sqlite);
+
+    for (const column of ["system_prompt", "user_prompt", "model", "provider"]) {
+      expect(columns(sqlite, "stage_runs")).toContain(column);
+    }
+    const row = sqlite
+      .prepare(
+        "SELECT system_prompt AS systemPrompt, user_prompt AS userPrompt, model, provider FROM stage_runs WHERE id = 'run_1'",
+      )
+      .get() as { systemPrompt: string | null; userPrompt: string | null; model: string | null; provider: string | null };
+    expect(row.systemPrompt).toBeNull();
+    expect(row.userPrompt).toBeNull();
+    expect(row.model).toBeNull();
+    expect(row.provider).toBeNull();
+    sqlite.close();
+  });
+
   it("is a no-op when run again", () => {
     const sqlite = freshDatabase("twice.db");
     runMigrations(sqlite);

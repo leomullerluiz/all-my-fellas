@@ -81,4 +81,16 @@ export function closeDatabase(): void {
   globalForDb.__pipelineDb = undefined;
 }
 
+/**
+ * Rewrites the database file to reclaim space the retention sweep freed.
+ *
+ * Never called automatically — `VACUUM` takes an exclusive lock on the whole
+ * file, which is exactly what a two-process WAL setup (this web process and
+ * the worker) must not hit on a timer. Settings offers this as an explicit,
+ * separately-triggered button instead. See spec-audit-trail.md §11.
+ */
+export function vacuumDatabase(): void {
+  getDatabase().$client.exec("VACUUM");
+}
+
 export { schema };

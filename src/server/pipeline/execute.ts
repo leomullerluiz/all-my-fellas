@@ -2,6 +2,7 @@ import { roleFor } from "../agents/roles";
 import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
 import { requireCredential, resolveCredential } from "../git/credentials";
+import { readDiffIndex } from "../git/diff";
 import { createChangeRequest } from "../git/pull-request";
 import { providerFor } from "../git/providers";
 import {
@@ -11,6 +12,7 @@ import {
   diffAgainstBase,
   diffStatAgainstBase,
   hasCommitsAheadOfBase,
+  headCommitSha,
   prepareWorkspace,
   pushBranch,
   redactRemote,
@@ -39,9 +41,18 @@ import {
   extractReviewVerdict,
   validateArtifact,
 } from "./artifacts";
+import { redactSecrets } from "./audit/redact";
+import { renderDiffSummaryArtifact } from "./diff-summary";
 import { advanceTask } from "./orchestrator";
-import { type ArtifactInput, truncateForPrompt } from "./prompt";
-import { runStage } from "./run-stage";
+import {
+  type ArtifactInput,
+  type StagePromptInput,
+  MAX_PROMPT_CHARS,
+  buildStagePrompt,
+  buildSystemPrompt,
+  truncateForPrompt,
+} from "./prompt";
+import { StageExecutionError, runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, type FailureKind, isAgentStage } from "./stages";
 import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
@@ -226,6 +237,34 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
 
   const inputs = gatherInputs(task.id, run.stage, run.attempt);
 
+  const promptInput: StagePromptInput = {
+    role,
+    task: {
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      priority: task.priority,
+      repoName: task.repo.name,
+      repoContext: task.repo.context,
+      branchName,
+    },
+    artifacts: inputs,
+    supplements,
+    attempt: run.attempt,
+  };
+
+  // Persisted before the provider is invoked, not after: the case where the
+  // prompt matters most — a stage that fails — is the case where it would
+  // otherwise never reach `stage_runs` at all. See spec-audit-trail.md §4.
+  // The builders run again inside the provider (`runStage`); that duplication
+  // is pure string assembly over a cached file and costs nothing measurable.
+  updateStageRun(stageRunId, {
+    systemPrompt: redactSecrets(buildSystemPrompt(role)).text,
+    userPrompt: redactSecrets(truncateForPrompt(buildStagePrompt(promptInput), MAX_PROMPT_CHARS)).text,
+    model,
+    provider,
+  });
+
   let result;
   try {
     result = await runStage(provider, {
@@ -233,25 +272,28 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       model,
       maxTurns,
       workspacePath,
-      prompt: {
-        role,
-        task: {
-          id: task.id,
-          title: task.title,
-          description: task.description,
-          priority: task.priority,
-          repoName: task.repo.name,
-          repoContext: task.repo.context,
-          branchName,
-        },
-        artifacts: inputs,
-        supplements,
-        attempt: run.attempt,
-      },
+      prompt: promptInput,
       onEvent: (event) => appendEvent(task.id, stageRunId, event),
     });
   } catch (error) {
     const message = redactRemote(error instanceof Error ? error.message : String(error));
+
+    // Every provider builds a partial result for exactly this case
+    // (`StageExecutionError.partial`) — the transcript of a failed run is the
+    // one most worth having, and today it is thrown away. See §12.2.
+    if (error instanceof StageExecutionError && error.partial.transcript) {
+      saveTranscript({
+        stageRunId,
+        sessionId: error.partial.sessionId ?? null,
+        transcript: error.partial.transcript,
+      });
+      updateStageRun(stageRunId, {
+        inputTokens: error.partial.inputTokens ?? 0,
+        outputTokens: error.partial.outputTokens ?? 0,
+        costUsd: error.partial.costUsd ?? 0,
+      });
+    }
+
     markStageRunStatus(stageRunId, "failed", { error: message });
     throw new StageJobError(message);
   }
@@ -302,9 +344,8 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     appendEvent(task.id, stageRunId, {
       type: "log",
       level: "info",
-      message: `Estimate — difficulty: ${estimate.difficulty ?? "unknown"}, criticality: ${
-        estimate.criticality ?? "unknown"
-      }.`,
+      message: `Estimate — difficulty: ${estimate.difficulty ?? "unknown"}, criticality: ${estimate.criticality ?? "unknown"
+        }.`,
     });
   }
 
@@ -398,12 +439,12 @@ function renderVerificationReport(outcome: VerificationOutcome): string {
     results.length === 0
       ? "None."
       : results
-          .map((result) => {
-            const parts = [`### ${result.kind}: \`${result.command}\``, "", "```", result.stdoutTail || "(no stdout)", "```"];
-            if (result.stderrTail) parts.push("```", result.stderrTail, "```");
-            return parts.join("\n");
-          })
-          .join("\n\n");
+        .map((result) => {
+          const parts = [`### ${result.kind}: \`${result.command}\``, "", "```", result.stdoutTail || "(no stdout)", "```"];
+          if (result.stderrTail) parts.push("```", result.stderrTail, "```");
+          return parts.join("\n");
+        })
+        .join("\n\n");
 
   return ["## Outcome", "", summary, "", "## Commands", "", commandsTable, "", "## Output", "", output].join("\n");
 }
@@ -484,8 +525,8 @@ export async function executeVerification(stageRunId: string): Promise<void> {
   const detail =
     outcome.status === "failed"
       ? `Verification failed (${outcome.failed
-          .map((result) => `\`${result.command}\` exited ${result.exitCode}`)
-          .join(", ")})`
+        .map((result) => `\`${result.command}\` exited ${result.exitCode}`)
+        .join(", ")})`
       : undefined;
 
   advanceTask(task.id, { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict, detail });
@@ -579,6 +620,38 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
     stage: "DELIVERY",
     attempt: run.attempt,
   });
+
+  // Written before the push, in its own try/catch: the workspace is
+  // guaranteed present here (the guard above already failed the stage
+  // outright without it), and a delivery that fails at the push or at PR
+  // creation still leaves a record of what was about to ship. Losing this
+  // record is bad; refusing to open a pull request over it is worse — see
+  // spec-audit-trail.md §8.
+  try {
+    const base = task.repo.defaultBranch;
+    const [index, sha] = await Promise.all([
+      readDiffIndex(task.workspacePath, base),
+      headCommitSha(task.workspacePath),
+    ]);
+    const body = validateArtifact(
+      "diff_summary",
+      renderDiffSummaryArtifact({
+        baseBranch: base,
+        headBranch: task.branchName,
+        headCommitSha: sha,
+        index,
+      }),
+    );
+    saveArtifact({ taskId: task.id, stageRunId, type: "diff_summary", contentMd: body });
+    appendEvent(task.id, stageRunId, { type: "artifact_saved", artifactType: "diff_summary" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendEvent(task.id, stageRunId, {
+      type: "log",
+      level: "warn",
+      message: `Could not persist the diff summary before delivery: ${message}`,
+    });
+  }
 
   try {
     await pushBranch(task.workspacePath, task.branchName, remoteAccessFor(task.repo, true));

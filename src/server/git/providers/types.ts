@@ -38,6 +38,24 @@ export type GitTransport =
   | { kind: "header"; url: string; configArgs: readonly string[] };
 
 /**
+ * Denies git every interactive credential source, on every invocation.
+ *
+ * The server authenticates from `credentialRef` alone. Anything else is a hang
+ * waiting to happen: a repository that is private, deleted or misspelled is
+ * indistinguishable from one needing a login, so git falls back to asking —
+ * and no one is there to answer. The request never fails, it just stops.
+ *
+ * Clearing the helper list is the part that matters. `GIT_TERMINAL_PROMPT=0`
+ * only suppresses git's own tty prompt; a helper like Git Credential Manager
+ * opens its own dialog and blocks regardless of it. An empty value resets the
+ * list rather than adding to it, which is why it is spelled with no argument.
+ *
+ * Applied by the transport, so it reaches every network call that already
+ * spreads `configArgs`, rather than each call site remembering it.
+ */
+const NON_INTERACTIVE: readonly string[] = ["-c", "credential.helper="];
+
+/**
  * What a provider's API needs to identify a repository.
  *
  * `owner/repo` is not universal: GitLab needs a URL-encoded full path with
@@ -159,16 +177,17 @@ export function urlTransport(
   repoUrl: string,
   credential: GitCredential | null,
 ): GitTransport {
-  if (!credential) return { kind: "url", url: repoUrl, configArgs: [] };
+  if (!credential) return { kind: "url", url: repoUrl, configArgs: [...NON_INTERACTIVE] };
 
   try {
     const url = new URL(repoUrl);
-    if (url.protocol !== "https:") return { kind: "url", url: repoUrl, configArgs: [] };
+    if (url.protocol !== "https:")
+      return { kind: "url", url: repoUrl, configArgs: [...NON_INTERACTIVE] };
     url.username = credential.username;
     url.password = credential.secret;
-    return { kind: "url", url: url.toString(), configArgs: [] };
+    return { kind: "url", url: url.toString(), configArgs: [...NON_INTERACTIVE] };
   } catch {
-    return { kind: "url", url: repoUrl, configArgs: [] };
+    return { kind: "url", url: repoUrl, configArgs: [...NON_INTERACTIVE] };
   }
 }
 
@@ -182,12 +201,12 @@ export function headerTransport(
   repoUrl: string,
   credential: GitCredential | null,
 ): GitTransport {
-  if (!credential) return { kind: "header", url: repoUrl, configArgs: [] };
+  if (!credential) return { kind: "header", url: repoUrl, configArgs: [...NON_INTERACTIVE] };
 
   const basic = Buffer.from(`${credential.username}:${credential.secret}`).toString("base64");
   return {
     kind: "header",
     url: repoUrl,
-    configArgs: ["-c", `http.extraHeader=Authorization: Basic ${basic}`],
+    configArgs: [...NON_INTERACTIVE, "-c", `http.extraHeader=Authorization: Basic ${basic}`],
   };
 }

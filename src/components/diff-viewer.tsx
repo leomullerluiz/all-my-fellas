@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { DiffFile, DiffIndex } from "@/server/git/diff";
+import type { ParsedDiffSummary } from "@/server/pipeline/diff-summary";
 
 /**
  * Unified diff viewer.
@@ -19,7 +20,7 @@ import type { DiffFile, DiffIndex } from "@/server/git/diff";
 
 type IndexResponse =
   | ({ available: true } & DiffIndex)
-  | { available: false; reason: string; prUrl: string | null };
+  | { available: false; reason: string; prUrl: string | null; summary: ParsedDiffSummary | null };
 
 type PatchResponse = {
   available: true;
@@ -84,7 +85,14 @@ const LINE_LABEL: Record<LineKind, string> = {
   meta: "diff header",
 };
 
-function PatchBody({ patch }: { patch: string }) {
+/**
+ * Renders one unified-diff patch as a gutter-marked table.
+ *
+ * Exported so the artifact version switcher's compare view (§7) can render a
+ * synthetic patch through the same no-raw-HTML renderer instead of a second
+ * diff library.
+ */
+export function PatchBody({ patch }: { patch: string }) {
   const lines = patch.split("\n");
 
   return (
@@ -204,12 +212,13 @@ export function DiffViewer({ taskId }: { taskId: string }) {
   }
 
   if (!index.available) {
+    const summary = index.summary;
     return (
       <Card>
         <CardHeader>
           <CardTitle>Diff</CardTitle>
         </CardHeader>
-        <CardBody className="flex flex-col gap-2">
+        <CardBody className="flex flex-col gap-3">
           <p className="text-xs text-muted">{index.reason}</p>
           {index.prUrl ? (
             <a
@@ -220,6 +229,46 @@ export function DiffViewer({ taskId }: { taskId: string }) {
             >
               View the changes on the remote ↗
             </a>
+          ) : null}
+          {summary ? (
+            <div className="flex flex-col gap-2 border-t border-border pt-3">
+              <p className="text-[11px] text-muted">
+                The workspace is gone, but a summary was persisted before delivery
+                {summary.headCommitSha ? (
+                  <>
+                    {" "}
+                    at commit <span className="font-mono">{summary.headCommitSha.slice(0, 12)}</span>
+                  </>
+                ) : null}
+                :{" "}
+                <span className="text-success">+{summary.totalAdditions}</span>{" "}
+                <span className="text-danger">−{summary.totalDeletions}</span>
+              </p>
+              <ul className="max-h-[24rem] overflow-y-auto rounded-md border border-border">
+                {summary.files.map((file) => (
+                  <li
+                    key={file.oldPath ? `${file.oldPath}->${file.path}` : file.path}
+                    className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 last:border-b-0"
+                  >
+                    <Badge tone={STATUS_TONE[file.status]}>{STATUS_LETTER[file.status]}</Badge>
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[11px]"
+                      title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+                    >
+                      {shortenPath(file.path)}
+                    </span>
+                    {file.binary ? (
+                      <span className="shrink-0 text-[10px] text-muted">bin</span>
+                    ) : (
+                      <span className="shrink-0 text-[10px] tabular-nums">
+                        <span className="text-success">+{file.additions}</span>{" "}
+                        <span className="text-danger">−{file.deletions}</span>
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </CardBody>
       </Card>

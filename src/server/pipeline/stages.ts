@@ -136,6 +136,11 @@ export const ARTIFACT_TYPES = [
   /** A human reviewer's requested changes, so they reach the Developer's prompt. */
   "human_review",
   "homolog_report",
+  /**
+   * The cheap part of the diff, persisted at `DELIVERY` before the workspace
+   * is cleaned up — see spec-audit-trail.md §8. Not produced by an agent.
+   */
+  "diff_summary",
 ] as const;
 
 export type ArtifactType = (typeof ARTIFACT_TYPES)[number];
@@ -151,6 +156,7 @@ export const ARTIFACT_FILENAMES: Record<ArtifactType, string> = {
   qa_report: "qa-report.md",
   human_review: "human-review.md",
   homolog_report: "homolog-report.md",
+  diff_summary: "diff-summary.md",
 };
 
 export const PRIORITIES = ["low", "medium", "high", "urgent"] as const;

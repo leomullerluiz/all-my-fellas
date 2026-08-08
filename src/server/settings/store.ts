@@ -42,6 +42,8 @@ export type AppSettings = {
   /** Per-stage turn ceiling; caps the cost of a runaway agent. */
   maxTurns: Record<AgentStage, number>;
   workspaceRetentionDays: number;
+  /** Days to keep full transcripts. `null` keeps them forever. See spec-audit-trail.md §11. */
+  transcriptRetentionDays: number | null;
   /** Dark/Light/System palette for the dashboard UI. */
   theme: Theme;
   /**
@@ -92,6 +94,7 @@ export function defaultSettings(): AppSettings {
       PO_HOMOLOGATION: 10,
     },
     workspaceRetentionDays: limits.workspaceRetentionDays,
+    transcriptRetentionDays: limits.transcriptRetentionDays,
     theme: "system",
     quotaLimits: resolveQuota(),
   };
