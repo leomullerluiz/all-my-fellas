@@ -199,6 +199,20 @@ export function openWorkspace(workspacePath: string): SimpleGit {
  * QA's `extractReviewVerdict` fails closed on an artifact claiming no
  * changes were made, so a swallowed command failure here would be read as a
  * real, reviewable "nothing changed" — see spec-delivery-lifecycle.md §11.2.
+ *
+ * This matches git's *English* error text. A server running with a
+ * non-English `LANG`/`LC_ALL` would localise these messages and defeat the
+ * match, reclassifying a real command failure as "no such ref" — the
+ * opposite of what this function exists to guard against. Pinning the child
+ * process to the `C` locale was tried and reverted: passing
+ * `{...process.env, LC_ALL: "C"}` to simple-git's `.env()` replaces
+ * `_executor.env` wholesale, which trips simple-git's own
+ * `blockUnsafeOperationsPlugin` the moment the inherited environment happens
+ * to contain a var it treats as a command-injection vector (e.g. `EDITOR`) —
+ * turning a locale fix into a hard failure on exactly the hosts it was meant
+ * to help. Deployment is expected to run with an English locale (the
+ * project's own tooling and error messages are all English); revisit with a
+ * narrower env-scoping mechanism if that stops being true.
  */
 function isNoSuchRefError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
