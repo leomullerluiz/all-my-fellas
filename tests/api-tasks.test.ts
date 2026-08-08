@@ -510,6 +510,41 @@ describe("PATCH /api/tasks/:id", () => {
     expect(updated.priority).toBe("urgent");
   });
 
+  it("stores maxCostPerTaskUsd under the maxCostUsd column and does not leak the API field name into the edit event", async () => {
+    const events = await import("@/server/events/store");
+    const task = seed();
+
+    const response = await patch(task.id, {
+      ...VALID_BODY,
+      repoId,
+      maxCostPerTaskUsd: 5,
+    });
+
+    expect(response.status).toBe(200);
+    expect(service.getTask(task.id)!.maxCostUsd).toBe(5);
+
+    const edited = events.readEvents(task.id).find((event) => event.type === "task_edited");
+    expect(edited).toBeDefined();
+    const fields = (edited!.payload as { fields: string[] }).fields;
+    expect(fields).toContain("maxCostUsd");
+    expect(fields).not.toContain("maxCostPerTaskUsd");
+  });
+
+  it("does not record a spurious edit event when only maxCostPerTaskUsd is re-sent unchanged", async () => {
+    const events = await import("@/server/events/store");
+    const task = seed({ maxCostUsd: 5 } as Partial<typeof VALID_BODY> & { maxCostUsd: number });
+
+    const response = await patch(task.id, {
+      ...VALID_BODY,
+      title: task.title,
+      repoId,
+      maxCostPerTaskUsd: 5,
+    });
+
+    expect(response.status).toBe(200);
+    expect(events.readEvents(task.id).some((e) => e.type === "task_edited")).toBe(false);
+  });
+
   it("returns 409 for every stage past CREATED", async () => {
     for (const stage of ALL_STAGES) {
       const task = seed({ title: `Task at ${stage}` });

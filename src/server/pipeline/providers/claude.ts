@@ -1,5 +1,7 @@
 import { type CanUseTool, type Options, type SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
 
+import { formatCost } from "@/lib/utils";
+
 import { resolveProviderAuth } from "../../config/env";
 import { createPermissionGuard } from "../guardrails";
 import { buildStagePrompt, buildSystemPrompt } from "../prompt";
@@ -152,7 +154,7 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
                 (message.subtype === "error_max_turns"
                   ? ` after ${message.num_turns} turns (limit ${options.maxTurns}).`
                   : isBudgetStop
-                    ? ` — spend ceiling of ${options.maxCostUsd} USD reached after ${message.num_turns} turn(s).`
+                    ? ` — spend ceiling of ${formatCost(options.maxCostUsd ?? 0)} reached after ${message.num_turns} turn(s).`
                     : `: ${message.errors.join("; ") || "no further detail"}.`),
               { sessionId, costUsd, inputTokens, outputTokens, numTurns, transcript },
               !isBudgetStop,

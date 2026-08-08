@@ -116,9 +116,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
+    // `maxCostPerTaskUsd` is the API/UI-facing name; `EditableTaskFields`
+    // uses the column name `maxCostUsd`. Destructure it out rather than
+    // spreading it alongside `maxCostUsd`, or the stray key survives into
+    // `editTask`'s field-diffing and corrupts the `task_edited` event with a
+    // field name that isn't a real task property.
+    const { maxCostPerTaskUsd, ...editableFields } = fields;
     editTask(
       id,
-      { ...fields, maxCostUsd: fields.maxCostPerTaskUsd ?? null },
+      { ...editableFields, maxCostUsd: maxCostPerTaskUsd ?? null },
       validatedAttachments.data,
     );
     return json({ task: getTask(id) });

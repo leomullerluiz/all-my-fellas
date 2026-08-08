@@ -85,9 +85,14 @@ export async function POST(request: Request) {
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
+    // `maxCostPerTaskUsd` is the API/UI-facing name; `createTask` reads
+    // fields by name and ignores unknown keys, so the stray key here is
+    // harmless — but destructure it out anyway to match the `PATCH` route
+    // and avoid relying on that.
+    const { maxCostPerTaskUsd, ...createFields } = fields;
     const created = createTask({
-      ...fields,
-      maxCostUsd: fields.maxCostPerTaskUsd ?? null,
+      ...createFields,
+      maxCostUsd: maxCostPerTaskUsd ?? null,
       attachments: validatedAttachments.data,
     });
     if (!fields.start) {

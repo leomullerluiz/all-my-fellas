@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 
+import { formatCost } from "@/lib/utils";
+
 import { resolveOpenAiAuth } from "../../config/env";
 import { buildStagePrompt, buildSystemPrompt } from "../prompt";
 import { estimateCostUsd } from "./pricing";
@@ -118,7 +120,7 @@ export async function runOpenAiStage(
       if (spent >= options.maxCostUsd) {
         throw new StageExecutionError(
           `The ${role.name} session stopped after ${turn} turn(s): spend ceiling of ` +
-            `${options.maxCostUsd} USD reached (${spent.toFixed(4)} USD spent).`,
+            `${formatCost(options.maxCostUsd)} reached (${formatCost(spent)} spent).`,
           { costUsd: spent, inputTokens, outputTokens, numTurns: turn, transcript },
           false,
         );
