@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -5,6 +6,7 @@ import simpleGit, { type SimpleGit } from "simple-git";
 
 import { resolveGitIdentity, resolveWorkspacesDir } from "../config/env";
 import { slugify } from "../db/ids";
+import { remoteGit } from "./client";
 import type { GitCredential, RepositoryProvider } from "./providers/types";
 
 /**
@@ -52,6 +54,18 @@ export function workspacePathFor(taskId: string): string {
   return path.join(resolveWorkspacesDir(), taskId);
 }
 
+/**
+ * Whether the clone is still on disk with its git directory intact.
+ *
+ * Synchronous — checked from inside `retryTask`'s `db.transaction()`, which
+ * cannot `await`. `tasks.workspace_path` alone is not trusted: the directory
+ * can also vanish by hand, or via a shared-volume `docker compose down -v`,
+ * without that column changing.
+ */
+export function workspaceHasGitDir(taskId: string): boolean {
+  return existsSync(path.join(workspacePathFor(taskId), ".git"));
+}
+
 export function branchNameFor(taskId: string, title: string): string {
   return `${BRANCH_PREFIX}/${taskId}-${slugify(title)}`;
 }
@@ -94,9 +108,10 @@ export async function prepareWorkspace(options: {
     await fs.mkdir(path.dirname(target), { recursive: true });
 
     const transport = provider.transport(repoUrl, credential);
-    // `configArgs` carries the credential for header-transport providers; it is
-    // empty for the URL form. Either way it lives only in this argv.
-    await simpleGit().raw([
+    // `configArgs` denies git any interactive credential fallback, and for
+    // header-transport providers also carries the credential. Either way it
+    // lives only in this argv.
+    await remoteGit().raw([
       ...transport.configArgs,
       "clone",
       "--depth",
@@ -207,7 +222,7 @@ export async function pushBranch(
   access: RemoteAccess,
 ): Promise<void> {
   const transport = access.provider.transport(access.repoUrl, access.credential);
-  const git = simpleGit(workspacePath);
+  const git = remoteGit(workspacePath);
   try {
     await git.raw([
       ...transport.configArgs,

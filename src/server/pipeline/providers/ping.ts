@@ -30,7 +30,7 @@ const PING_MESSAGE = "test";
  */
 const PING_MODELS = {
   chatgpt: "gpt-4o-mini",
-  gemini: "gemini-2.5-flash",
+  gemini: "gemini-3.5-flash",
 } as const;
 
 /** Rejects with a `StageExecutionError` if `promise` has not settled in time. */

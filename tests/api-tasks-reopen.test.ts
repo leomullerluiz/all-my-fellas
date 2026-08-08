@@ -153,9 +153,17 @@ describe("POST /api/tasks/:id/reopen", () => {
     const task = create("Failed for retry");
     orchestrator.startTask(task.id);
     const run = service.createStageRun({ taskId: task.id, stage: "DEVELOPMENT", attempt: 1 });
-    service.markStageRunStatus(run.id, "failed");
-    service.setTaskStage(task.id, "FAILED");
-    service.updateTask(task.id, { status: "failed" });
+    service.markStageRunStatus(run.id, "failed", { error: "boom" });
+    // Routed through `advanceTask`'s `stage_failed` signal, not a direct
+    // `setTaskStage`/`updateTask` write: retry now reads `tasks.failed_stage` /
+    // `failure_kind`, which only a real terminal transition populates (§4 of
+    // `spec-retry-recovery.md`) — a fabricated FAILED row would otherwise be
+    // refused as `no_failed_stage`.
+    orchestrator.advanceTask(task.id, {
+      kind: "stage_failed",
+      stage: "DEVELOPMENT",
+      error: "boom",
+    });
 
     // retryTask still only accepts status === "failed" and re-runs the failed
     // stage in place — independent of, and unaffected by, the new reopen

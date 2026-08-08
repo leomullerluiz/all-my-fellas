@@ -10,7 +10,7 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes, formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
 import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
 import { providerFor } from "@/server/git/providers";
-import { capacity } from "@/server/pipeline/orchestrator";
+import { capacity, retryAvailability } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import { summarizeVerification } from "@/server/pipeline/verification-summary";
 import {
@@ -43,6 +43,9 @@ export default async function TaskDetailPage(props: {
   const dependsOn = listDependencies(id);
   const cost = totalCostForTask(id);
   const slots = capacity();
+  // Computed by the same server function `GET /api/tasks/:id` calls, so the
+  // rendered page and the API response can never disagree for this task.
+  const retry = retryAvailability(id);
   const notStarted = task.currentStage === "CREATED";
   const live = ["running", "awaiting_gate", "gate_queued"].includes(task.status);
 
@@ -90,6 +93,7 @@ export default async function TaskDetailPage(props: {
             notStarted={notStarted}
             capacity={slots}
             dependsOn={dependsOn}
+            retry={retry}
           />
         </div>
 

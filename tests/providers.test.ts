@@ -243,7 +243,9 @@ describe("transports", () => {
     });
     expect(transport.kind).toBe("url");
     expect(transport.url).toContain(SECRET);
-    expect(transport.configArgs).toEqual([]);
+    // The URL form needs no `-c` to carry the credential, so all that is left
+    // is the interactive-fallback guard every transport applies.
+    expect(transport.configArgs).toEqual(["-c", "credential.helper="]);
   });
 
   it("percent-encodes a token containing URL-significant characters", () => {
@@ -273,12 +275,40 @@ describe("transports", () => {
     );
     expect(transport.kind).toBe("header");
     expect(transport.url).not.toContain(SECRET);
-    expect(transport.configArgs[0]).toBe("-c");
-    expect(transport.configArgs[1]).toContain("http.extraHeader=Authorization: Basic ");
+    const header = transport.configArgs.find((arg) =>
+      arg.startsWith("http.extraHeader=Authorization: Basic "),
+    );
+    expect(header).toBeDefined();
     // The secret must be base64 in the header, never readable in the arg.
-    expect(transport.configArgs[1]).not.toContain(SECRET);
-    const encoded = transport.configArgs[1].split("Basic ")[1];
+    expect(header).not.toContain(SECRET);
+    const encoded = header!.split("Basic ")[1];
     expect(Buffer.from(encoded, "base64").toString()).toBe(`:${SECRET}`);
+  });
+
+  // Regression: a clone of a private, deleted or misspelled repository is
+  // indistinguishable from one needing a login, so git asks — and a credential
+  // helper such as Git Credential Manager blocks on its own dialog with nobody
+  // to answer it. The request hung forever instead of failing.
+  it("denies git an interactive credential fallback on every transport", () => {
+    const transports = [
+      githubProvider.transport("https://github.com/acme/storefront", null),
+      githubProvider.transport("https://github.com/acme/storefront", {
+        username: "x-access-token",
+        secret: SECRET,
+      }),
+      urlTransport("http://git.internal/team/project", { username: "git", secret: SECRET }),
+      urlTransport("not a url", null),
+      azureDevOpsProvider.transport("https://dev.azure.com/acme/Storefront/_git/store", null),
+      azureDevOpsProvider.transport("https://dev.azure.com/acme/Storefront/_git/store", {
+        username: "",
+        secret: SECRET,
+      }),
+    ];
+
+    for (const transport of transports) {
+      // An empty value resets the helper list rather than appending to it.
+      expect(transport.configArgs).toContain("credential.helper=");
+    }
   });
 
   it("does not attach a credential over plain http", () => {

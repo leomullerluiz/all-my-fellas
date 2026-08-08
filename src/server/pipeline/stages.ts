@@ -178,6 +178,24 @@ export const STAGE_RUN_STATUSES = [
 export type StageRunStatus = (typeof STAGE_RUN_STATUSES)[number];
 
 /**
+ * Why a task reached `FAILED`. Decides what a retry re-runs — see
+ * `RETRY_TARGET` and `needsBranchHistory` in `state-machine.ts`.
+ */
+export const FAILURE_KINDS = [
+  /** The agent session, the workspace, or a git command threw. */
+  "stage_error",
+  /** The produced document failed `validateArtifact`. */
+  "artifact_invalid",
+  /** DEVELOPMENT left nothing on the branch. */
+  "no_commits",
+  /** A reviewer rejected with the shared rework budget already spent. */
+  "rework_exhausted",
+  /** The push or the change-request call failed. */
+  "delivery_failed",
+] as const;
+export type FailureKind = (typeof FAILURE_KINDS)[number];
+
+/**
  * `request_changes` returns work to the Developer instead of ending the task.
  * It is only valid on gates that review code — see {@link GATE_ALLOWED_DECISIONS}.
  */

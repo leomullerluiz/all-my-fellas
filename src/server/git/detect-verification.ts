@@ -2,10 +2,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import simpleGit from "simple-git";
-
 import { resolveWorkspacesDir } from "../config/env";
 import type { VerificationKind } from "../events/store";
+import { remoteGit } from "./client";
 import { connectionContext, type RepoConnection } from "./pull-request";
 import { redactRemote } from "./workspace";
 
@@ -143,7 +142,7 @@ export async function detectVerificationCommandsForRepo(
 
     const transport = context.provider.transport(connection.url, context.credential);
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await simpleGit().raw([
+    await remoteGit().raw([
       ...transport.configArgs,
       "clone",
       "--depth",

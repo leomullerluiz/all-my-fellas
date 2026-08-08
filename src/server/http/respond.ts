@@ -14,8 +14,14 @@ export function notFound(message = "Not found"): Response {
   return Response.json({ error: message }, { status: 404 });
 }
 
-export function conflict(message: string): Response {
-  return Response.json({ error: message }, { status: 409 });
+/**
+ * @param code Machine-readable reason, so a client can branch on something
+ *   other than the prose message — e.g. the retry 409 taxonomy in
+ *   `spec-retry-recovery.md` §10.3. Omitted when there is nothing more
+ *   specific than "conflict" to say.
+ */
+export function conflict(message: string, code?: string): Response {
+  return Response.json(code ? { error: message, code } : { error: message }, { status: 409 });
 }
 
 export function serverError(error: unknown): Response {
