@@ -343,3 +343,77 @@ describe("NewTaskForm branch name field", () => {
     vi.unstubAllGlobals();
   });
 });
+
+/**
+ * S4 — duplication prefills the create form from `initial` (title prefixed,
+ * everything else copied) and threads `duplicateFrom` through to the create
+ * request, exactly the shape `tasks/new/page.tsx?from=<id>` builds.
+ */
+describe("NewTaskForm duplicateFrom (S4)", () => {
+  const DUPLICATE_INITIAL = {
+    repoId: "repo_1",
+    title: "Copy of Original feature",
+    description: "The original description, long enough to pass validation.",
+    priority: "high" as const,
+    requireHumanCodeReview: true,
+    // Deliberately empty: attachments are copied server-side, not prefilled
+    // into the picker — see `tasks/new/page.tsx`'s doc comment.
+    attachments: [],
+    dependsOn: [],
+  };
+
+  it("prefills the title with the 'Copy of' prefix and the rest of the fields", () => {
+    render(
+      <NewTaskForm repos={REPOS} initial={DUPLICATE_INITIAL} duplicateFrom="task_source" />,
+    );
+
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe(
+      "Copy of Original feature",
+    );
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe(
+      DUPLICATE_INITIAL.description,
+    );
+    // No existing-attachment rows — nothing to remove on a task that does not
+    // exist yet.
+    expect(screen.queryByText(/Remove/)).toBeNull();
+  });
+
+  it("sends duplicateFrom in the JSON create request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { id: "task_new" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <NewTaskForm repos={REPOS} initial={DUPLICATE_INITIAL} duplicateFrom="task_source" />,
+    );
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(requestInit.body as string) as { duplicateFrom?: string };
+    expect(body.duplicateFrom).toBe("task_source");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("omits duplicateFrom when the form was not opened as a duplicate", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { id: "task_new" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} initial={DUPLICATE_INITIAL} />);
+    fireEvent.submit(document.querySelector("form")!);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(requestInit.body as string) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("duplicateFrom");
+
+    vi.unstubAllGlobals();
+  });
+});

@@ -302,6 +302,98 @@ describe("POST /api/tasks", () => {
     expect(response.status).toBe(201);
   });
 
+  describe("duplicateFrom (S4)", () => {
+    it("copies the source task's attachment bytes into new rows", async () => {
+      const source = seed({ title: "Original feature" });
+      const buffer = Buffer.from("\x89PNG-fake-bytes", "binary");
+      service.insertAttachments(source.id, [
+        { filename: "diagram.png", mimeType: "image/png", size: buffer.length, buffer },
+      ]);
+
+      const response = await post({
+        ...VALID_BODY,
+        repoId,
+        title: "Copy of Original feature",
+        duplicateFrom: source.id,
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+
+      const copied = service.listAttachments(payload.task.id);
+      expect(copied.map((a) => a.filename)).toEqual(["diagram.png"]);
+      expect(copied[0].id).not.toBe(service.listAttachments(source.id)[0].id);
+
+      // Deleting the source afterward must not affect the duplicate's copy —
+      // they are independent rows, not a shared reference.
+      service.deleteTask(source.id);
+      const stillThere = service.getAttachment(copied[0].id);
+      expect(stillThere).not.toBeNull();
+      expect(stillThere!.data.toString("binary")).toBe("\x89PNG-fake-bytes");
+    });
+
+    it("merges copied attachments with newly uploaded ones", async () => {
+      const source = seed({ title: "Original with attachment" });
+      const sourceBuffer = Buffer.from("source bytes", "binary");
+      service.insertAttachments(source.id, [
+        { filename: "source.json", mimeType: "application/json", size: sourceBuffer.length, buffer: sourceBuffer },
+      ]);
+
+      const fresh = new File(['{"b":2}'], "fresh.json", { type: "application/json" });
+      const response = await postMultipart(
+        { ...VALID_BODY, repoId, title: "Copy plus a new file", duplicateFrom: source.id },
+        [fresh],
+      );
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+
+      const filenames = service.listAttachments(payload.task.id).map((a) => a.filename).sort();
+      expect(filenames).toEqual(["fresh.json", "source.json"]);
+    });
+
+    it("tolerates a duplicateFrom that no longer exists — still creates the task", async () => {
+      const response = await post({
+        ...VALID_BODY,
+        repoId,
+        title: "Copy of something gone",
+        duplicateFrom: "task_does_not_exist",
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+      expect(service.listAttachments(payload.task.id)).toEqual([]);
+    });
+
+    it("starts the duplicate at CREATED with no estimate or workspace carried over", async () => {
+      const source = seed({ title: "Estimated original" });
+      service.setTaskEstimate(source.id, "L", "high");
+      // Simulate a task that has actually run — `startTask` alone only
+      // schedules the first job; these fields are set once a real stage
+      // executes, which this pure orchestrator test does not run.
+      service.updateTask(source.id, {
+        branchName: "pipeline/task-estimated-original",
+        workspacePath: "/tmp/workspaces/task_source",
+        prUrl: "https://github.com/acme/app/pull/1",
+      });
+
+      const response = await post({
+        ...VALID_BODY,
+        repoId,
+        title: "Copy of Estimated original",
+        duplicateFrom: source.id,
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+
+      const duplicate = service.getTask(payload.task.id)!;
+      expect(duplicate.currentStage).toBe("CREATED");
+      expect(duplicate.status).toBe("queued");
+      expect(duplicate.difficulty).toBeNull();
+      expect(duplicate.criticality).toBeNull();
+      expect(duplicate.branchName).toBeNull();
+      expect(duplicate.workspacePath).toBeNull();
+      expect(duplicate.prUrl).toBeNull();
+    });
+  });
+
   describe("branchName", () => {
     it("stores a valid custom branch name and falls back to auto-generation when omitted", async () => {
       const withCustom = await post({ ...VALID_BODY, repoId, branchName: "feature/my-custom-name" });

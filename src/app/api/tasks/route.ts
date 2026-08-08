@@ -12,6 +12,7 @@ import {
   createTask,
   getRepo,
   getTask,
+  listAttachmentsForCopy,
   listDependencies,
   listTasks,
   totalCostForTask,
@@ -104,7 +105,18 @@ export async function POST(request: Request) {
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
-    const created = createTask({ ...fields, attachments: validatedAttachments.data });
+    // A duplicate (`stories.md` S4) copies the source task's attachment bytes
+    // into new rows alongside whatever was freshly uploaded on the form. A
+    // source that no longer exists is tolerated — the task is still created,
+    // just without the extra attachments.
+    const copiedAttachments = fields.duplicateFrom
+      ? listAttachmentsForCopy(fields.duplicateFrom)
+      : [];
+
+    const created = createTask({
+      ...fields,
+      attachments: [...copiedAttachments, ...validatedAttachments.data],
+    });
     if (!fields.start) {
       return json({ task: created, started: false }, { status: 201 });
     }
