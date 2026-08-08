@@ -6,6 +6,7 @@ import {
   parseMultipartFields,
   serverError,
 } from "@/server/http/respond";
+import { executionStateFor, executionStates } from "@/server/pipeline/execution";
 import { CapacityError, DependencyError, capacity, startTask } from "@/server/pipeline/orchestrator";
 import {
   createTask,
@@ -28,12 +29,30 @@ export async function GET(request: Request) {
     });
     if (!parsed.success) return badRequest("Unknown status filter.");
 
+    // One derivation, one round trip — every task below reads its own entry
+    // rather than the route recomputing it per task.
+    const execution = executionStates();
     const tasks = listTasks(parsed.data).map((task) => ({
       ...task,
       costUsd: totalCostForTask(task.id),
       dependsOn: listDependencies(task.id),
+      execution: executionStateFor(task.id, execution),
     }));
-    return json({ tasks, capacity: capacity() });
+
+    // Independent of the `status` filter above: `capacity` answers "can I
+    // start another task", `worker` answers "what is the worker doing right
+    // now" — conflating them in one payload would recreate in the API the
+    // exact conflation this spec removes from the UI.
+    let inFlight = 0;
+    let waiting = 0;
+    let backoff = 0;
+    for (const state of execution.values()) {
+      if (state.kind === "in_flight") inFlight += 1;
+      else if (state.kind === "waiting_for_worker") waiting += 1;
+      else if (state.kind === "retry_backoff") backoff += 1;
+    }
+
+    return json({ tasks, capacity: capacity(), worker: { inFlight, waiting, backoff } });
   } catch (error) {
     return serverError(error);
   }
