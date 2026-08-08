@@ -237,6 +237,22 @@ export async function diffAgainstBase(
   }
 }
 
+/**
+ * Diff of the task branch against a specific commit, used to scope a
+ * reviewing stage's rework prompt to what changed since its own last review
+ * (`stage_runs.reviewed_head_sha`) instead of the whole branch again — see
+ * stories.md S3.
+ */
+export async function diffSince(workspacePath: string, sha: string): Promise<string> {
+  const git = simpleGit(workspacePath);
+  try {
+    return await git.diff([`${sha}...HEAD`]);
+  } catch (error) {
+    if (isNoSuchRefError(error)) return "";
+    rethrowCommandFailure(error);
+  }
+}
+
 export async function diffStatAgainstBase(
   workspacePath: string,
   baseBranch: string,
