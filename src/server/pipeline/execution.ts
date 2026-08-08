@@ -2,7 +2,7 @@ import { and, asc, eq, gt, lte, ne } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { type JobKind, jobs, tasks } from "../db/schema";
-import { DIFFICULTY_RANK, PRIORITY_RANK } from "../jobs/queue";
+import { DIFFICULTY_RANK, inFlightTaskIds, PRIORITY_RANK } from "../jobs/queue";
 
 /**
  * What the worker is doing with a task right now, derived at render time from
@@ -74,14 +74,10 @@ export function executionStates(): Map<string, ExecutionState> {
   const now = Date.now();
 
   return db.transaction((tx) => {
-    // Excluding `cleanup_workspace` here is what stops a workspace deletion
-    // for a finished task from reading as "an agent is running" — see
-    // `inFlightTaskIds`'s docblock and spec §6.1.
-    const claimedRows = tx
-      .select({ taskId: jobs.taskId, kind: jobs.kind })
-      .from(jobs)
-      .where(and(eq(jobs.status, "claimed"), ne(jobs.kind, "cleanup_workspace")))
-      .all();
+    // Same query the worker's own headline count would use — see
+    // `inFlightTaskIds`'s docblock and spec §6.1 — reused rather than
+    // reimplemented so the two can't drift apart.
+    const claimedByTask = inFlightTaskIds(tx);
 
     // Ordered exactly as `claimNextJob` will drain it: same ranking, same
     // eligibility window (`runAfter <= now`), same job-kind exclusion.
@@ -109,7 +105,6 @@ export function executionStates(): Map<string, ExecutionState> {
       .map((row) => row.id);
 
     const states = new Map<string, ExecutionState>();
-    const claimedByTask = new Map(claimedRows.map((row) => [row.taskId, row.kind]));
 
     // A job whose task already holds a claimed job is skipped by
     // `claimNextJob` (queue.ts:98), so counting it here would place a task in

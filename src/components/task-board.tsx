@@ -102,6 +102,16 @@ function TaskCard({
           </div>
         ) : execution ? (
           <ExecutionDot className="mt-1" copy={execution} />
+        ) : task.status === "running" ? (
+          // Only reachable when queue wording is suppressed (`!showQueuePosition`)
+          // for a task in the sub-second gap before the worker's next tick —
+          // see the comment above. Every other branch always renders some
+          // indicator; a card with none would read as its own, smaller lie.
+          <span
+            className="mt-1 inline-block size-2 shrink-0 rounded-full bg-accent"
+            title="Admitted"
+            aria-label="Admitted"
+          />
         ) : needsAttention ? (
           <span
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-warning"

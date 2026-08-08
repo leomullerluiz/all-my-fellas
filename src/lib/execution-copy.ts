@@ -16,7 +16,14 @@ import { ordinal, retryCountdownSeconds } from "./utils";
  * unaffected by this spec.
  */
 export type ExecutionCopy = {
+  /** The dot's `title`/`aria-label` — spec §5's "Title / aria-label" column. */
   text: string;
+  /**
+   * The longer sentence spec §5's "Card line" column specifies — what the
+   * task detail page renders next to the dot. `in_flight` has no separate
+   * card line in that table (its row reads "—"), so this equals `text`.
+   */
+  description: string;
   tone: "accent" | "warning";
   /** Only `in_flight` pulses — see `PulseDot`'s docblock. */
   pulse: boolean;
@@ -33,24 +40,34 @@ const IN_FLIGHT_TEXT: Record<InFlightJob, string> = {
 /** `maxJobAttempts` is `MAX_JOB_ATTEMPTS` from `../server/jobs/queue`, threaded in by the caller. */
 export function executionCopy(execution: ExecutionState, maxJobAttempts: number): ExecutionCopy | null {
   switch (execution.kind) {
-    case "in_flight":
-      return { text: IN_FLIGHT_TEXT[execution.job], tone: "accent", pulse: true };
+    case "in_flight": {
+      const text = IN_FLIGHT_TEXT[execution.job];
+      return { text, description: text, tone: "accent", pulse: true };
+    }
     case "waiting_for_worker":
       return {
         text: `Queued for the worker — ${ordinal(execution.position)} of ${execution.depth}`,
+        description: `${ordinal(execution.position)} of ${execution.depth} in the worker queue`,
         tone: "accent",
         pulse: false,
       };
-    case "retry_backoff":
+    case "retry_backoff": {
+      const seconds = retryCountdownSeconds(execution.retryAt);
       return {
-        text: `Stage failed; retrying in ${retryCountdownSeconds(execution.retryAt)}s (attempt ${
-          execution.attempt
-        } of ${maxJobAttempts})`,
+        text: `Stage failed; retrying in ${seconds}s (attempt ${execution.attempt} of ${maxJobAttempts})`,
+        description: `Retrying in ${seconds}s (attempt ${execution.attempt} of ${maxJobAttempts})`,
         tone: "warning",
         pulse: false,
       };
+    }
     case "settling":
-      return { text: "Nothing is queued for this task", tone: "warning", pulse: false };
+      return {
+        text: "Nothing is queued for this task",
+        description:
+          "Admitted, but no job is queued — nothing will happen until it is started again",
+        tone: "warning",
+        pulse: false,
+      };
     case "idle":
       return null;
   }

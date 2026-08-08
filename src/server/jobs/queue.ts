@@ -65,6 +65,15 @@ export function enqueueJob({
 }
 
 /**
+ * Anything with a `.select()` shaped like {@link db}'s — either `db` itself or
+ * the `tx` handed to a `db.transaction()` callback. Letting callers pass a
+ * transaction is what lets {@link inFlightTaskIds} be reused from inside
+ * `../pipeline/execution.ts`'s single read-only transaction instead of being
+ * reimplemented there.
+ */
+type Queryable = Pick<typeof db, "select">;
+
+/**
  * The kind of claimed job each in-flight task holds right now, keyed by task id.
  *
  * `cleanup_workspace` is excluded: it is claimed like any other job, but a
@@ -72,8 +81,8 @@ export function enqueueJob({
  * task it belongs to has already finished — see `spec-execution-honesty.md`
  * §6.1. This replaces the never-called `runningTaskCount`, which counted it.
  */
-export function inFlightTaskIds(): Map<string, JobKind> {
-  const rows = db
+export function inFlightTaskIds(executor: Queryable = db): Map<string, JobKind> {
+  const rows = executor
     .select({ taskId: jobs.taskId, kind: jobs.kind })
     .from(jobs)
     .where(and(eq(jobs.status, "claimed"), ne(jobs.kind, "cleanup_workspace")))

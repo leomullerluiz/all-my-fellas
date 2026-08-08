@@ -16,12 +16,16 @@ process.env.WORKSPACES_DIR = path.join(tempDir, "workspaces");
 let service: typeof import("@/server/tasks/service");
 let queue: typeof import("@/server/jobs/queue");
 let execution: typeof import("@/server/pipeline/execution");
+let orchestrator: typeof import("@/server/pipeline/orchestrator");
+let settings: typeof import("@/server/settings/store");
 let repoId: string;
 
 beforeAll(async () => {
   service = await import("@/server/tasks/service");
   queue = await import("@/server/jobs/queue");
   execution = await import("@/server/pipeline/execution");
+  orchestrator = await import("@/server/pipeline/orchestrator");
+  settings = await import("@/server/settings/store");
 
   repoId = service.createRepo({
     name: "acme/app",
@@ -38,6 +42,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   for (const task of service.listTasks()) service.deleteTask(task.id);
+  settings.updateSettings({ maxParallelTasks: 10 });
 });
 
 type Priority = "low" | "medium" | "high" | "urgent";
@@ -194,5 +199,54 @@ describe("execution state queue position matches claimNextJob", () => {
     // `waiting`'s next, matching what the derivation shows.
     const claimed = queue.claimNextJob(99);
     expect(claimed!.taskId).toBe(waiting.id);
+  });
+});
+
+/**
+ * `orchestrator.ts`'s `sortByPriorityThenDifficulty` (JS, used by
+ * `startTasksBatch`/`promoteQueue`) and `queue.ts`'s `PRIORITY_RANK`/
+ * `DIFFICULTY_RANK` (SQL, used by `claimNextJob` and now `execution.ts`) are
+ * two implementations of the same ranking rule — see
+ * `spec-execution-honesty.md` §4.2 and §10. This compares them on the
+ * priority/difficulty key only, on a fixture with no ties, since the two
+ * break ties differently on purpose (`run_after`/`created_at` for the SQL
+ * ranking, `updatedAt` for the JS one) and asserting a shared total order
+ * would fail on a correct implementation.
+ */
+describe("JS ranking (startTasksBatch) agrees with SQL ranking (claimNextJob)", () => {
+  it("orders four tasks with distinct priority/difficulty combinations identically", () => {
+    // Every combination distinct enough that priority-then-difficulty alone
+    // determines the order, so there is no tiebreaker to disagree about.
+    const fixture: Array<[string, Priority, "S" | "M" | "L" | null]> = [
+      ["urgent-S", "urgent", "S"],
+      ["high-M", "high", "M"],
+      ["medium-L", "medium", "L"],
+      ["low-S", "low", "S"],
+    ];
+    const expectedOrder = ["urgent-S", "high-M", "medium-L", "low-S"];
+
+    // JS ranking: create the tasks in a scrambled (non-priority) order and
+    // read the order `startTasksBatch` actually starts them in.
+    const scrambled = [fixture[2]!, fixture[0]!, fixture[3]!, fixture[1]!];
+    const created = scrambled.map(([title, priority, difficulty]) => {
+      const task = service.createTask({
+        repoId,
+        title,
+        description: "A description long enough to pass validation upstream.",
+        priority,
+      });
+      if (difficulty) service.setTaskEstimate(task.id, difficulty, null);
+      return task;
+    });
+    const batchResult = orchestrator.startTasksBatch(created.map((task) => task.id));
+    expect(batchResult.map((result) => result.title)).toEqual(expectedOrder);
+
+    for (const task of service.listTasks()) service.deleteTask(task.id);
+
+    // SQL ranking: the same combinations, via `queueTask`/`claimOrder`.
+    for (const [title, priority, difficulty] of fixture) {
+      queueTask(title, priority, difficulty);
+    }
+    expect(claimOrder()).toEqual(expectedOrder);
   });
 });

@@ -153,7 +153,7 @@ export default async function TaskDetailPage(props: {
         {executionState ? (
           <p className="flex items-center gap-1.5 text-xs text-muted">
             <ExecutionDot copy={executionState} />
-            {executionState.text}
+            {executionState.description}
           </p>
         ) : null}
 

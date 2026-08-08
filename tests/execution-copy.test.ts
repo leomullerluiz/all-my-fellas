@@ -9,9 +9,10 @@ import { executionCopy } from "@/lib/execution-copy";
  * the `idle` -> `null` case neither of those consumers has its own test for.
  */
 describe("executionCopy", () => {
-  it("pulses for in_flight, one line of text per job kind", () => {
+  it("pulses for in_flight, one line of text per job kind, description equal to text", () => {
     expect(executionCopy({ kind: "in_flight", job: "agent" }, 3)).toEqual({
       text: "An agent is running",
+      description: "An agent is running",
       tone: "accent",
       pulse: true,
     });
@@ -29,6 +30,7 @@ describe("executionCopy", () => {
     const copy = executionCopy({ kind: "waiting_for_worker", position: 2, depth: 5 }, 3);
     expect(copy).toEqual({
       text: "Queued for the worker — 2nd of 5",
+      description: "2nd of 5 in the worker queue",
       tone: "accent",
       pulse: false,
     });
@@ -40,11 +42,13 @@ describe("executionCopy", () => {
     expect(copy?.pulse).toBe(false);
     expect(copy?.tone).toBe("warning");
     expect(copy?.text).toMatch(/^Stage failed; retrying in \d+s \(attempt 2 of 3\)$/);
+    expect(copy?.description).toMatch(/^Retrying in \d+s \(attempt 2 of 3\)$/);
   });
 
   it("never pulses for settling", () => {
     expect(executionCopy({ kind: "settling" }, 3)).toEqual({
       text: "Nothing is queued for this task",
+      description: "Admitted, but no job is queued — nothing will happen until it is started again",
       tone: "warning",
       pulse: false,
     });
