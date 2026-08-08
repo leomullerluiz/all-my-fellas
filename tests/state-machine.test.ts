@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   GRANTS_REWORK_CYCLE,
-  InvalidGateDecisionError,
   InvalidTransitionError,
   needsBranchHistory,
   type PipelineContext,
@@ -13,6 +12,7 @@ import { FAILURE_KINDS } from "@/server/pipeline/stages";
 
 const base: PipelineContext = {
   developmentAttempts: 0,
+  architectureAttempts: 0,
   homologationAttempts: 0,
   reworkMaxCycles: 2,
   reworkBudgetGrant: 0,
@@ -461,16 +461,55 @@ describe("gates", () => {
     }
   });
 
-  it("refuses request_changes on gates that do not review code", () => {
-    for (const gate of ["PLAN_GATE"] as const) {
-      expect(() =>
-        nextTransition(
-          gate,
-          { kind: "gate_decided", gate, decision: "request_changes", comment: "x" },
-          base,
-        ),
-      ).toThrow(InvalidGateDecisionError);
+  it("sends a PLAN_GATE request_changes back to the Architect, not the Developer", () => {
+    expect(
+      nextTransition(
+        "PLAN_GATE",
+        {
+          kind: "gate_decided",
+          gate: "PLAN_GATE",
+          decision: "request_changes",
+          comment: "redo the approach to the third section",
+        },
+        { ...base, architectureAttempts: 1 },
+      ),
+    ).toEqual({ type: "run", stage: "ARCHITECTURE", attempt: 2 });
+  });
+
+  it("does not draw the PLAN_GATE rework on the shared DEVELOPMENT budget", () => {
+    // N consecutive plan `request_changes` decisions, with `reworkMaxCycles`
+    // set below N, must never exhaust the budget — architectureAttempts keeps
+    // climbing while developmentAttempts (what the budget actually counts)
+    // stays at 0.
+    const context = { ...base, reworkMaxCycles: 1, developmentAttempts: 0 };
+    for (let architectureAttempts = 1; architectureAttempts <= 5; architectureAttempts += 1) {
+      const transition = nextTransition(
+        "PLAN_GATE",
+        {
+          kind: "gate_decided",
+          gate: "PLAN_GATE",
+          decision: "request_changes",
+          comment: "still not right",
+        },
+        { ...context, architectureAttempts },
+      );
+      expect(transition).toEqual({
+        type: "run",
+        stage: "ARCHITECTURE",
+        attempt: architectureAttempts + 1,
+      });
     }
+
+    // A subsequent CODE_REVIEW/QA rework still fails at exactly
+    // reworkMaxCycles + 1 attempts, completely unaffected by the plan gate
+    // loop above.
+    const exhausted = nextTransition(
+      "CODE_REVIEW",
+      { kind: "stage_succeeded", stage: "CODE_REVIEW", reviewVerdict: "changes_requested" },
+      { ...context, developmentAttempts: 2 },
+    );
+    expect(exhausted).toMatchObject({ type: "terminal", stage: "FAILED" });
+    expect((exhausted as { reason: string }).reason).toContain("rework budget");
   });
 
   it("sends a request_changes at the stakeholder gate back to development", () => {

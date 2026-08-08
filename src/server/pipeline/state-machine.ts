@@ -64,6 +64,14 @@ export type PipelineSignal =
 export type PipelineContext = {
   /** Number of DEVELOPMENT runs already performed (1 after the first pass). */
   developmentAttempts: number;
+  /**
+   * Number of ARCHITECTURE runs already performed. Read by the `PLAN_GATE`
+   * `request_changes` branch to number the rework run — deliberately not fed
+   * into `reworkBudgetAvailable`, which only ever counts `DEVELOPMENT`
+   * attempts. See `reworkOrFail`'s doc comment on why a human iterating on
+   * the plan is not bounded by the same budget.
+   */
+  architectureAttempts: number;
   /** PO_HOMOLOGATION runs so far, including the one being handled. */
   homologationAttempts: number;
   /**
@@ -226,6 +234,20 @@ export function nextTransition(
       return { type: "terminal", stage: "REJECTED", reason: signal.comment };
     }
     if (signal.decision === "request_changes") {
+      // `PLAN_GATE` reviews the Architect's plan, not the Developer's code, so
+      // its `request_changes` re-runs `ARCHITECTURE` instead of going through
+      // `reworkOrFail`. This deliberately does NOT draw on the shared rework
+      // budget: every iteration here is a deliberate, manually initiated
+      // human decision, not an agent loop — see `reworkBudgetAvailable`'s doc
+      // comment. Routing this through `reworkOrFail` in a later refactor
+      // would silently reintroduce a budget on human-driven plan review.
+      if (signal.gate === "PLAN_GATE") {
+        return {
+          type: "run",
+          stage: "ARCHITECTURE",
+          attempt: context.architectureAttempts + 1,
+        };
+      }
       return reworkOrFail(context, "The reviewer requested changes");
     }
 
