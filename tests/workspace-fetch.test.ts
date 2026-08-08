@@ -59,6 +59,11 @@ function access(repoUrl = originPath) {
 }
 
 describe("prepareWorkspace — fetches the base on every call", () => {
+  // Two real clones plus two real fetches, competing with every other file's
+  // git child processes under this suite's `maxWorkers: "50%"` — observed to
+  // exceed vitest's default 5s test timeout under full-suite contention even
+  // though each op is fast in isolation. A longer per-test timeout, not a
+  // smaller amount of git work, is the fix.
   it("picks up a commit landed on origin between two calls for the same task", async () => {
     const taskId = "task_fetch_freshness";
     const first = await prepareWorkspace({
@@ -87,7 +92,7 @@ describe("prepareWorkspace — fetches the base on every call", () => {
 
     const after = (await simpleGit(second.path).raw(["rev-parse", "origin/main"])).trim();
     expect(after).toBe(advanced);
-  });
+  }, 20_000);
 
   it("does not throw when the fetch fails, and records why on the workspace", async () => {
     const taskId = "task_fetch_failure";
