@@ -3,7 +3,7 @@ import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
 import { requireCredential, resolveCredential } from "../git/credentials";
 import { readDiffIndex } from "../git/diff";
-import { createChangeRequest } from "../git/pull-request";
+import { type ChangeRequestResult, createChangeRequest } from "../git/pull-request";
 import { providerFor } from "../git/providers";
 import {
   type RemoteAccess,
@@ -43,7 +43,7 @@ import {
 } from "./artifacts";
 import { redactSecrets } from "./audit/redact";
 import { renderDiffSummaryArtifact } from "./diff-summary";
-import { advanceTask } from "./orchestrator";
+import { TaskNotFoundError, advanceTask } from "./orchestrator";
 import {
   type ArtifactInput,
   type StagePromptInput,
@@ -189,6 +189,16 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     });
     workspacePath = workspace.path;
     branchName = workspace.branchName;
+
+    if (workspace.fetchWarning) {
+      appendEvent(task.id, stageRunId, {
+        type: "log",
+        level: "warn",
+        message:
+          `Could not fetch the latest ${task.repo.defaultBranch} (${workspace.fetchWarning}). ` +
+          "Continuing against the last known base.",
+      });
+    }
 
     if (task.workspacePath !== workspace.path || task.branchName !== workspace.branchName) {
       updateTask(task.id, {
@@ -532,6 +542,51 @@ export async function executeVerification(stageRunId: string): Promise<void> {
   advanceTask(task.id, { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict, detail });
 }
 
+/**
+ * Persists `createChangeRequest`'s discriminated result instead of
+ * collapsing it into `prUrl` alone — see stories.md S1. `manual` still
+ * writes `prUrl` (a compare link), but `deliveryOutcome` records which kind
+ * of link it is so the UI stops rendering it as "Open pull request ↗".
+ *
+ * Exported for `tests/execute-delivery-outcome.test.ts` — reaching both
+ * branches through a real `executeDelivery` run would need a live provider
+ * API, which `buildChangeRequestBody` already sets the precedent for
+ * avoiding in tests.
+ */
+export function recordDeliveryOutcome(taskId: string, change: ChangeRequestResult): void {
+  if (change.status === "created") {
+    updateTask(taskId, {
+      prUrl: change.url,
+      deliveryOutcome: "created",
+      deliveryReason: null,
+      prNumber: change.number,
+      prState: "open",
+    });
+  } else {
+    updateTask(taskId, {
+      prUrl: change.url,
+      deliveryOutcome: "manual",
+      deliveryReason: change.reason,
+      prNumber: null,
+      prState: null,
+    });
+  }
+}
+
+function appendChangeRequestEvent(taskId: string, stageRunId: string | null, change: ChangeRequestResult): void {
+  if (change.status === "created") {
+    appendEvent(taskId, stageRunId, { type: "pr_opened", url: change.url, noun: change.noun });
+  } else {
+    appendEvent(taskId, stageRunId, {
+      type: "log",
+      level: "warn",
+      message:
+        `Branch pushed, but the ${change.noun} was not opened automatically ` +
+        `(${change.reason}). Open it here: ${change.url}`,
+    });
+  }
+}
+
 function pullRequestResultCell(run: { exitCode: number | null; timedOut: boolean }): string {
   if (run.timedOut) return "⏱ timed out";
   if (run.exitCode === null) return "⚠ could not start";
@@ -667,19 +722,8 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
       body: buildChangeRequestBody(task.id, task.title),
     });
 
-    updateTask(task.id, { prUrl: change.url });
-
-    if (change.status === "created") {
-      appendEvent(task.id, stageRunId, { type: "pr_opened", url: change.url, noun: change.noun });
-    } else {
-      appendEvent(task.id, stageRunId, {
-        type: "log",
-        level: "warn",
-        message:
-          `Branch pushed, but the ${change.noun} was not opened automatically ` +
-          `(${change.reason}). Open it here: ${change.url}`,
-      });
-    }
+    recordDeliveryOutcome(task.id, change);
+    appendChangeRequestEvent(task.id, stageRunId, change);
   } catch (error) {
     const message = redactRemote(error instanceof Error ? error.message : String(error));
     markStageRunStatus(stageRunId, "failed", { error: message });
@@ -695,6 +739,57 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
   });
 
   advanceTask(task.id, { kind: "stage_succeeded", stage: "DELIVERY" });
+}
+
+export class ChangeRequestNotRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChangeRequestNotRetryableError";
+  }
+}
+
+/**
+ * "Try again" — re-invokes only `createChangeRequest` against the branch a
+ * previous `DELIVERY` run already pushed. See stories.md S1: this must not
+ * push again and must not create a new `stage_runs` row, since the push
+ * already succeeded and only the API call failed.
+ *
+ * Returns the resulting `ChangeRequestResult` rather than `void` so the
+ * caller (the API route, then the "Try again" button) can tell a genuine
+ * `created` outcome from a repeated `manual` one — the retry itself can fail
+ * again with the same broken credential, and reporting success regardless
+ * would be exactly the "failure disguised as success" this story exists to
+ * fix. See stories.md S1 and the code-review finding it addresses.
+ */
+export async function retryPullRequestCreation(taskId: string): Promise<ChangeRequestResult> {
+  const task = getTaskWithRepo(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (!task.branchName) {
+    throw new ChangeRequestNotRetryableError(
+      "This task has no pushed branch to open a change request from.",
+    );
+  }
+  if (task.deliveryOutcome !== "manual") {
+    throw new ChangeRequestNotRetryableError(
+      "This task's change request was already opened, or delivery has not run yet.",
+    );
+  }
+
+  // Attributed to the most recent `DELIVERY` run so it shows up on the
+  // timeline the push itself is already recorded under, without opening a
+  // new one.
+  const stageRunId = listStageRuns(taskId).filter((run) => run.stage === "DELIVERY").at(-1)?.id ?? null;
+
+  const change = await createChangeRequest({
+    connection: task.repo,
+    headBranch: task.branchName,
+    title: task.title,
+    body: buildChangeRequestBody(task.id, task.title),
+  });
+
+  recordDeliveryOutcome(task.id, change);
+  appendChangeRequestEvent(task.id, stageRunId, change);
+  return change;
 }
 
 /** Deletes a finished task's workspace once its retention window has elapsed. */

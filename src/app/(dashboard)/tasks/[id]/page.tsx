@@ -5,7 +5,7 @@ import { ArtifactTabs } from "@/components/artifact-tabs";
 import { ExecutionDot } from "@/components/execution-dot";
 import { LiveLog } from "@/components/live-log";
 import { RunStatusBadge, StageBadge, StatusBadge } from "@/components/stage-badge";
-import { GatePanel, TaskControls } from "@/components/task-actions";
+import { DeliveryOutcomeBanner, GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { executionCopy } from "@/lib/execution-copy";
@@ -136,7 +136,7 @@ export default async function TaskDetailPage(props: {
               View diff
             </Link>
           ) : null}
-          {task.prUrl ? (
+          {task.prUrl && task.deliveryOutcome === "created" ? (
             <Link
               href={task.prUrl}
               target="_blank"
@@ -148,6 +148,19 @@ export default async function TaskDetailPage(props: {
             </Link>
           ) : null}
         </div>
+
+        {/* `deliveryOutcome === 'manual'` means the branch pushed but the API
+            call that opens the change request did not — `prUrl` here is a
+            compare link, not a real change request, so it gets a banner
+            rather than the link above. See stories.md S1. */}
+        {task.prUrl && task.deliveryOutcome === "manual" ? (
+          <DeliveryOutcomeBanner
+            taskId={task.id}
+            reason={task.deliveryReason}
+            compareUrl={task.prUrl}
+            noun={providerFor(task.repo.provider).changeRequestNoun}
+          />
+        ) : null}
 
         {/* Same wording/tone rules as the board — see `execution-copy.ts`.
             `idle` (not admitted, or admitted with nothing to report) renders

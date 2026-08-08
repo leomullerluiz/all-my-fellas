@@ -125,6 +125,31 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "stage_runs", "provider", "TEXT");
     },
   },
+  {
+    name: "distinguish an opened change request from a pushed branch",
+    up: (sqlite) => {
+      // `'created'` | `'manual'` — see `schema.ts`'s `tasks.deliveryOutcome`
+      // comment for what each means to `pr_url`.
+      addColumn(sqlite, "tasks", "delivery_outcome", "TEXT");
+      addColumn(sqlite, "tasks", "delivery_reason", "TEXT");
+      addColumn(sqlite, "tasks", "pr_number", "INTEGER");
+      addColumn(sqlite, "tasks", "pr_state", "TEXT");
+
+      // Backfill, once: a row delivered before this migration has `pr_url` set
+      // but no `delivery_outcome`, and both the link (`created`) and the banner
+      // (`manual`) branches on `tasks/[id]/page.tsx` require it to be non-NULL —
+      // without this, a working pull request link would silently vanish from
+      // the UI. `'created'` is the only guessable value: it cannot recover
+      // which historical links were actually manual compare pages, but that is
+      // strictly better than every one of them disappearing. Same precedent as
+      // the `failed_stage`/`failure_kind` backfill above.
+      sqlite.exec(`
+        UPDATE tasks
+           SET delivery_outcome = 'created'
+         WHERE pr_url IS NOT NULL AND delivery_outcome IS NULL;
+      `);
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };
