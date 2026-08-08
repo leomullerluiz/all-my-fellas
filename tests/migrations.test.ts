@@ -366,6 +366,37 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds delivery_outcome, delivery_reason, pr_number and pr_state to an existing tasks table", () => {
+    const sqlite = freshDatabase("delivery-outcome-columns.db");
+    for (const column of ["delivery_outcome", "delivery_reason", "pr_number", "pr_state"]) {
+      expect(columns(sqlite, "tasks")).not.toContain(column);
+    }
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description) VALUES ('t', 'r', 'Old', 'd')",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    for (const column of ["delivery_outcome", "delivery_reason", "pr_number", "pr_state"]) {
+      expect(columns(sqlite, "tasks")).toContain(column);
+    }
+    const row = sqlite
+      .prepare(
+        "SELECT delivery_outcome AS outcome, delivery_reason AS reason, pr_number AS number, pr_state AS state FROM tasks WHERE id = 't'",
+      )
+      .get() as { outcome: string | null; reason: string | null; number: number | null; state: string | null };
+    expect(row.outcome).toBeNull();
+    expect(row.reason).toBeNull();
+    expect(row.number).toBeNull();
+    expect(row.state).toBeNull();
+    sqlite.close();
+  });
+
   it("re-running a migration on a half-applied database is harmless", () => {
     // Simulates a crash between the ALTER and the version bump.
     const sqlite = freshDatabase("half.db");

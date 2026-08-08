@@ -125,6 +125,17 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "stage_runs", "provider", "TEXT");
     },
   },
+  {
+    name: "distinguish an opened change request from a pushed branch",
+    up: (sqlite) => {
+      // `'created'` | `'manual'` — see `schema.ts`'s `tasks.deliveryOutcome`
+      // comment for what each means to `pr_url`.
+      addColumn(sqlite, "tasks", "delivery_outcome", "TEXT");
+      addColumn(sqlite, "tasks", "delivery_reason", "TEXT");
+      addColumn(sqlite, "tasks", "pr_number", "INTEGER");
+      addColumn(sqlite, "tasks", "pr_state", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };
