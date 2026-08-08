@@ -15,11 +15,13 @@ process.env.WORKSPACES_DIR = path.join(tempDir, "workspaces");
 
 let service: typeof import("@/server/tasks/service");
 let queue: typeof import("@/server/jobs/queue");
+let execution: typeof import("@/server/pipeline/execution");
 let repoId: string;
 
 beforeAll(async () => {
   service = await import("@/server/tasks/service");
   queue = await import("@/server/jobs/queue");
+  execution = await import("@/server/pipeline/execution");
 
   repoId = service.createRepo({
     name: "acme/app",
@@ -120,5 +122,77 @@ describe("claimNextJob ordering", () => {
 
     // One task already holds a claimed job, so the cap blocks the second.
     expect(queue.claimNextJob(1)).toBeNull();
+  });
+});
+
+/**
+ * `executionStates()`'s `waiting_for_worker.position` must agree with what
+ * `claimNextJob` actually claims next — see `spec-execution-honesty.md` §4.4.
+ * `queueTask` above leaves `tasks.status` at `queued`, so these mark the task
+ * `running` first: only an admitted task gets an execution state at all.
+ */
+describe("execution state queue position matches claimNextJob", () => {
+  function admittedTask(
+    title: string,
+    priority: Priority,
+    difficulty: "S" | "M" | "L" | null = null,
+  ) {
+    const task = queueTask(title, priority, difficulty);
+    service.updateTask(task.id, { status: "running" });
+    return task;
+  }
+
+  it("position 1 is the job claimNextJob returns next", () => {
+    admittedTask("low", "low");
+    admittedTask("urgent", "urgent");
+    admittedTask("medium", "medium");
+
+    const states = execution.executionStates();
+    const first = [...states.entries()].find(([, state]) => state.kind === "waiting_for_worker" && state.position === 1);
+    expect(first).toBeDefined();
+
+    const claimed = queue.claimNextJob(99);
+    expect(claimed!.taskId).toBe(first![0]);
+  });
+
+  it("an eligible cleanup_workspace job for an unrelated urgent task can be claimed ahead of position 1, and is excluded from depth", () => {
+    const low = admittedTask("low priority work", "low");
+    const finished = service.createTask({
+      repoId,
+      title: "Already finished",
+      description: "A description long enough to pass validation upstream.",
+      priority: "urgent",
+    });
+    service.updateTask(finished.id, { status: "completed" });
+    // Eligible now, unlike the real pipeline's retention-window delay.
+    queue.enqueueJob({ taskId: finished.id, kind: "cleanup_workspace" });
+
+    const states = execution.executionStates();
+    expect(states.get(low.id)).toEqual({ kind: "waiting_for_worker", position: 1, depth: 1 });
+    expect(states.has(finished.id)).toBe(false);
+
+    // `claimNextJob` has no `kind` filter, so the cleanup job — ranked ahead
+    // by the finished task's `urgent` priority — is claimed first, even
+    // though `low` is shown at "1st of 1".
+    const claimed = queue.claimNextJob(99);
+    expect(claimed!.taskId).toBe(finished.id);
+    expect(claimed!.kind).toBe("cleanup_workspace");
+  });
+
+  it("a busy task's own eligible job is skipped by claimNextJob and does not appear in the queue", () => {
+    const busy = admittedTask("busy", "urgent");
+    const waiting = admittedTask("waiting", "low");
+    queue.claimNextJob(99); // claims `busy`'s job
+    // `busy`'s next stage is already scheduled — the ordinary overlap window.
+    queue.enqueueJob({ taskId: busy.id, kind: "deliver" });
+
+    const states = execution.executionStates();
+    expect(states.get(busy.id)).toEqual({ kind: "in_flight", job: "agent" });
+    expect(states.get(waiting.id)).toEqual({ kind: "waiting_for_worker", position: 1, depth: 1 });
+
+    // `claimNextJob` would skip `busy`'s pending job (queue.ts:98) and claim
+    // `waiting`'s next, matching what the derivation shows.
+    const claimed = queue.claimNextJob(99);
+    expect(claimed!.taskId).toBe(waiting.id);
   });
 });
