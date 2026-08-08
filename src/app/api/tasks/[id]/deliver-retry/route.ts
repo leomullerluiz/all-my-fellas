@@ -11,9 +11,13 @@ import { getTaskWithRepo } from "@/server/tasks/service";
 export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await context.params;
-    await retryPullRequestCreation(id);
+    // `change` carries the discriminated `created`/`manual` result so the
+    // caller can tell a genuine success from a repeated manual outcome —
+    // `task.deliveryOutcome` (also returned) says the same thing, but callers
+    // that only read the top-level field would otherwise have to re-derive it.
+    const change = await retryPullRequestCreation(id);
     const task = getTaskWithRepo(id);
-    return json({ task });
+    return json({ task, change });
   } catch (error) {
     if (error instanceof TaskNotFoundError) return notFound(error.message);
     if (error instanceof ChangeRequestNotRetryableError) return conflict(error.message);

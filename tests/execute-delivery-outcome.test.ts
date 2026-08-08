@@ -114,7 +114,13 @@ describe("retryPullRequestCreation", () => {
     // `generic` has no change-request API and always throws — retrying still
     // must not fail the caller, and must produce another honest "manual"
     // outcome rather than crashing.
-    await execute.retryPullRequestCreation(task.id);
+    const change = await execute.retryPullRequestCreation(task.id);
+
+    // The caller (the API route, then the "Try again" button) needs this to
+    // tell a genuine `created` retry from a repeated `manual` one — a 200
+    // response alone does not say which happened. See the code-review
+    // finding this return value was added to fix.
+    expect(change.status).toBe("manual");
 
     const updated = service.getTask(task.id)!;
     expect(updated.deliveryOutcome).toBe("manual");

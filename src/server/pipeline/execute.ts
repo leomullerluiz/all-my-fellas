@@ -753,8 +753,15 @@ export class ChangeRequestNotRetryableError extends Error {
  * previous `DELIVERY` run already pushed. See stories.md S1: this must not
  * push again and must not create a new `stage_runs` row, since the push
  * already succeeded and only the API call failed.
+ *
+ * Returns the resulting `ChangeRequestResult` rather than `void` so the
+ * caller (the API route, then the "Try again" button) can tell a genuine
+ * `created` outcome from a repeated `manual` one — the retry itself can fail
+ * again with the same broken credential, and reporting success regardless
+ * would be exactly the "failure disguised as success" this story exists to
+ * fix. See stories.md S1 and the code-review finding it addresses.
  */
-export async function retryPullRequestCreation(taskId: string): Promise<void> {
+export async function retryPullRequestCreation(taskId: string): Promise<ChangeRequestResult> {
   const task = getTaskWithRepo(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
   if (!task.branchName) {
@@ -782,6 +789,7 @@ export async function retryPullRequestCreation(taskId: string): Promise<void> {
 
   recordDeliveryOutcome(task.id, change);
   appendChangeRequestEvent(task.id, stageRunId, change);
+  return change;
 }
 
 /** Deletes a finished task's workspace once its retention window has elapsed. */

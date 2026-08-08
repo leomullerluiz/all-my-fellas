@@ -243,7 +243,24 @@ export function DeliveryOutcomeBanner({
       return;
     }
 
-    toast.success(`${noun[0].toUpperCase()}${noun.slice(1)} opened.`);
+    // A 200 only means the retry ran, not that it succeeded — `createChangeRequest`
+    // can return `{status:"manual"}` again (e.g. the credential is still
+    // rejected), and reporting "opened" regardless would reintroduce the exact
+    // failure-looks-like-success bug this banner exists to fix. Branch the
+    // toast on the actual outcome; `router.refresh()` re-renders this banner
+    // with the fresh `delivery_reason` either way.
+    const payload = (await response.json().catch(() => ({}))) as {
+      change?: { status?: "created" | "manual"; reason?: string };
+    };
+    if (payload.change?.status === "manual") {
+      toast.error(
+        payload.change.reason
+          ? `Still not opened: ${payload.change.reason}`
+          : `The ${noun} still did not open.`,
+      );
+    } else {
+      toast.success(`${noun[0].toUpperCase()}${noun.slice(1)} opened.`);
+    }
     setBusy(false);
     router.refresh();
   }
