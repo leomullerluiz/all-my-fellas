@@ -26,32 +26,50 @@ import {
 
 /** Human gate approval plus the retry / cancel controls. */
 
-const GATE_COPY: Record<
-  Gate,
-  { title: string; description: string; approve: string; approvedToast: string }
-> = {
-  PLAN_GATE: {
-    title: "Approve the technical plan",
-    description:
-      "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer.",
-    approve: "Approve plan",
-    approvedToast: "Plan approved",
-  },
-  HUMAN_CODE_REVIEW: {
-    title: "Review the code",
-    description:
-      "Code review and QA have passed. Read the diff before this ships. Requesting changes sends the work back to the Developer with your comment.",
-    approve: "Approve code",
-    approvedToast: "Code approved",
-  },
-  STAKEHOLDER_GATE: {
-    title: "Approve delivery",
-    description:
-      "QA and homologation are done. Approving pushes the branch and opens a pull request — the merge still happens on GitHub. If homologation rejected the change, requesting changes sends it back to the Developer with your comment instead of forcing an approve-or-reject choice on verified work.",
-    approve: "Approve and deliver",
-    approvedToast: "Delivery approved",
-  },
-};
+/** What `STAKEHOLDER_GATE`'s copy needs from the task's repo — nothing else reads this. */
+type GateProvider = { displayName: string; changeRequestNoun: string };
+
+/**
+ * A function rather than a static `Record`, so a caller with no provider in
+ * scope fails to typecheck instead of quietly rendering "GitHub" — see
+ * `spec-execution-honesty.md` §7.4. Every gate takes `provider`, even the two
+ * that don't read it: a per-gate signature would let a future gate skip
+ * threading it through by accident.
+ */
+function gateCopy(
+  gate: Gate,
+  provider: GateProvider,
+): { title: string; description: string; approve: string; approvedToast: string } {
+  switch (gate) {
+    case "PLAN_GATE":
+      return {
+        title: "Approve the technical plan",
+        description:
+          "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer.",
+        approve: "Approve plan",
+        approvedToast: "Plan approved",
+      };
+    case "HUMAN_CODE_REVIEW":
+      return {
+        title: "Review the code",
+        description:
+          "Code review and QA have passed. Read the diff before this ships. Requesting changes sends the work back to the Developer with your comment.",
+        approve: "Approve code",
+        approvedToast: "Code approved",
+      };
+    case "STAKEHOLDER_GATE":
+      return {
+        title: "Approve delivery",
+        description:
+          `QA and homologation are done. Approving pushes the branch and opens a ${provider.changeRequestNoun} ` +
+          `— the merge still happens on ${provider.displayName}. If homologation rejected the change, ` +
+          "requesting changes sends it back to the Developer with your comment instead of forcing an " +
+          "approve-or-reject choice on verified work.",
+        approve: "Approve and deliver",
+        approvedToast: "Delivery approved",
+      };
+  }
+}
 
 type Decision = "approve" | "request_changes" | "reject";
 
@@ -64,11 +82,14 @@ const DECISION_TOAST: Record<Exclude<Decision, "approve">, string> = {
 export function GatePanel({
   taskId,
   gate,
+  provider,
   diffSummary,
   verification,
 }: {
   taskId: string;
   gate: Gate;
+  /** Resolved server-side from the task's repo — see `tasks/[id]/page.tsx`. */
+  provider: GateProvider;
   /** e.g. "14 files changed, +320 −87" — shown so the size is visible up front. */
   diffSummary?: string | null;
   /**
@@ -85,7 +106,7 @@ export function GatePanel({
   // — the request outcome itself is reported via toast, not this state.
   const [commentError, setCommentError] = useState<string | null>(null);
 
-  const copy = GATE_COPY[gate];
+  const copy = gateCopy(gate, provider);
   const allowed = GATE_ALLOWED_DECISIONS[gate];
   const canRequestChanges = allowed.includes("request_changes");
 

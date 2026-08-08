@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * `buildPullRequestBody`'s `## Verification` section — spec §12: expanded
+ * `buildChangeRequestBody`'s `## Verification` section — spec §12: expanded
  * (not inside a `<details>`), a table when commands ran, and a stated
  * paragraph when nothing was configured.
  */
@@ -47,11 +47,11 @@ function newTask() {
   });
 }
 
-describe("buildPullRequestBody — ## Verification section", () => {
+describe("buildChangeRequestBody — ## Verification section", () => {
   it("states plainly that nothing was run mechanically when no VERIFICATION run exists", () => {
     const task = newTask();
 
-    const body = execute.buildPullRequestBody(task.id, task.title);
+    const body = execute.buildChangeRequestBody(task.id, task.title);
 
     expect(body).toContain("## Verification");
     expect(body).toContain("nothing was run mechanically");
@@ -87,7 +87,7 @@ describe("buildPullRequestBody — ## Verification section", () => {
       },
     ]);
 
-    const body = execute.buildPullRequestBody(task.id, task.title);
+    const body = execute.buildChangeRequestBody(task.id, task.title);
 
     expect(body).toContain("## Verification");
     expect(body).toContain("| Command | Result | Duration |");

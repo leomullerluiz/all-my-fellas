@@ -289,7 +289,7 @@ export function RepoManager({
                 type="url"
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://github.com/acme/storefront"
+                placeholder={selected?.exampleUrl}
                 required
               />
             </Field>
@@ -338,7 +338,7 @@ export function RepoManager({
                 id="repo-credential"
                 value={credentialRef}
                 onChange={(event) => setCredentialRef(event.target.value.toUpperCase())}
-                placeholder={selected?.defaultCredentialEnvVar ?? "GITHUB_TOKEN"}
+                placeholder={selected?.defaultCredentialEnvVar}
                 className="font-mono text-xs"
               />
             </Field>
@@ -347,7 +347,7 @@ export function RepoManager({
               label="Credential username (optional)"
               htmlFor="repo-credential-user"
               error={errors.credentialUsername}
-              hint="Only for credentials tied to an account name, such as a Bitbucket app password."
+              hint="Only for credentials tied to an account name rather than a bare token."
             >
               <Input
                 id="repo-credential-user"

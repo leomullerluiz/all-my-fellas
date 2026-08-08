@@ -7,11 +7,12 @@ import { TaskFilterBar } from "@/components/task-filter-bar";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { UsageBar } from "@/components/usage-bar";
+import { changeRequestNounFor } from "@/lib/provider-copy";
 import { defaultDateRange, filterBoardTasks, parseDateRangeParams } from "@/lib/task-filter";
 import { formatCost } from "@/lib/utils";
 import { resolveProviderAuth } from "@/server/config/env";
 import { credentialSource } from "@/server/git/credentials";
-import { providerFor } from "@/server/git/providers";
+import { providerFor, supportedProviderNames } from "@/server/git/providers";
 import { MAX_JOB_ATTEMPTS } from "@/server/jobs/queue";
 import { executionStateFor, executionStates } from "@/server/pipeline/execution";
 import { capacity } from "@/server/pipeline/orchestrator";
@@ -153,7 +154,7 @@ export default async function DashboardPage(props: {
       {repos.length === 0 ? (
         <EmptyState
           title="Connect a repository first"
-          description="The pipeline reads real code to estimate the work and delivers the result as a pull request, so it needs a GitHub repository to work against."
+          description={`The pipeline reads real code to estimate the work and delivers the result as a change request. Connect a repository on ${supportedProviderNames()} — or any git server, through the generic provider.`}
           action={
             <Link href="/repos">
               <Button variant="secondary">Add a repository</Button>
@@ -163,7 +164,9 @@ export default async function DashboardPage(props: {
       ) : allTasks.length === 0 ? (
         <EmptyState
           title="No tasks yet"
-          description="Describe a feature and the pipeline will refine it, plan it, build it, review it, and open a pull request. Nothing starts until you say so."
+          description={`Describe a feature and the pipeline will refine it, plan it, build it, review it, and open a ${changeRequestNounFor(
+            repos.map((repo) => providerFor(repo.provider).changeRequestNoun),
+          )}. Nothing starts until you say so.`}
           action={
             <Link href="/tasks/new">
               <Button>Create the first task</Button>

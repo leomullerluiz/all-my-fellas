@@ -34,6 +34,25 @@ export function detectProvider(repoUrl: string): RepositoryProvider | null {
   return PROVIDERS.find((provider) => provider.matches(repoUrl)) ?? null;
 }
 
+/**
+ * "GitHub, GitLab, Bitbucket Cloud or Azure DevOps" — the providers that claim
+ * a URL directly, joined for a zero-repo empty state that has no connection
+ * to read a display name from. Naming them here is an enumeration, not a
+ * claim that only one is supported — see `spec-execution-honesty.md` §8's
+ * distinction for `site/`, applied the same way server-side.
+ *
+ * `generic` is left out: it never claims a URL, so listing it here would
+ * misstate what "auto-detected" means.
+ */
+export function supportedProviderNames(): string {
+  const names = PROVIDERS.filter((provider) => provider.id !== "generic").map(
+    (provider) => provider.displayName,
+  );
+  return names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+}
+
 export {
   azureDevOpsProvider,
   bitbucketProvider,

@@ -172,6 +172,13 @@ export default async function TaskDetailPage(props: {
         <GatePanel
           taskId={task.id}
           gate={task.currentStage}
+          // Only the two plain fields a client component can receive as
+          // props — `RepositoryProvider` itself carries methods, which
+          // cannot cross the server/client boundary.
+          provider={{
+            displayName: providerFor(task.repo.provider).displayName,
+            changeRequestNoun: providerFor(task.repo.provider).changeRequestNoun,
+          }}
           diffSummary={diffSummary}
           verification={verificationSummary}
         />

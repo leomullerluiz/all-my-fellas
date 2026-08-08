@@ -105,10 +105,6 @@ export function resolveGeminiAuth(): ProviderAuth {
   return { mode: "missing", label: "No Gemini credential configured" };
 }
 
-export function hasGithubToken(): boolean {
-  return str("GITHUB_TOKEN", "") !== "";
-}
-
 /**
  * Author recorded on commits the pipeline makes itself.
  *

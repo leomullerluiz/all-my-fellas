@@ -14,11 +14,13 @@ afterEach(() => {
   cleanup();
 });
 
-const REPOS = [{ id: "repo_1", name: "acme/app", defaultBranch: "main" }];
+const REPOS = [
+  { id: "repo_1", name: "acme/app", defaultBranch: "main", changeRequestNoun: "pull request" },
+];
 
 const TWO_REPOS = [
-  { id: "repo_1", name: "acme/app", defaultBranch: "main" },
-  { id: "repo_2", name: "acme/other", defaultBranch: "main" },
+  { id: "repo_1", name: "acme/app", defaultBranch: "main", changeRequestNoun: "pull request" },
+  { id: "repo_2", name: "acme/other", defaultBranch: "main", changeRequestNoun: "merge request" },
 ];
 
 /** Candidates spanning both repos — the server passes every repo's tasks. */
