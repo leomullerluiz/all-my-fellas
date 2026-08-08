@@ -327,6 +327,156 @@ describe("pipeline orchestration", () => {
     expect(rejected.failureReason).toBe("Wrong approach");
   });
 
+  it("sends a plan-gate request_changes back to the Architect with the comment as input", () => {
+    const task = newTask("Mostly right plan");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect #1 -> PLAN_GATE
+
+    orchestrator.decideGate({
+      taskId: task.id,
+      gate: "PLAN_GATE",
+      decision: "request_changes",
+      comment: "Redo the approach to the third section.",
+    });
+
+    // Routed to ARCHITECTURE, not DEVELOPMENT.
+    const task2 = service.getTask(task.id)!;
+    expect(task2.currentStage).toBe("ARCHITECTURE");
+    const runs = service.listStageRuns(task.id).map((r) => [r.stage, r.attempt]);
+    expect(runs).toEqual([
+      ["STAKEHOLDER_REFINEMENT", 1],
+      ["PO_REFINEMENT", 1],
+      ["ARCHITECTURE", 1],
+      ["ARCHITECTURE", 2],
+    ]);
+
+    // Persisted as a `human_review` artifact hung off the ARCHITECTURE#1 run,
+    // exactly what `gatherInputs`'s ARCHITECTURE-rework branch reads.
+    const feedback = service.latestArtifact(task.id, "human_review");
+    expect(feedback).not.toBeNull();
+    expect(feedback!.contentMd).toContain("Redo the approach to the third section");
+
+    const previousArchitectureRun = service.getStageRunByAttempt(task.id, "ARCHITECTURE", 1);
+    const cycleStart =
+      previousArchitectureRun!.finishedAt ?? previousArchitectureRun!.createdAt ?? 0;
+    const sinceCycle = service.latestArtifactSince(task.id, "human_review", cycleStart);
+    expect(sinceCycle).not.toBeNull();
+    expect(sinceCycle!.contentMd).toContain("Redo the approach");
+  });
+
+  it("does not spend the shared DEVELOPMENT rework budget on repeated plan-gate request_changes", async () => {
+    // `settings.updateSettings` (called once in `beforeAll`) already persisted
+    // a stored-overrides row, so an env var change alone would no longer be
+    // read — `getSettings` prefers the stored value. Patch it directly instead.
+    const settingsStore = await import("@/server/settings/store");
+    const previousMax = settingsStore.getSettings().reworkMaxCycles;
+    settingsStore.updateSettings({ reworkMaxCycles: 1 });
+    try {
+      const task = newTask("Iterated plan");
+
+      completeCurrentStage(task.id); // Stakeholder
+      completeCurrentStage(task.id); // Product Owner
+      completeCurrentStage(task.id); // Architect #1 -> PLAN_GATE
+
+      // Five plan-gate request_changes decisions, well past reworkMaxCycles=1 —
+      // none of them may fail the task, because none of them touch the
+      // DEVELOPMENT budget at all.
+      for (let i = 0; i < 5; i += 1) {
+        orchestrator.decideGate({
+          taskId: task.id,
+          gate: "PLAN_GATE",
+          decision: "request_changes",
+          comment: `Iteration ${i}`,
+        });
+        completeCurrentStage(task.id); // Architect reruns -> PLAN_GATE again
+      }
+
+      const task2 = service.getTask(task.id)!;
+      expect(task2.currentStage).toBe("PLAN_GATE");
+      expect(task2.status).toBe("awaiting_gate");
+      expect(task2.failureKind).toBeNull();
+
+      // A subsequent CODE_REVIEW rework still fails at exactly
+      // reworkMaxCycles(1) + 1 = 2 DEVELOPMENT attempts, unaffected by the
+      // plan-gate loop above.
+      orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+      completeCurrentStage(task.id); // Development #1
+      completeCurrentStage(task.id, "approved"); // Verification #1
+      completeCurrentStage(task.id, "changes_requested"); // Code review #1 -> Development #2
+      completeCurrentStage(task.id); // Development #2
+      completeCurrentStage(task.id, "approved"); // Verification #2
+      completeCurrentStage(task.id, "changes_requested"); // Code review #2 -> exhausted
+
+      const exhausted = service.getTask(task.id)!;
+      expect(exhausted.status).toBe("failed");
+      expect(exhausted.failureKind).toBe("rework_exhausted");
+      expect(
+        service.listStageRuns(task.id).filter((r) => r.stage === "DEVELOPMENT"),
+      ).toHaveLength(2);
+    } finally {
+      settingsStore.updateSettings({ reworkMaxCycles: previousMax });
+    }
+  });
+
+  it("gives the Developer an approving PLAN_GATE comment on attempt 1 (S2 regression)", () => {
+    // Per stories.md S2: this test fails against the pre-fix code, where
+    // `decideGate` only ever wrote a `human_review` artifact on
+    // `request_changes`, and the attempt-1 DEVELOPMENT run never looked for
+    // one anyway (`gatherInputs` only appended rework artifacts for
+    // `attempt > 1`).
+    const task = newTask("Approved with a note");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect -> PLAN_GATE
+
+    orchestrator.decideGate({
+      taskId: task.id,
+      gate: "PLAN_GATE",
+      decision: "approve",
+      comment: "Use the existing retry() helper instead of writing a new one.",
+    });
+
+    const architectureRun = service
+      .listStageRuns(task.id)
+      .filter((r) => r.stage === "ARCHITECTURE")
+      .at(-1)!;
+
+    const feedback = service.latestArtifact(task.id, "human_review");
+    expect(feedback).not.toBeNull();
+    expect(feedback!.stageRunId).toBe(architectureRun.id);
+    expect(feedback!.contentMd).toContain("## Reviewer Comment");
+    expect(feedback!.contentMd).toContain("Use the existing retry() helper");
+
+    const developmentRun = service
+      .listStageRuns(task.id)
+      .filter((r) => r.stage === "DEVELOPMENT")
+      .at(-1)!;
+    expect(developmentRun.attempt).toBe(1);
+
+    // Exactly the lookup gatherInputs's new DEVELOPMENT-attempt-1 branch
+    // performs: the human_review artifact since the reviewed ARCHITECTURE
+    // run's finish must still be found at attempt 1.
+    const cycleStart = architectureRun.finishedAt ?? architectureRun.createdAt ?? 0;
+    const sinceCycle = service.latestArtifactSince(task.id, "human_review", cycleStart);
+    expect(sinceCycle).not.toBeNull();
+    expect(sinceCycle!.contentMd).toContain("retry() helper");
+  });
+
+  it("writes no human_review artifact for an approval with an empty comment", () => {
+    const task = newTask("Approved with nothing to say");
+
+    completeCurrentStage(task.id); // Stakeholder
+    completeCurrentStage(task.id); // Product Owner
+    completeCurrentStage(task.id); // Architect -> PLAN_GATE
+
+    orchestrator.decideGate({ taskId: task.id, gate: "PLAN_GATE", decision: "approve" });
+
+    expect(service.latestArtifact(task.id, "human_review")).toBeNull();
+  });
+
   it("refuses a gate decision the task is not waiting on", () => {
     const task = newTask("Wrong gate");
     expect(() =>
