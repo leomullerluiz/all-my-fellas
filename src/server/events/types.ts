@@ -33,6 +33,13 @@ export type PipelineEvent =
   | { type: "artifact_saved"; artifactType: string }
   | { type: "gate_opened"; gate: Stage }
   | { type: "gate_decided"; gate: Stage; decision: string; comment?: string }
+  /**
+   * `gate` would otherwise have parked the task waiting for a human, but the
+   * "no-approval automation" setting was on — see `state-machine.ts`'s
+   * `bypassedGate`. Never written for the silent
+   * `autoApprovePlanForLowCriticality` waiver, only for this setting.
+   */
+  | { type: "gate_bypassed"; gate: Stage }
   | { type: "git"; message: string }
   // `noun` is absent on rows written before this field existed; readers fall
   // back to the neutral "change request" — see `NEUTRAL_CHANGE_REQUEST_NOUN`.
@@ -85,6 +92,7 @@ const PIPELINE_EVENT_TYPE_SET = {
   artifact_saved: true,
   gate_opened: true,
   gate_decided: true,
+  gate_bypassed: true,
   git: true,
   pr_opened: true,
   task_finished: true,
