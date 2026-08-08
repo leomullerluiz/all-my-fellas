@@ -204,7 +204,10 @@ export type GateDecision = (typeof GATE_DECISIONS)[number];
 
 /** Which decisions each gate accepts. Anything else is a 400, not a coercion. */
 export const GATE_ALLOWED_DECISIONS: Record<Gate, readonly GateDecision[]> = {
-  PLAN_GATE: ["approve", "reject"],
+  // `request_changes` here re-runs the Architect rather than the Developer —
+  // see the `PLAN_GATE` case in `nextTransition`'s `request_changes` branch.
+  // A plan that is "mostly right" no longer has to be approved or destroyed.
+  PLAN_GATE: ["approve", "request_changes", "reject"],
   HUMAN_CODE_REVIEW: ["approve", "request_changes", "reject"],
   // `request_changes` here is a re-admission: a homologation-driven escalation
   // can land at this gate carrying a machine rejection, and a stakeholder must

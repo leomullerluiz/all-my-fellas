@@ -296,6 +296,26 @@ export async function commitPendingChanges(
   return true;
 }
 
+/**
+ * Whether the workspace has uncommitted changes.
+ *
+ * `null` means "cannot tell" — the workspace directory is missing (already
+ * cleaned up, or the task never reached a stage that needs one) or the git
+ * command itself failed. Both are treated as "nothing to warn about" by the
+ * caller rather than an error: a reviewer must never be blocked by a check
+ * that only exists to warn them, and a `false` here would be actively wrong
+ * (a workspace that does not exist is not "clean").
+ */
+export async function workspaceIsDirty(workspacePath: string): Promise<boolean | null> {
+  if (!existsSync(path.join(workspacePath, ".git"))) return null;
+  try {
+    const status = await simpleGit(workspacePath).status();
+    return !status.isClean();
+  } catch {
+    return null;
+  }
+}
+
 /** Pushes the task branch with the credential attached for this command only. */
 export async function pushBranch(
   workspacePath: string,

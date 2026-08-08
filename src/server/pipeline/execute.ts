@@ -145,6 +145,33 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
     }
   }
 
+  // A `PLAN_GATE` `request_changes` rework re-runs the Architect with the
+  // reviewer's comment, through the same `human_review` artifact channel the
+  // Developer rework branch above already reads — keyed to the ARCHITECTURE
+  // cycle it belongs to rather than the DEVELOPMENT one, so a stale comment
+  // from an earlier plan iteration cannot leak into a later one.
+  if (stage === "ARCHITECTURE" && attempt > 1) {
+    const previousArchitectureRun = getStageRunByAttempt(taskId, "ARCHITECTURE", attempt - 1);
+    const cycleStart = previousArchitectureRun?.finishedAt ?? previousArchitectureRun?.createdAt ?? 0;
+    const review = latestArtifactSince(taskId, "human_review", cycleStart);
+    if (review) inputs.push({ type: "human_review", content: review.contentMd });
+  }
+
+  // An approving `PLAN_GATE` comment is a `human_review` artifact too (see
+  // `decideGate`), hung off the ARCHITECTURE run that was just approved. The
+  // DEVELOPMENT run that approval schedules is always attempt 1, which the
+  // rework branch above never covers — without this branch the comment is
+  // recorded and never read by anyone.
+  if (stage === "DEVELOPMENT" && attempt === 1) {
+    const reviewedArchitectureRun = listStageRuns(taskId)
+      .filter((run) => run.stage === "ARCHITECTURE")
+      .at(-1);
+    const cycleStart =
+      reviewedArchitectureRun?.finishedAt ?? reviewedArchitectureRun?.createdAt ?? 0;
+    const review = latestArtifactSince(taskId, "human_review", cycleStart);
+    if (review) inputs.push({ type: "human_review", content: review.contentMd });
+  }
+
   return inputs;
 }
 

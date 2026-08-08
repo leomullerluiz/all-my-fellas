@@ -45,7 +45,7 @@ function gateCopy(
       return {
         title: "Approve the technical plan",
         description:
-          "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer.",
+          "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer. Requesting changes sends the plan back to the Architect with your comment — the brief and the stories are kept, not re-run.",
         approve: "Approve plan",
         approvedToast: "Plan approved",
       };
@@ -392,6 +392,11 @@ export function TaskControls({
             Edit
           </Button>
         </Link>
+        <Link href={`/tasks/new?from=${taskId}`}>
+          <Button variant="ghost" size="sm">
+            Duplicate
+          </Button>
+        </Link>
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onDelete}>
           {busy === "delete" ? "Deleting…" : "Delete"}
         </Button>
@@ -410,8 +415,11 @@ export function TaskControls({
     );
   }
 
-  if (!canCancel && !showRetrySection) return null;
-
+  // Every other status still gets a Duplicate link — a rejected, failed, or
+  // completed task is otherwise a dead end for reusing its description,
+  // priority, and attachments (`stories.md` S4). This is the only reason the
+  // component renders anything at all for those statuses; the early `return
+  // null` this replaced only ever fired for them.
   return (
     <div className="flex flex-wrap items-center gap-2">
       {showRetrySection && retry?.available ? (
@@ -447,6 +455,11 @@ export function TaskControls({
           {busy === "cancel" ? "Cancelling…" : "Cancel task"}
         </Button>
       ) : null}
+      <Link href={`/tasks/new?from=${taskId}`}>
+        <Button variant="ghost" size="sm">
+          Duplicate
+        </Button>
+      </Link>
       {/* The approval already succeeded — this is not an error state, just
           an explanation of why the task hasn't resumed yet (S2). Failures are
           reported by toast, so nothing competes with it for this slot. */}
