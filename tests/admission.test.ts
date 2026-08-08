@@ -634,6 +634,7 @@ describe("editing and deleting a not-started task", () => {
       priority: "urgent",
       requireHumanCodeReview: false,
       dependsOn: [],
+      maxCostUsd: null,
     });
 
     const updated = service.getTask(task.id)!;
@@ -659,6 +660,7 @@ describe("editing and deleting a not-started task", () => {
       priority: task.priority,
       requireHumanCodeReview: false,
       dependsOn: [],
+      maxCostUsd: task.maxCostUsd,
     });
 
     expect(events.readEvents(task.id).some((e) => e.type === "task_edited")).toBe(false);
@@ -676,6 +678,7 @@ describe("editing and deleting a not-started task", () => {
         priority: "low",
         requireHumanCodeReview: false,
         dependsOn: [],
+        maxCostUsd: null,
       }),
     ).toThrow(orchestrator.GateError);
   });

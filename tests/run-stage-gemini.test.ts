@@ -172,4 +172,57 @@ describe("runGeminiStage", () => {
       ),
     ).rejects.toThrow(StageExecutionError);
   });
+
+  it("stops on the turn that crosses maxCostUsd, with a non-zero partial and non-retryable", async () => {
+    process.env.GEMINI_API_KEY = "gm-test-123";
+    ({ runGeminiStage } = await import("@/server/pipeline/providers/gemini"));
+
+    let calls = 0;
+    // gemini-2.5-flash: $0.30 / 1M input tokens — 500k input tokens is a
+    // fixed $0.15 per turn, so two turns cross a $0.2 ceiling on the second.
+    const loopingClient: GeminiClient = {
+      models: {
+        generateContent: async () => {
+          calls++;
+          return {
+            candidates: [
+              {
+                content: {
+                  role: "model",
+                  parts: [{ functionCall: { name: "Read", args: { file_path: "brief.md" } } }],
+                },
+              },
+            ],
+            usageMetadata: { promptTokenCount: 500_000, candidatesTokenCount: 0 },
+          };
+        },
+      },
+    };
+
+    let error: unknown;
+    try {
+      await runGeminiStage(
+        {
+          role: ROLES.PO_REFINEMENT,
+          prompt,
+          model: "gemini-2.5-flash",
+          maxTurns: 10,
+          maxCostUsd: 0.2,
+          workspacePath,
+          onEvent: () => {},
+        },
+        loopingClient,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(StageExecutionError);
+    const stageError = error as StageExecutionError;
+    expect(stageError.retryable).toBe(false);
+    expect(stageError.partial.costUsd).toBeGreaterThanOrEqual(0.2);
+    expect(stageError.partial.inputTokens).toBe(1_000_000);
+    // Stopped before a third turn was ever attempted.
+    expect(calls).toBe(2);
+  });
 });

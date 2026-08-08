@@ -109,6 +109,19 @@ export const tasks = sqliteTable(
      * `spec-retry-recovery.md` §6.
      */
     reworkBudgetGrant: integer("rework_budget_grant").notNull().default(0),
+    /**
+     * Per-task spend ceiling, checked by `scheduleStage` before enqueueing
+     * each stage — `NULL` means no ceiling. See `settings.maxCostPerStageUsd`
+     * for the per-stage counterpart, enforced by the provider instead.
+     */
+    maxCostUsd: real("max_cost_usd"),
+    /**
+     * "Finish the current stage, then wait instead of scheduling the next
+     * one." Checked by `scheduleStage`, cleared by `resumeTask`. Not a
+     * `TaskStatus` — see `stages.ts`'s note on why `on_queue`/`gate_queued`
+     * are already the two exceptions to "status is derived from stage".
+     */
+    paused: integer("paused", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },

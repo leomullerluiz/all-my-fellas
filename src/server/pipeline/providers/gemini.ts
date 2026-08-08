@@ -100,6 +100,21 @@ export async function runGeminiStage(
   let turn = 0;
 
   while (turn < options.maxTurns) {
+    // A stop-loss, not a hard cap (§5.3): this can only ever check the cost
+    // of turns already taken, since the API reports usage after a turn
+    // completes, never before.
+    if (options.maxCostUsd !== undefined) {
+      const spent = estimateCostUsd(options.model, inputTokens, outputTokens);
+      if (spent >= options.maxCostUsd) {
+        throw new StageExecutionError(
+          `The ${role.name} session stopped after ${turn} turn(s): spend ceiling of ` +
+            `${options.maxCostUsd} USD reached (${spent.toFixed(4)} USD spent).`,
+          { costUsd: spent, inputTokens, outputTokens, numTurns: turn, transcript },
+          false,
+        );
+      }
+    }
+
     turn++;
 
     const response = await client.models.generateContent({

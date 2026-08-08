@@ -116,7 +116,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
-    editTask(id, fields, validatedAttachments.data);
+    editTask(
+      id,
+      { ...fields, maxCostUsd: fields.maxCostPerTaskUsd ?? null },
+      validatedAttachments.data,
+    );
     return json({ task: getTask(id) });
   } catch (error) {
     if (error instanceof TaskNotFoundError) return notFound(error.message);

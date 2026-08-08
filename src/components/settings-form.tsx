@@ -256,6 +256,32 @@ export function SettingsForm({
             </div>
 
             <Field
+              label="Spend ceiling per stage (USD)"
+              htmlFor="maxCostPerStageUsd"
+              hint={
+                "No single agent session should ever exceed this. Checked after the turn that " +
+                "crosses it, not before — a stop-loss, not a hard cap, since no provider reports " +
+                "what a turn will cost before running it. The Claude figure is the SDK's own " +
+                "estimate of equivalent API spend, not a bill. Blank means no ceiling."
+              }
+            >
+              <Input
+                id="maxCostPerStageUsd"
+                type="number"
+                min={0}
+                step="0.01"
+                value={settings.maxCostPerStageUsd ?? ""}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setSettings((current) => ({
+                    ...current,
+                    maxCostPerStageUsd: raw === "" ? null : Number(raw),
+                  }));
+                }}
+              />
+            </Field>
+
+            <Field
               label="Workspace retention (days)"
               htmlFor="workspaceRetentionDays"
               hint="How long a finished task's clone is kept on disk for inspection. 0 deletes it immediately."

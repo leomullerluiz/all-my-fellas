@@ -164,6 +164,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
   const model = settings.models[run.stage];
   const maxTurns = run.maxTurns ?? settings.maxTurns[run.stage];
   const provider = settings.providers[run.stage];
+  const maxCostUsd = settings.maxCostPerStageUsd ?? undefined;
 
   markStageRunStatus(stageRunId, "running");
   appendEvent(task.id, stageRunId, {
@@ -271,6 +272,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       role,
       model,
       maxTurns,
+      maxCostUsd,
       workspacePath,
       prompt: promptInput,
       onEvent: (event) => appendEvent(task.id, stageRunId, event),
@@ -303,7 +305,11 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     }
 
     markStageRunStatus(stageRunId, "failed", { error: message });
-    throw new StageJobError(message);
+    // A budget stop (§5.4) is not retried: the worker's ordinary retry
+    // policy would otherwise re-run the session up to twice more, each time
+    // spending up to the same ceiling again.
+    const retryable = error instanceof StageExecutionError ? error.retryable : true;
+    throw new StageJobError(message, retryable);
   }
 
   saveTranscript({

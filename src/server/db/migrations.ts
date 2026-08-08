@@ -125,6 +125,18 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "stage_runs", "provider", "TEXT");
     },
   },
+  {
+    name: "spend controls and task pausing",
+    up: (sqlite) => {
+      // `NULL` means "no ceiling" — see `scheduleStage`'s admission check.
+      addColumn(sqlite, "tasks", "max_cost_usd", "REAL");
+      // "Finish the current stage, then wait" — checked by `scheduleStage`
+      // before enqueueing the next one. Not a `TaskStatus`: see
+      // `stages.ts`'s note on `on_queue`/`gate_queued` already being the two
+      // exceptions to "status is derived from stage".
+      addColumn(sqlite, "tasks", "paused", "INTEGER NOT NULL DEFAULT 0");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

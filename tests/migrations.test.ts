@@ -366,6 +366,32 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds max_cost_usd and paused to an existing tasks table, defaulting to null/false", () => {
+    const sqlite = freshDatabase("spend-controls-columns.db");
+    for (const column of ["max_cost_usd", "paused"]) {
+      expect(columns(sqlite, "tasks")).not.toContain(column);
+    }
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description) VALUES ('t', 'r', 'Old', 'd')",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    expect(columns(sqlite, "tasks")).toContain("max_cost_usd");
+    expect(columns(sqlite, "tasks")).toContain("paused");
+    const row = sqlite
+      .prepare("SELECT max_cost_usd AS ceiling, paused FROM tasks WHERE id = 't'")
+      .get() as { ceiling: number | null; paused: number };
+    expect(row.ceiling).toBeNull();
+    expect(row.paused).toBe(0);
+    sqlite.close();
+  });
+
   it("re-running a migration on a half-applied database is harmless", () => {
     // Simulates a crash between the ALTER and the version bump.
     const sqlite = freshDatabase("half.db");

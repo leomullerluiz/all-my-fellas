@@ -57,6 +57,8 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     failedStage: null,
     failureKind: null,
     reworkBudgetGrant: 0,
+    maxCostUsd: null,
+    paused: false,
     createdAt: 0,
     updatedAt: 0,
     repo: REPO,

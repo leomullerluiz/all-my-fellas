@@ -79,6 +79,15 @@ export const taskFieldsSchema = z.object({
     (value) => (value === undefined ? [] : Array.isArray(value) ? value : [value]),
     z.array(z.string().min(1)).max(50),
   ),
+  /**
+   * "This whole task is not worth more than this" — checked against
+   * `totalCostForTask` before each stage is scheduled (`scheduleStage`).
+   * `null`/omitted means no ceiling. A stop-loss, not a hard cap: the check
+   * runs before the *next* stage, not mid-session — see the per-stage
+   * counterpart (`settings.maxCostPerStageUsd`) for the one enforced inside a
+   * running session.
+   */
+  maxCostPerTaskUsd: z.number().min(0).nullable().optional(),
 });
 
 export const createTaskSchema = taskFieldsSchema.extend({

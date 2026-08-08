@@ -178,4 +178,63 @@ describe("runOpenAiStage", () => {
       ),
     ).rejects.toThrow(StageExecutionError);
   });
+
+  it("stops on the turn that crosses maxCostUsd, with a non-zero partial and non-retryable", async () => {
+    process.env.OPENAI_API_KEY = "sk-test-123";
+    ({ runOpenAiStage } = await import("@/server/pipeline/providers/openai"));
+
+    let calls = 0;
+    // gpt-4o-mini: $0.15 / 1M input tokens — 500k input tokens is a fixed
+    // $0.075 per turn, so two turns cross a $0.1 ceiling on the second.
+    const loopingClient: OpenAiChatClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            calls++;
+            const message: OpenAiMessage = {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: `call_${calls}`,
+                  type: "function",
+                  function: { name: "Read", arguments: JSON.stringify({ file_path: "brief.md" }) },
+                },
+              ],
+            };
+            return {
+              choices: [{ message, finish_reason: "tool_calls" }],
+              usage: { prompt_tokens: 500_000, completion_tokens: 0 },
+            };
+          },
+        },
+      },
+    };
+
+    let error: unknown;
+    try {
+      await runOpenAiStage(
+        {
+          role: ROLES.PO_REFINEMENT,
+          prompt,
+          model: "gpt-4o-mini",
+          maxTurns: 10,
+          maxCostUsd: 0.1,
+          workspacePath,
+          onEvent: () => {},
+        },
+        loopingClient,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(StageExecutionError);
+    const stageError = error as StageExecutionError;
+    expect(stageError.retryable).toBe(false);
+    expect(stageError.partial.costUsd).toBeGreaterThanOrEqual(0.1);
+    expect(stageError.partial.inputTokens).toBe(1_000_000);
+    // Stopped before a third turn was ever attempted.
+    expect(calls).toBe(2);
+  });
 });

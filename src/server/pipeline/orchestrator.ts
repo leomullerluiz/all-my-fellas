@@ -27,6 +27,7 @@ import {
   recordApproval,
   saveArtifact,
   setTaskStage,
+  totalCostForTask,
   updateTask,
   updateTaskFields,
 } from "../tasks/service";
@@ -117,10 +118,60 @@ function scheduleStage(taskId: string, stage: Stage): void {
   });
 }
 
-/** Persists a transition and schedules whatever comes next. */
-export function applyTransition(taskId: string, transition: Transition): void {
+/**
+ * Refuses to schedule a stage once the task's own spend ceiling
+ * (`tasks.max_cost_usd`) is already met or exceeded — the per-task
+ * counterpart to the per-stage ceiling each provider enforces mid-session
+ * (§5.2). `null` means no ceiling, so this is a no-op for every task that
+ * never set one.
+ *
+ * Checked *before* scheduling, not inside a running session: this is a
+ * between-stage admission check, not the stop-loss a provider applies while
+ * a session is in flight.
+ */
+function ceilingExceededReason(taskId: string): string | null {
+  const task = getTask(taskId);
+  if (!task || task.maxCostUsd === null) return null;
+
+  const spent = totalCostForTask(taskId);
+  if (spent < task.maxCostUsd) return null;
+
+  return (
+    `Spend ceiling of ${formatCost(task.maxCostUsd)} reached ` +
+    `(${formatCost(spent)} spent so far).`
+  );
+}
+
+/**
+ * Persists a transition and schedules whatever comes next.
+ *
+ * Returns the transition actually applied — ordinarily `transition` itself,
+ * except a `"run"` that immediately exceeds the task's spend ceiling, which
+ * is substituted for the terminal `FAILED` transition it produces instead.
+ * Every caller that decides whether to call {@link promoteQueue} from a
+ * transition's `type` (a terminal or gate outcome frees a concurrency slot)
+ * must use this return value, not the transition it passed in — otherwise a
+ * ceiling-triggered substitution frees a slot with nothing to notice.
+ */
+export function applyTransition(taskId: string, transition: Transition): Transition {
   switch (transition.type) {
     case "run": {
+      const overCeiling = ceilingExceededReason(taskId);
+      if (overCeiling) {
+        // Terminal, not a rework signal: the Developer did not produce bad
+        // work, the task ran out of money before the stage even started.
+        // `failedStage` names the stage that was refused, so a retry (after
+        // raising the ceiling) re-runs exactly that one — `RETRY_TARGET`'s
+        // `stage_error` mapping already re-runs `failedStage` itself.
+        return applyTransition(taskId, {
+          type: "terminal",
+          stage: "FAILED",
+          reason: overCeiling,
+          failedStage: transition.stage,
+          failureKind: "stage_error",
+        });
+      }
+
       // Clears any failure the task previously carried, whether or not this
       // is a retry: a run transition always leaves the task actively running,
       // and a stale failure_reason/failed_stage/failure_kind would otherwise
@@ -131,13 +182,13 @@ export function applyTransition(taskId: string, transition: Transition): void {
         failureKind: null,
       });
       scheduleStage(taskId, transition.stage);
-      break;
+      return transition;
     }
 
     case "await_gate": {
       setTaskStage(taskId, transition.gate);
       appendEvent(taskId, null, { type: "gate_opened", gate: transition.gate });
-      break;
+      return transition;
     }
 
     case "terminal": {
@@ -153,7 +204,7 @@ export function applyTransition(taskId: string, transition: Transition): void {
         reason: transition.reason,
       });
       scheduleWorkspaceCleanup(taskId);
-      break;
+      return transition;
     }
   }
 }
@@ -171,15 +222,17 @@ export function advanceTask(taskId: string, signal: PipelineSignal): Transition 
   if (!task) throw new TaskNotFoundError(taskId);
 
   const transition = nextTransition(task.currentStage, signal, contextFor(task));
-  applyTransition(taskId, transition);
+  const applied = applyTransition(taskId, transition);
   // A terminal stage or a gate both release the concurrency slot this task
   // held (§8.2), so this is exactly when the next `on_queue` task, if any,
   // can take its place. `promoteQueue` is never itself wrapped in a
-  // transaction here — see the warning on its definition.
-  if (transition.type === "terminal" || transition.type === "await_gate") {
+  // transaction here — see the warning on its definition. Checked against
+  // `applied`, not `transition`: a spend-ceiling substitution (§5.2) can turn
+  // a `"run"` into a terminal outcome that still frees the slot.
+  if (applied.type === "terminal" || applied.type === "await_gate") {
     promoteQueue();
   }
-  return transition;
+  return applied;
 }
 
 /**
@@ -777,8 +830,8 @@ export function decideGate(input: {
       return { transition, queued: true };
     }
 
-    applyTransition(input.taskId, transition);
-    return { transition, queued: false };
+    const applied = applyTransition(input.taskId, transition);
+    return { transition: applied, queued: false };
   });
 
   // Outside the transaction: `reject` and an exhausted `request_changes` are
@@ -786,7 +839,9 @@ export function decideGate(input: {
   // queued task — `on_queue` or `gate_queued` — can take it. `promoteQueue`
   // opens its own transaction, so it must run after this one has committed.
   // Queuing itself (the branch above) frees no slot, so it does not call
-  // `promoteQueue`.
+  // `promoteQueue`. Checked against the *applied* transition — a `"run"`
+  // that immediately exceeded the spend ceiling (§5.2) is substituted for a
+  // terminal one and still frees the slot.
   if (transition.type === "terminal") {
     promoteQueue();
   }
@@ -817,7 +872,7 @@ export function decideGate(input: {
  * @throws {CapacityError} when no slot is free after all.
  */
 export function resumeGatedTask(taskId: string): Transition {
-  return db.transaction(() => {
+  const applied = db.transaction(() => {
     const task = getTask(taskId);
     if (!task) throw new StaleQueueEntryError(taskId, "the task no longer exists");
     if (task.status !== "gate_queued") {
@@ -845,9 +900,18 @@ export function resumeGatedTask(taskId: string): Transition {
       comment: approval.comment ?? undefined,
     };
     const transition = nextTransition(task.currentStage, signal, contextFor(task));
-    applyTransition(taskId, transition);
-    return transition;
+    return applyTransition(taskId, transition);
   });
+
+  // A `"run"` that immediately exceeded the spend ceiling (§5.2) is
+  // substituted for a terminal one inside `applyTransition` and still frees
+  // the slot this resume just took — `promoteQueue` (this function's only
+  // caller) would otherwise never notice. Ordinarily a no-op: resuming into
+  // `"run"` is the overwhelmingly common case here.
+  if (applied.type === "terminal") {
+    promoteQueue();
+  }
+  return applied;
 }
 
 /** Why a retry was refused — mirrored by `available: false` on {@link RetryAvailability}. */
@@ -998,7 +1062,7 @@ export function retryAvailability(taskId: string): RetryAvailability | null {
  * @throws {CapacityError} when no slot is free.
  */
 export function retryTask(taskId: string): Transition {
-  return db.transaction(() => {
+  const applied = db.transaction(() => {
     const task = getTask(taskId);
     if (!task) throw new TaskNotFoundError(taskId);
 
@@ -1040,9 +1104,18 @@ export function retryTask(taskId: string): Transition {
       stage: availability.stage,
       attempt: availability.attempt,
     };
-    applyTransition(taskId, transition);
-    return transition;
+    return applyTransition(taskId, transition);
   });
+
+  // A retry is normally always `"run"` — `RETRY_TARGET` never produces a
+  // terminal outcome on its own. The one exception is a spend ceiling that
+  // was already exceeded when the retry was admitted (§5.2), substituted for
+  // a terminal transition inside `applyTransition`; that still frees the
+  // slot the retry just re-admitted into, so `promoteQueue` must run.
+  if (applied.type === "terminal") {
+    promoteQueue();
+  }
+  return applied;
 }
 
 /**

@@ -85,7 +85,11 @@ export async function POST(request: Request) {
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
-    const created = createTask({ ...fields, attachments: validatedAttachments.data });
+    const created = createTask({
+      ...fields,
+      maxCostUsd: fields.maxCostPerTaskUsd ?? null,
+      attachments: validatedAttachments.data,
+    });
     if (!fields.start) {
       return json({ task: created, started: false }, { status: 201 });
     }

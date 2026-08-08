@@ -42,7 +42,8 @@ function buildGuard(options: RunStageOptions): CanUseTool {
   };
 }
 
-function buildOptions(options: RunStageOptions): Options {
+/** Exported for `tests/claude-budget.test.ts`'s assertion on the built options object. */
+export function buildOptions(options: RunStageOptions): Options {
   const { role, workspacePath } = options;
 
   return {
@@ -54,6 +55,11 @@ function buildOptions(options: RunStageOptions): Options {
     canUseTool: buildGuard(options),
     cwd: workspacePath ?? process.cwd(),
     maxTurns: options.maxTurns,
+    // A stop-loss, not a hard cap (§5.3/§5.7): the SDK stops the session once
+    // this is exceeded, ending it with `error_max_budget_usd` rather than
+    // silently continuing. `undefined` when no ceiling is configured — the
+    // SDK option itself is optional for exactly that case.
+    maxBudgetUsd: options.maxCostUsd,
     abortController: options.abortController,
     // Load the target repository's own CLAUDE.md, but nothing from the host
     // machine's user settings. Text-only roles get no settings at all.
@@ -130,12 +136,20 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
         // worth re-emitting.
 
         if (message.subtype !== "success") {
+          // A budget stop is a distinct, expected outcome — not a crash, and
+          // not worth the worker's ordinary retry (which would spend up to
+          // the ceiling again, twice more — turning a $5 cap into $15). See
+          // §5.4/§5.7's distinction between a budget stop and `error_max_turns`.
+          const isBudgetStop = message.subtype === "error_max_budget_usd";
           throw new StageExecutionError(
             `The ${options.role.name} session ended with "${message.subtype}"` +
               (message.subtype === "error_max_turns"
                 ? ` after ${message.num_turns} turns (limit ${options.maxTurns}).`
-                : `: ${message.errors.join("; ") || "no further detail"}.`),
+                : isBudgetStop
+                  ? ` — spend ceiling of ${options.maxCostUsd} USD reached after ${message.num_turns} turn(s).`
+                  : `: ${message.errors.join("; ") || "no further detail"}.`),
             { sessionId, costUsd, inputTokens, outputTokens, numTurns, transcript },
+            !isBudgetStop,
           );
         }
 
