@@ -4,8 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { ThemeSwitch } from "@/components/theme-switch";
+import { WorkerHealthDot } from "@/components/worker-health-dot";
 import { cn } from "@/lib/utils";
 import type { Theme } from "@/server/settings/store";
+import type { WorkerHealth } from "@/server/worker/health";
 
 const LINKS = [
   { href: "/", label: "Dashboard" },
@@ -15,14 +17,20 @@ const LINKS = [
   { href: "/settings", label: "Settings" },
 ];
 
-export function Nav({ initialTheme }: { initialTheme: Theme }) {
+export function Nav({
+  initialTheme,
+  initialWorkerHealth,
+}: {
+  initialTheme: Theme;
+  initialWorkerHealth: WorkerHealth;
+}) {
   const pathname = usePathname();
 
   return (
     <header className="border-b border-border bg-surface">
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
         <Link href="/" className="flex items-center gap-2">
-          <span className="inline-block size-2 rounded-full bg-accent" aria-hidden />
+          <WorkerHealthDot initialHealth={initialWorkerHealth} />
           <span className="text-sm font-semibold tracking-tight">All My Fellas</span>
         </Link>
 

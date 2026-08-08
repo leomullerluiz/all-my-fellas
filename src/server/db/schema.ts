@@ -367,6 +367,18 @@ export const jobs = sqliteTable(
   (table) => [index("jobs_status_run_after_idx").on(table.status, table.runAfter)],
 );
 
+/** Always the single row `id = 'worker'` (§7.2). */
+export const workerStatus = sqliteTable("worker_status", {
+  id: text("id").primaryKey(),
+  startedAt: integer("started_at").notNull(),
+  heartbeatAt: integer("heartbeat_at").notNull(),
+  pid: integer("pid"),
+  version: text("version"),
+  /** NULL when the worker is idle between jobs. */
+  activeJobId: text("active_job_id"),
+  activeTaskId: text("active_task_id"),
+});
+
 export type RepoRow = typeof repos.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type StageRunRow = typeof stageRuns.$inferSelect;
@@ -378,3 +390,4 @@ export type ApprovalRow = typeof approvals.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type VerificationRunRow = typeof verificationRuns.$inferSelect;
 export type AgentRunRow = typeof agentRuns.$inferSelect;
+export type WorkerStatusRow = typeof workerStatus.$inferSelect;

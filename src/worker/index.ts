@@ -1,5 +1,8 @@
 import "dotenv/config";
 
+import fs from "node:fs";
+import path from "node:path";
+
 import { hasGithubToken, resolveProviderAuth } from "../server/config/env";
 import { closeDatabase } from "../server/db/client";
 import { claimNextJob, completeJob, parsePayload, requeueOrphanedJobs, taskIsActive } from "../server/jobs/queue";
@@ -13,6 +16,7 @@ import { promoteQueue } from "../server/pipeline/orchestrator";
 import { runMaintenanceSweep } from "../server/pipeline/audit/retention";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
+import { recordWorkerHeartbeat, recordWorkerStarted } from "../server/worker/status";
 import { handleJobFailure } from "./job-failure";
 
 /**
@@ -27,17 +31,36 @@ const TICK_MS = 1_000;
 /** How often the transcript retention sweep runs, beyond the one at startup. */
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 /**
- * How often, while a job is in flight, the worker checks whether the task it
- * belongs to is still active and aborts the job's controller the first time
- * it is not (§6.3). The cost is one indexed single-row read per interval per
- * in-flight job, against a saving measured in agent turns — see §13.3 for the
- * open question on whether this is the right number.
+ * How often, while a job is in flight, the worker (a) checks whether the
+ * task it belongs to is still active and aborts the job's controller the
+ * first time it is not (§6.3), and (b) refreshes the heartbeat row (§7.2) —
+ * one interval serves both, rather than two independently-timed ones racing
+ * the same SQLite file from the same process. The cost is one indexed
+ * single-row read and one single-row write per interval per in-flight job,
+ * against a saving measured in agent turns — see §13.3 for the open question
+ * on whether the cancellation half of this is the right number.
  */
-const CANCEL_POLL_MS = 2_000;
+const IN_FLIGHT_POLL_MS = 2_000;
 
 let shuttingDown = false;
 let activeJob: JobRow | null = null;
 let nextMaintenanceAt = 0;
+
+/**
+ * Best-effort version tag for the heartbeat row (§7.2) — `package.json`'s
+ * version, read at runtime rather than imported, since the worker's own
+ * `tsconfig.worker.json` roots compilation at `src/` and a static import of a
+ * file outside it would fight that. Purely informational: a read failure
+ * leaves the row's `version` `null`, which is not a health signal.
+ */
+function resolveVersion(): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8");
+    return (JSON.parse(raw) as { version?: string }).version ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function log(level: "info" | "warn" | "error", message: string): void {
   const stamp = new Date().toISOString();
@@ -131,7 +154,13 @@ function runMaintenanceIfDue(): void {
 async function tick(): Promise<void> {
   const { maxParallelTasks } = getSettings();
   const job = claimNextJob(maxParallelTasks);
-  if (!job) return;
+  if (!job) {
+    // Written on every tick, not just while a job is in flight (§7.2) — an
+    // idle worker is a healthy worker, and a heartbeat that only moved while
+    // busy would read as "stale" the moment work runs dry.
+    recordWorkerHeartbeat({ activeJobId: null, activeTaskId: null });
+    return;
+  }
 
   activeJob = job;
 
@@ -143,19 +172,23 @@ async function tick(): Promise<void> {
     log("info", `Skipping job ${job.id}: task ${job.taskId} is no longer active.`);
     completeJob(job.id);
     activeJob = null;
+    recordWorkerHeartbeat({ activeJobId: null, activeTaskId: null });
     return;
   }
 
   log("info", `Running job ${job.id} (${job.kind}) for task ${job.taskId}`);
+  recordWorkerHeartbeat({ activeJobId: job.id, activeTaskId: job.taskId });
 
   // One controller for this job's lifetime (§6.2), plus its own poll timer:
   // the tick loop itself is blocked inside `await handleJob` for the whole
-  // duration of an agent session, so the cancellation check needs a timer
-  // independent of that loop, not another pass through it.
+  // duration of an agent session, so the cancellation check — and the
+  // heartbeat refresh (§7.2) — need a timer independent of that loop, not
+  // another pass through it.
   const abortController = new AbortController();
   const watch = setInterval(() => {
     if (!taskIsActive(job.taskId)) abortController.abort();
-  }, CANCEL_POLL_MS);
+    recordWorkerHeartbeat({ activeJobId: job.id, activeTaskId: job.taskId });
+  }, IN_FLIGHT_POLL_MS);
 
   try {
     await handleJob(job, abortController);
@@ -166,11 +199,13 @@ async function tick(): Promise<void> {
   } finally {
     clearInterval(watch);
     activeJob = null;
+    recordWorkerHeartbeat({ activeJobId: null, activeTaskId: null });
   }
 }
 
 async function main(): Promise<void> {
   banner();
+  recordWorkerStarted({ pid: process.pid, version: resolveVersion() });
 
   const requeued = requeueOrphanedJobs();
   if (requeued > 0) log("info", `Requeued ${requeued} job(s) left claimed by a previous run.`);

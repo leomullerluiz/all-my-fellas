@@ -154,4 +154,19 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 CREATE INDEX IF NOT EXISTS jobs_status_run_after_idx ON jobs(status, run_after);
+
+-- Single-row liveness signal (§7.2). A dedicated table rather than a
+-- 'settings' key: the worker rewrites this every tick (and on its own
+-- interval while a job is in flight), and conflating that churn with
+-- user-preference reads/writes would touch a row neither process actually
+-- cares about together.
+CREATE TABLE IF NOT EXISTS worker_status (
+  id TEXT PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL,
+  pid INTEGER,
+  version TEXT,
+  active_job_id TEXT,
+  active_task_id TEXT
+);
 `;
