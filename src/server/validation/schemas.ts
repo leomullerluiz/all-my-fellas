@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { LLM_PROVIDER_IDS } from "../config/llm-providers";
+import { PIPELINE_EVENT_TYPES } from "../events/types";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
 import { AGENT_STAGES, GATES, GATE_DECISIONS, PRIORITIES, TASK_STATUSES } from "../pipeline/stages";
@@ -285,6 +286,28 @@ const quotaLimitsSchema = z.partialRecord(
   quotaLimitSchema,
 );
 
+const notificationEventTogglesSchema = z.partialRecord(z.enum(PIPELINE_EVENT_TYPES), z.boolean());
+
+const notificationsSchema = z.object({
+  browser: z.boolean().optional(),
+  /** `null` clears the URL — the webhook is disabled. */
+  webhookUrl: z.string().trim().url().nullable().optional(),
+  // Environment variable NAME, never a secret — same rule and reserved list
+  // as a repository's `credentialRef` (§8.3/§13.5).
+  webhookSecretRef: z
+    .string()
+    .trim()
+    .max(120)
+    .nullable()
+    .optional()
+    .refine((value) => value === undefined || value === null || validateCredentialRef(value).ok, {
+      message:
+        "Use an environment variable name (A-Z, digits, underscores) that the " +
+        "pipeline does not reserve.",
+    }),
+  events: notificationEventTogglesSchema.optional(),
+});
+
 export const updateSettingsSchema = z.object({
   models: modelMapSchema.optional(),
   providers: providersMapSchema.optional(),
@@ -307,6 +330,9 @@ export const updateSettingsSchema = z.object({
   quotaEnforcement: z.enum(["off", "warn", "hold"]).optional(),
   /** `null` clears the ceiling — no per-stage dollar cap. */
   maxCostPerStageUsd: z.number().min(0).nullable().optional(),
+  /** "Stop starting things" — the worker claims no new jobs while `true` (§9.2). */
+  queueHeld: z.boolean().optional(),
+  notifications: notificationsSchema.optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 

@@ -52,6 +52,7 @@ import {
   type Stage,
   isAgentStage,
   isGate,
+  isTerminalStage,
 } from "./stages";
 
 /**
@@ -181,6 +182,20 @@ export function applyTransition(taskId: string, transition: Transition): Transit
         failedStage: null,
         failureKind: null,
       });
+
+      // §9.2/9.3: "finish the current stage, then wait" — the transition
+      // still applies (the board shows the real next stage, not a stale
+      // one), only the job that would spend money on it is withheld.
+      // `resumeTask` detects exactly this withheld state and schedules it.
+      if (getTask(taskId)?.paused) {
+        appendEvent(taskId, null, {
+          type: "log",
+          level: "info",
+          message: `${STAGE_LABELS[transition.stage]} withheld: task is paused.`,
+        });
+        return transition;
+      }
+
       scheduleStage(taskId, transition.stage);
       return transition;
     }
@@ -1166,6 +1181,53 @@ export function cancelTask(taskId: string): Transition | null {
 
   appendEvent(taskId, null, { type: "log", level: "warn", message: "Task cancelled by user." });
   return advanceTask(taskId, { kind: "cancel" });
+}
+
+/**
+ * Sets the "finish the current stage, then wait" flag (§9.2). Does not touch
+ * whatever stage is currently running — that keeps going to completion; only
+ * the *next* `scheduleStage` call (in `applyTransition`'s `"run"` case) is
+ * withheld. Safe to call on an already-paused task (idempotent) or a
+ * finished one (a no-op with nothing left to withhold).
+ */
+export function pauseTask(taskId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (task.paused) return;
+
+  updateTask(taskId, { paused: true });
+  appendEvent(taskId, null, {
+    type: "log",
+    level: "info",
+    message: "Task paused: the current stage will finish, then wait before the next one.",
+  });
+}
+
+/**
+ * Clears the pause flag and, if a stage was actually withheld while paused,
+ * schedules it.
+ *
+ * "Withheld" is detected rather than tracked by a separate column: the most
+ * recently created stage run belongs to a different stage than
+ * `current_stage` now names. That mismatch can *only* arise from this
+ * withholding — every other path that changes `current_stage` to a
+ * schedulable stage schedules it in the same breath (see `applyTransition`'s
+ * `"run"` case) — so the check is exact, including across rework loops where
+ * the withheld stage already has earlier-attempt runs on record.
+ */
+export function resumeTask(taskId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (!task.paused) return;
+
+  updateTask(taskId, { paused: false });
+  appendEvent(taskId, null, { type: "log", level: "info", message: "Task resumed." });
+
+  if (isGate(task.currentStage) || isTerminalStage(task.currentStage)) return;
+
+  const mostRecentRun = listStageRuns(taskId).at(-1);
+  const withheld = !mostRecentRun || mostRecentRun.stage !== task.currentStage;
+  if (withheld) scheduleStage(taskId, task.currentStage);
 }
 
 /** Approvals already recorded, newest first — used to render the timeline. */

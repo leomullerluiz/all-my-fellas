@@ -187,6 +187,8 @@ const ACTION_SUCCESS_TOAST: Record<string, string> = {
   cancel: "Task cancelled.",
   retry: "Retrying the failed stage.",
   delete: "Task deleted.",
+  pause: "Task paused: the current stage will finish, then wait.",
+  resume: "Task resumed.",
 };
 
 /**
@@ -211,6 +213,7 @@ export function TaskControls({
   capacity,
   dependsOn = [],
   retry = null,
+  paused = false,
 }: {
   taskId: string;
   taskTitle: string;
@@ -227,6 +230,8 @@ export function TaskControls({
    * (`spec-retry-recovery.md` §3.1's defect 4).
    */
   retry?: RetryAvailability | null;
+  /** `tasks.paused` (§9.2) — offers Resume instead of Pause once set. */
+  paused?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -235,6 +240,10 @@ export function TaskControls({
   const [quotaHeld, setQuotaHeld] = useState<string | null>(null);
 
   const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
+  // Pause only makes sense on an actively-progressing task — a gate is
+  // already a wait state, and cancelling is the only brake once a task is
+  // parked on capacity or quota with no stage in flight to let finish.
+  const canPause = status === "running" || paused;
   // `retry` reflects `retryAvailability`'s answer for whatever status the task
   // is actually at (e.g. `not_failed` for a running task) — only meaningful,
   // and only rendered, once the task has actually failed.
@@ -338,10 +347,27 @@ export function TaskControls({
     );
   }
 
-  if (!canCancel && !showRetrySection) return null;
+  if (!canCancel && !showRetrySection && !canPause) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {canPause ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy !== null}
+          title={
+            paused
+              ? "Resumes: schedules whatever stage was withheld, if any."
+              : "Finishes the current stage, then waits before starting the next one."
+          }
+          onClick={() =>
+            call(paused ? "resume" : "pause", `/api/tasks/${taskId}/${paused ? "resume" : "pause"}`)
+          }
+        >
+          {busy === "pause" ? "Pausing…" : busy === "resume" ? "Resuming…" : paused ? "Resume" : "Pause"}
+        </Button>
+      ) : null}
       {showRetrySection && retry?.available ? (
         <div className="flex flex-col gap-1">
           <Button

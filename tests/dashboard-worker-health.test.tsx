@@ -28,9 +28,13 @@ vi.mock("@/server/worker/health", () => ({ resolveWorkerHealth: () => resolveWor
 
 let DashboardPage: typeof import("@/app/(dashboard)/page").default;
 
+// `page.tsx` pulls in most of the pipeline module graph on first import; under
+// the full suite's parallel workers that can outrun the default 10s hook
+// timeout even though nothing here is actually slow — bump it rather than
+// let a resource-contention flake masquerade as a real failure.
 beforeAll(async () => {
   ({ default: DashboardPage } = await import("@/app/(dashboard)/page"));
-});
+}, 30_000);
 
 afterEach(() => {
   cleanup();

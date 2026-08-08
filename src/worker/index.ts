@@ -5,7 +5,13 @@ import path from "node:path";
 
 import { hasGithubToken, resolveProviderAuth } from "../server/config/env";
 import { closeDatabase } from "../server/db/client";
-import { claimNextJob, completeJob, parsePayload, requeueOrphanedJobs, taskIsActive } from "../server/jobs/queue";
+import {
+  claimNextJobUnlessHeld,
+  completeJob,
+  parsePayload,
+  requeueOrphanedJobs,
+  taskIsActive,
+} from "../server/jobs/queue";
 import {
   executeAgentStage,
   executeCleanup,
@@ -152,8 +158,8 @@ function runMaintenanceIfDue(): void {
 }
 
 async function tick(): Promise<void> {
-  const { maxParallelTasks } = getSettings();
-  const job = claimNextJob(maxParallelTasks);
+  const { maxParallelTasks, queueHeld } = getSettings();
+  const job = claimNextJobUnlessHeld(maxParallelTasks, queueHeld);
   if (!job) {
     // Written on every tick, not just while a job is in flight (§7.2) — an
     // idle worker is a healthy worker, and a heartbeat that only moved while

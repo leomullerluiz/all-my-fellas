@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsForm } from "@/components/settings-form";
 import { LLM_PROVIDER_IDS, type LlmProviderId } from "@/server/config/llm-providers";
+import { PIPELINE_EVENT_TYPES } from "@/server/events/types";
 import { AGENT_STAGES, type AgentStage } from "@/server/pipeline/stages";
 import type { AppSettings } from "@/server/settings/store";
 
@@ -43,6 +44,13 @@ const INITIAL: AppSettings = {
   },
   quotaEnforcement: "off",
   maxCostPerStageUsd: null,
+  queueHeld: false,
+  notifications: {
+    browser: true,
+    webhookUrl: null,
+    webhookSecretRef: null,
+    events: Object.fromEntries(PIPELINE_EVENT_TYPES.map((type) => [type, false])) as AppSettings["notifications"]["events"],
+  },
 };
 
 const LLM_CREDENTIALS = Object.fromEntries(

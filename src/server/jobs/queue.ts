@@ -109,6 +109,22 @@ export function claimNextJob(maxParallelTasks: number): JobRow | null {
   });
 }
 
+/**
+ * {@link claimNextJob}, gated by the global queue-hold switch (§9.2).
+ *
+ * A settings flag rather than job/task state — "stop starting things" is
+ * deliberately the cheapest possible implementation: nothing about a job or
+ * task changes, so a job already claimed before the flag was set is
+ * untouched and runs to completion; only a *new* claim is refused. Split out
+ * from the worker's `tick()` so the exact behaviour is testable without
+ * importing `worker/index.ts`, which starts its real polling loop
+ * unconditionally on import.
+ */
+export function claimNextJobUnlessHeld(maxParallelTasks: number, queueHeld: boolean): JobRow | null {
+  if (queueHeld) return null;
+  return claimNextJob(maxParallelTasks);
+}
+
 export function completeJob(jobId: string): void {
   db.update(jobs).set({ status: "done" }).where(eq(jobs.id, jobId)).run();
 }
