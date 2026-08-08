@@ -150,6 +150,19 @@ const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    name: "rework memory and rejected artifact output",
+    up: (sqlite) => {
+      // The commit SHA a reviewing stage reviewed, so the next rework attempt
+      // can diff against it instead of re-reading the whole branch again —
+      // see spec §5.2 / stories.md S3.
+      addColumn(sqlite, "stage_runs", "reviewed_head_sha", "TEXT");
+      // What the agent produced when `validateArtifact` rejected it, kept
+      // even if the one bounded repair attempt also fails — see spec §8.4 /
+      // stories.md S4.
+      addColumn(sqlite, "stage_runs", "rejected_output", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };
