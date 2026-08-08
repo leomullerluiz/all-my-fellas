@@ -4,7 +4,13 @@ import { formatCost, formatDateTime } from "@/lib/utils";
 import { db } from "../db/client";
 import { appendEvent } from "../events/store";
 import { workspaceHasGitDir } from "../git/workspace";
-import { cancelPendingJobs, cancelScheduledCleanup, enqueueJob, hasPendingQuotaWake } from "../jobs/queue";
+import {
+  cancelPendingJobs,
+  cancelScheduledCleanup,
+  enqueueJob,
+  hasActiveJobForTask,
+  hasPendingQuotaWake,
+} from "../jobs/queue";
 import { getSettings } from "../settings/store";
 import { type Cadence, resolveQuotaStatus } from "../usage/quota";
 import {
@@ -211,6 +217,14 @@ export function applyTransition(taskId: string, transition: Transition): Transit
         failureReason: transition.reason ?? null,
         failedStage: transition.failedStage ?? null,
         failureKind: transition.failureKind ?? null,
+        // A terminal task has no next stage left to withhold, so a pause set
+        // before this transition must not survive it: left `true`, it would
+        // silently withhold the very next "run" transition a later retry
+        // produces — which targets the *same* failed stage by name, the one
+        // case `resumeTask`'s withheld detection cannot itself untangle (see
+        // its own comment). Cancel and rejection reach here too; the flag is
+        // equally meaningless once nothing is running to pause.
+        paused: false,
       });
       cancelPendingJobs(taskId);
       appendEvent(taskId, null, {
@@ -1189,11 +1203,19 @@ export function cancelTask(taskId: string): Transition | null {
  * the *next* `scheduleStage` call (in `applyTransition`'s `"run"` case) is
  * withheld. Safe to call on an already-paused task (idempotent) or a
  * finished one (a no-op with nothing left to withhold).
+ *
+ * Restricted to `running`/`awaiting_gate`: those are the only statuses with a
+ * current stage actually in front of the user for this to let finish before
+ * withholding the next one. A task that has not started yet (`queued`,
+ * `on_queue`) or is already parked (`gate_queued`) has nothing in flight to
+ * pause — allowing it there only widened the surface for a stray `paused`
+ * flag to silently withhold a later `startTask`/`resumeGatedTask` transition.
  */
 export function pauseTask(taskId: string): void {
   const task = getTask(taskId);
   if (!task) throw new TaskNotFoundError(taskId);
   if (task.paused) return;
+  if (task.status !== "running" && task.status !== "awaiting_gate") return;
 
   updateTask(taskId, { paused: true });
   appendEvent(taskId, null, {
@@ -1207,13 +1229,18 @@ export function pauseTask(taskId: string): void {
  * Clears the pause flag and, if a stage was actually withheld while paused,
  * schedules it.
  *
- * "Withheld" is detected rather than tracked by a separate column: the most
- * recently created stage run belongs to a different stage than
- * `current_stage` now names. That mismatch can *only* arise from this
- * withholding — every other path that changes `current_stage` to a
- * schedulable stage schedules it in the same breath (see `applyTransition`'s
- * `"run"` case) — so the check is exact, including across rework loops where
- * the withheld stage already has earlier-attempt runs on record.
+ * "Withheld" is detected rather than tracked by a separate column, but not by
+ * comparing the most recently created stage run's stage against
+ * `current_stage`: that comparison looks identical — a "match", meaning "not
+ * withheld" — whenever the withheld stage shares its name with the task's own
+ * most recent run, which is exactly what a rework loop or a retry of a failed
+ * stage produces (the previous attempt's run already carries that same stage
+ * name). Instead this checks {@link hasActiveJobForTask}: `scheduleStage`
+ * always enqueues a job in the same breath it changes `current_stage` to a
+ * schedulable stage (see `applyTransition`'s `"run"` case), so "no
+ * pending/claimed job for this task" is exact evidence that the stage was
+ * withheld rather than scheduled, independent of stage names or attempt
+ * numbers.
  */
 export function resumeTask(taskId: string): void {
   const task = getTask(taskId);
@@ -1225,8 +1252,7 @@ export function resumeTask(taskId: string): void {
 
   if (isGate(task.currentStage) || isTerminalStage(task.currentStage)) return;
 
-  const mostRecentRun = listStageRuns(taskId).at(-1);
-  const withheld = !mostRecentRun || mostRecentRun.stage !== task.currentStage;
+  const withheld = !hasActiveJobForTask(taskId);
   if (withheld) scheduleStage(taskId, task.currentStage);
 }
 

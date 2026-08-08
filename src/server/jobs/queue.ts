@@ -209,6 +209,31 @@ export function hasPendingQuotaWake(): boolean {
   );
 }
 
+/**
+ * Whether `taskId` currently has a job that is pending or claimed, for any
+ * stage.
+ *
+ * `resumeTask` (§9.2) uses this to detect whether a stage was actually
+ * withheld while paused, instead of comparing the most recent stage run's
+ * stage name against `tasks.current_stage`. Name comparison breaks the
+ * instant a withheld stage shares its name with the task's own most recent
+ * run — exactly what happens on a rework loop or a `retryTask` re-run, where
+ * the "same stage again" run that was withheld looks identical, by name, to
+ * the earlier attempt that already completed. `scheduleStage` always creates
+ * its `stage_runs` row and enqueues a job in the same breath (`applyTransition`'s
+ * `"run"` case), so "no active job for this task" is exact evidence that the
+ * stage was withheld rather than scheduled.
+ */
+export function hasActiveJobForTask(taskId: string): boolean {
+  return (
+    db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.taskId, taskId), inArray(jobs.status, ["pending", "claimed"])))
+      .get() !== undefined
+  );
+}
+
 export function parsePayload<T>(job: JobRow): T {
   return JSON.parse(job.payloadJson) as T;
 }
