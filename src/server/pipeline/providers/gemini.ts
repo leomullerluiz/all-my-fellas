@@ -4,7 +4,12 @@ import { resolveGeminiAuth } from "../../config/env";
 import { buildStagePrompt, buildSystemPrompt } from "../prompt";
 import { estimateCostUsd } from "./pricing";
 import { executeTool, summarizeToolInput, toolSchemasForRole } from "./tool-runtime";
-import { StageExecutionError, type RunStageOptions, type StageExecutionResult } from "./types";
+import {
+  StageAbortedError,
+  StageExecutionError,
+  type RunStageOptions,
+  type StageExecutionResult,
+} from "./types";
 
 /**
  * Executes one pipeline stage against the Gemini API.
@@ -37,6 +42,12 @@ export type GeminiClient = {
         tools?: Array<{
           functionDeclarations: Array<{ name: string; description?: string; parametersJsonSchema?: unknown }>;
         }>;
+        /**
+         * `@google/genai`'s own cancellation hook (§6.4) — cancellation
+         * granularity here is per request, not per stream, unlike Claude's
+         * `for await` loop; the between-turn check below covers the gap.
+         */
+        abortSignal?: AbortSignal;
       };
     }): Promise<{
       candidates?: Array<{ content?: GeminiContent }>;
@@ -100,6 +111,17 @@ export async function runGeminiStage(
   let turn = 0;
 
   while (turn < options.maxTurns) {
+    // Checked between turns, not just relied on to abort the in-flight
+    // request below: Gemini's cancellation granularity is per request, not
+    // per loop, so a signal that fires in the gap between two requests would
+    // otherwise let the next one start anyway (§6.4).
+    if (options.abortController?.signal.aborted) {
+      throw new StageAbortedError(
+        `The ${role.name} session was cancelled after ${turn} turn(s).`,
+        { inputTokens, outputTokens, numTurns: turn, transcript },
+      );
+    }
+
     // A stop-loss, not a hard cap (§5.3): this can only ever check the cost
     // of turns already taken, since the API reports usage after a turn
     // completes, never before.
@@ -117,11 +139,26 @@ export async function runGeminiStage(
 
     turn++;
 
-    const response = await client.models.generateContent({
-      model: options.model,
-      contents,
-      config: { systemInstruction: buildSystemPrompt(role), tools },
-    });
+    let response;
+    try {
+      response = await client.models.generateContent({
+        model: options.model,
+        contents,
+        config: {
+          systemInstruction: buildSystemPrompt(role),
+          tools,
+          abortSignal: options.abortController?.signal,
+        },
+      });
+    } catch (error) {
+      if (options.abortController?.signal.aborted) {
+        throw new StageAbortedError(
+          `The ${role.name} session was cancelled mid-request (turn ${turn}).`,
+          { inputTokens, outputTokens, numTurns: turn, transcript },
+        );
+      }
+      throw error;
+    }
 
     inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
     outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;

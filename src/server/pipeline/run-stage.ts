@@ -13,7 +13,12 @@ import { StageExecutionError, type RunStageOptions, type StageExecutionResult } 
  * provider-specific logic; that lives in `./providers/*.ts`.
  */
 
-export { StageExecutionError, type RunStageOptions, type StageExecutionResult } from "./providers/types";
+export {
+  StageAbortedError,
+  StageExecutionError,
+  type RunStageOptions,
+  type StageExecutionResult,
+} from "./providers/types";
 
 /** Verifies the selected provider's credential is present before setup. */
 export function assertProviderConfigured(provider: LlmProviderId): void {

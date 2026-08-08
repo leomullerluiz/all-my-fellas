@@ -7,7 +7,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { ROLES } from "@/server/agents/roles";
 import type { StagePromptInput } from "@/server/pipeline/prompt";
 import type { GeminiClient } from "@/server/pipeline/providers/gemini";
-import { StageExecutionError } from "@/server/pipeline/providers/types";
+import { StageAbortedError, StageExecutionError } from "@/server/pipeline/providers/types";
 
 /**
  * S2 — Gemini as a selectable pipeline LLM provider.
@@ -224,5 +224,58 @@ describe("runGeminiStage", () => {
     expect(stageError.partial.inputTokens).toBe(1_000_000);
     // Stopped before a third turn was ever attempted.
     expect(calls).toBe(2);
+  });
+
+  it("stops between turns once the abort signal fires, before the next request is issued", async () => {
+    process.env.GEMINI_API_KEY = "gm-test-123";
+    ({ runGeminiStage } = await import("@/server/pipeline/providers/gemini"));
+
+    const abortController = new AbortController();
+    let calls = 0;
+
+    const loopingClient: GeminiClient = {
+      models: {
+        generateContent: async () => {
+          calls++;
+          // Aborted as a side effect of the first turn returning — the
+          // between-turns check must catch this before a second request is
+          // ever issued.
+          abortController.abort();
+          return {
+            candidates: [
+              {
+                content: {
+                  role: "model",
+                  parts: [{ functionCall: { name: "Read", args: { file_path: "brief.md" } } }],
+                },
+              },
+            ],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+          };
+        },
+      },
+    };
+
+    let error: unknown;
+    try {
+      await runGeminiStage(
+        {
+          role: ROLES.PO_REFINEMENT,
+          prompt,
+          model: "gemini-2.5-flash",
+          maxTurns: 10,
+          workspacePath,
+          abortController,
+          onEvent: () => {},
+        },
+        loopingClient,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(StageAbortedError);
+    expect((error as StageAbortedError).retryable).toBe(false);
+    expect(calls).toBe(1);
   });
 });

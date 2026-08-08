@@ -52,7 +52,7 @@ import {
   buildSystemPrompt,
   truncateForPrompt,
 } from "./prompt";
-import { StageExecutionError, runStage } from "./run-stage";
+import { StageAbortedError, StageExecutionError, runStage } from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, type FailureKind, isAgentStage } from "./stages";
 import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
@@ -148,8 +148,19 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
   return inputs;
 }
 
-/** Runs one agent stage end to end. */
-export async function executeAgentStage(stageRunId: string): Promise<void> {
+/**
+ * Runs one agent stage end to end.
+ *
+ * @param abortController The worker's per-job controller (§6.2), forwarded
+ *   into `runStage`'s `abortController` option so a cancellation observed by
+ *   the worker's poll can interrupt the provider mid-session. `undefined`
+ *   outside the worker (e.g. tests calling this directly) — every provider
+ *   already treats a missing controller as "never aborts".
+ */
+export async function executeAgentStage(
+  stageRunId: string,
+  abortController?: AbortController,
+): Promise<void> {
   const run = getStageRun(stageRunId);
   if (!run) throw new StageJobError(`Stage run ${stageRunId} not found.`, false);
   if (!isAgentStage(run.stage)) {
@@ -275,6 +286,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       maxCostUsd,
       workspacePath,
       prompt: promptInput,
+      abortController,
       onEvent: (event) => appendEvent(task.id, stageRunId, event),
     });
   } catch (error) {
@@ -304,10 +316,16 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       });
     }
 
-    markStageRunStatus(stageRunId, "failed", { error: message });
-    // A budget stop (§5.4) is not retried: the worker's ordinary retry
-    // policy would otherwise re-run the session up to twice more, each time
-    // spending up to the same ceiling again.
+    // An abort is not a failure — see §6.5/§6.6. The run status makes that
+    // distinction visible in the timeline; `handleJobFailure` (worker) reads
+    // it back to skip its normal fail-the-task bookkeeping, since the task
+    // already reached `CANCELLED` via `cancelTask` before this landed.
+    markStageRunStatus(stageRunId, error instanceof StageAbortedError ? "cancelled" : "failed", {
+      error: message,
+    });
+    // A budget stop (§5.4) or an abort (§6.5) is not retried: the worker's
+    // ordinary retry policy would otherwise re-run the session (spending up
+    // to the same ceiling again) or re-run a stage the user already cancelled.
     const retryable = error instanceof StageExecutionError ? error.retryable : true;
     throw new StageJobError(message, retryable);
   }

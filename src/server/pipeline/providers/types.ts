@@ -62,3 +62,20 @@ export class StageExecutionError extends Error {
     this.name = "StageExecutionError";
   }
 }
+
+/**
+ * Raised by a provider when `options.abortController`'s signal fired mid-session
+ * (§6.5) — the user clicked Cancel, not a crash. Always non-retryable: the
+ * task already reached `CANCELLED` via `cancelTask` before the abort landed,
+ * so nothing should retry it or advance the task a second time.
+ *
+ * A subclass rather than a discriminator field so `error instanceof
+ * StageAbortedError` reads the same way every other typed-error check in
+ * this codebase already does (`CapacityError`, `QuotaError`, …).
+ */
+export class StageAbortedError extends StageExecutionError {
+  constructor(message: string, partial: Partial<StageExecutionResult> = {}) {
+    super(message, partial, false);
+    this.name = "StageAbortedError";
+  }
+}

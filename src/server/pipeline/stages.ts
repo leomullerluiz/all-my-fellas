@@ -174,6 +174,14 @@ export const STAGE_RUN_STATUSES = [
   "done",
   "failed",
   "rejected",
+  /**
+   * The user clicked Cancel while this run was in flight (§6.5/§6.6). Not
+   * `"failed"` — an abort is not a crash — and deliberately not `"rejected"`,
+   * which is a distinct dead slot `spec-retry-recovery.md` §4 claims for
+   * terminal-cause recording; two features writing different meanings into
+   * one unused enum member would make the column unreadable.
+   */
+  "cancelled",
 ] as const;
 export type StageRunStatus = (typeof STAGE_RUN_STATUSES)[number];
 

@@ -2,27 +2,18 @@ import "dotenv/config";
 
 import { hasGithubToken, resolveProviderAuth } from "../server/config/env";
 import { closeDatabase } from "../server/db/client";
-import { appendEvent } from "../server/events/store";
+import { claimNextJob, completeJob, parsePayload, requeueOrphanedJobs, taskIsActive } from "../server/jobs/queue";
 import {
-  claimNextJob,
-  completeJob,
-  failJob,
-  parsePayload,
-  requeueOrphanedJobs,
-  taskIsActive,
-} from "../server/jobs/queue";
-import {
-  StageJobError,
   executeAgentStage,
   executeCleanup,
   executeDelivery,
   executeVerification,
 } from "../server/pipeline/execute";
-import { advanceTask, promoteQueue } from "../server/pipeline/orchestrator";
+import { promoteQueue } from "../server/pipeline/orchestrator";
 import { runMaintenanceSweep } from "../server/pipeline/audit/retention";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
-import { getStageRun, markStageRunStatus } from "../server/tasks/service";
+import { handleJobFailure } from "./job-failure";
 
 /**
  * The pipeline worker.
@@ -33,11 +24,16 @@ import { getStageRun, markStageRunStatus } from "../server/tasks/service";
  */
 
 const TICK_MS = 1_000;
-/** Transient failures are retried twice with backoff before the task fails. */
-const MAX_JOB_ATTEMPTS = 3;
-const RETRY_BACKOFF_MS = [5_000, 20_000];
 /** How often the transcript retention sweep runs, beyond the one at startup. */
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+/**
+ * How often, while a job is in flight, the worker checks whether the task it
+ * belongs to is still active and aborts the job's controller the first time
+ * it is not (§6.3). The cost is one indexed single-row read per interval per
+ * in-flight job, against a saving measured in agent turns — see §13.3 for the
+ * open question on whether this is the right number.
+ */
+const CANCEL_POLL_MS = 2_000;
 
 let shuttingDown = false;
 let activeJob: JobRow | null = null;
@@ -71,11 +67,17 @@ function banner(): void {
   );
 }
 
-async function handleJob(job: JobRow): Promise<void> {
+/**
+ * @param abortController The controller `tick()` created for this job's
+ *   lifetime (§6.2). Only `run_stage` actually consumes it — the other job
+ *   kinds do not call `runStage`, so aborting them mid-flight would do
+ *   nothing; they still get a controller for uniformity, at no cost.
+ */
+async function handleJob(job: JobRow, abortController: AbortController): Promise<void> {
   switch (job.kind) {
     case "run_stage": {
       const { stageRunId } = parsePayload<{ stageRunId: string }>(job);
-      await executeAgentStage(stageRunId);
+      await executeAgentStage(stageRunId, abortController);
       break;
     }
     case "deliver": {
@@ -104,73 +106,6 @@ async function handleJob(job: JobRow): Promise<void> {
       // stage forever. Throwing turns that into a loud, retried failure.
       const unreachable: never = job.kind;
       throw new Error(`No handler for job kind "${unreachable}".`);
-    }
-  }
-}
-
-/** Decides whether a failed job is retried or the task is failed outright. */
-function handleJobFailure(job: JobRow, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  const retryable =
-    typeof error === "object" &&
-    error !== null &&
-    "retryable" in error &&
-    (error as { retryable: unknown }).retryable === false
-      ? false
-      : true;
-
-  const canRetry = retryable && job.attempts < MAX_JOB_ATTEMPTS;
-
-  if (canRetry) {
-    const backoff = RETRY_BACKOFF_MS[Math.min(job.attempts - 1, RETRY_BACKOFF_MS.length - 1)];
-    log("warn", `Job ${job.id} failed (attempt ${job.attempts}), retrying in ${backoff}ms: ${message}`);
-    appendEvent(job.taskId, null, {
-      type: "log",
-      level: "warn",
-      message: `Stage failed, retrying: ${message}`,
-    });
-    failJob(job.id, message, Date.now() + backoff);
-    return;
-  }
-
-  log("error", `Job ${job.id} failed permanently: ${message}`);
-  failJob(job.id, message);
-
-  const failureKind = error instanceof StageJobError ? error.kind : undefined;
-
-  const run =
-    job.kind === "cleanup_workspace" || job.kind === "quota_wake"
-      ? null
-      : getStageRun(parsePayload<{ stageRunId?: string }>(job).stageRunId ?? "");
-
-  if (run) {
-    // Some failures (workspace preparation, a missing input artifact) escape
-    // before the stage marks itself failed, which would leave the row stuck on
-    // `running` and the timeline showing a stage that never ends.
-    if (run.status !== "failed") {
-      markStageRunStatus(run.id, "failed", { error: message });
-    }
-    appendEvent(job.taskId, run.id, {
-      type: "stage_failed",
-      stage: run.stage,
-      attempt: run.attempt,
-      error: message,
-    });
-  }
-
-  // A cleanup or quota-wake failure must not take a task down — neither is
-  // that task's own stage run (quota_wake's `taskId` is just whichever park
-  // triggered it, per `db/schema.ts`'s `JOB_KINDS` comment).
-  if (job.kind !== "cleanup_workspace" && job.kind !== "quota_wake" && taskIsActive(job.taskId)) {
-    try {
-      advanceTask(job.taskId, {
-        kind: "stage_failed",
-        stage: run?.stage ?? "CREATED",
-        error: message,
-        failureKind,
-      });
-    } catch (transitionError) {
-      log("error", `Could not fail task ${job.taskId}: ${String(transitionError)}`);
     }
   }
 }
@@ -213,13 +148,23 @@ async function tick(): Promise<void> {
 
   log("info", `Running job ${job.id} (${job.kind}) for task ${job.taskId}`);
 
+  // One controller for this job's lifetime (§6.2), plus its own poll timer:
+  // the tick loop itself is blocked inside `await handleJob` for the whole
+  // duration of an agent session, so the cancellation check needs a timer
+  // independent of that loop, not another pass through it.
+  const abortController = new AbortController();
+  const watch = setInterval(() => {
+    if (!taskIsActive(job.taskId)) abortController.abort();
+  }, CANCEL_POLL_MS);
+
   try {
-    await handleJob(job);
+    await handleJob(job, abortController);
     completeJob(job.id);
     log("info", `Job ${job.id} done.`);
   } catch (error) {
-    handleJobFailure(job, error);
+    handleJobFailure(job, error, log);
   } finally {
+    clearInterval(watch);
     activeJob = null;
   }
 }
