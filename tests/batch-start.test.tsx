@@ -59,6 +59,7 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     repo: REPO,
     costUsd: 0,
     dependsOn: [],
+    execution: { kind: "idle" },
     ...overrides,
   };
 }
@@ -69,7 +70,7 @@ function renderBoard(tasks: BoardTask[]) {
   return render(
     <BatchSelectionProvider>
       <BatchStartButton />
-      <TaskBoard tasks={tasks} capacity={CAPACITY} />
+      <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
     </BatchSelectionProvider>,
   );
 }
@@ -234,7 +235,7 @@ describe("selection reset when the board reloads", () => {
     const { rerender } = render(
       <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
         <BatchStartButton />
-        <TaskBoard tasks={[created]} capacity={CAPACITY} />
+        <TaskBoard tasks={[created]} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 
@@ -256,7 +257,7 @@ describe("selection reset when the board reloads", () => {
     rerender(
       <BatchSelectionProvider boardVersion="task_a:STAKEHOLDER_REFINEMENT:running">
         <BatchStartButton />
-        <TaskBoard tasks={[started]} capacity={CAPACITY} />
+        <TaskBoard tasks={[started]} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 
@@ -271,7 +272,7 @@ describe("selection reset when the board reloads", () => {
     const { rerender } = render(
       <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
         <BatchStartButton />
-        <TaskBoard tasks={tasks} capacity={CAPACITY} />
+        <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 
@@ -281,7 +282,7 @@ describe("selection reset when the board reloads", () => {
     rerender(
       <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
         <BatchStartButton />
-        <TaskBoard tasks={tasks} capacity={CAPACITY} />
+        <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 
@@ -295,7 +296,7 @@ describe("selection reset when the board reloads", () => {
     const { rerender } = render(
       <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
         <BatchStartButton />
-        <TaskBoard tasks={[queued]} capacity={CAPACITY} />
+        <TaskBoard tasks={[queued]} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 
@@ -306,7 +307,7 @@ describe("selection reset when the board reloads", () => {
     rerender(
       <BatchSelectionProvider boardVersion="task_a:CREATED:on_queue">
         <BatchStartButton />
-        <TaskBoard tasks={[onQueue]} capacity={CAPACITY} />
+        <TaskBoard tasks={[onQueue]} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 
@@ -316,7 +317,7 @@ describe("selection reset when the board reloads", () => {
     rerender(
       <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
         <BatchStartButton />
-        <TaskBoard tasks={[queued]} capacity={CAPACITY} />
+        <TaskBoard tasks={[queued]} capacity={CAPACITY} maxJobAttempts={3} />
       </BatchSelectionProvider>,
     );
 

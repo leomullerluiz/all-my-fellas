@@ -4,6 +4,7 @@ import { hasGithubToken, resolveProviderAuth } from "../server/config/env";
 import { closeDatabase } from "../server/db/client";
 import { appendEvent } from "../server/events/store";
 import {
+  MAX_JOB_ATTEMPTS,
   claimNextJob,
   completeJob,
   failJob,
@@ -32,8 +33,6 @@ import { getStageRun, markStageRunStatus } from "../server/tasks/service";
  */
 
 const TICK_MS = 1_000;
-/** Transient failures are retried twice with backoff before the task fails. */
-const MAX_JOB_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [5_000, 20_000];
 
 let shuttingDown = false;

@@ -12,12 +12,47 @@ import {
 } from "@/components/task-card-menu";
 import { Badge } from "@/components/ui/badge";
 import { capacityBlockedReason } from "@/lib/capacity";
-import { formatCost } from "@/lib/utils";
+import { formatCost, ordinal, retryCountdownSeconds } from "@/lib/utils";
 import { BOARD_STAGES, STAGE_LABELS, type Stage } from "@/server/pipeline/stages";
+// Type-only: `execution.ts` imports `db`, which cannot be bundled for the
+// browser, but a type-only import is erased before bundling — the same
+// pattern `task-actions.tsx` already uses for `RetryAvailability`.
+import type { ExecutionState } from "@/server/pipeline/execution";
 import type { TaskWithRepo } from "@/server/tasks/service";
 
 /** One card on the board. */
-export type BoardTask = TaskWithRepo & { costUsd: number; dependsOn: CardMenuDependency[] };
+export type BoardTask = TaskWithRepo & {
+  costUsd: number;
+  dependsOn: CardMenuDependency[];
+  execution: ExecutionState;
+};
+
+type InFlightJob = Extract<ExecutionState, { kind: "in_flight" }>["job"];
+
+const IN_FLIGHT_TITLE: Record<InFlightJob, string> = {
+  agent: "An agent is running",
+  delivery: "Pushing the branch and opening the change request",
+  verification: "Running verification commands",
+};
+
+/** Static (non-animated) dot, same visual weight as `PulseDot` minus the claim. */
+function StaticDot({
+  tone,
+  title,
+}: {
+  tone: "accent" | "warning";
+  title: string;
+}) {
+  return (
+    <span
+      className={`mt-1 inline-block size-2 shrink-0 rounded-full ${
+        tone === "accent" ? "bg-accent" : "bg-warning"
+      }`}
+      title={title}
+      aria-label={title}
+    />
+  );
+}
 
 const PRIORITY_TONE = {
   low: "neutral",
@@ -34,8 +69,15 @@ const PRIORITY_TONE = {
  * `spec-task-queue.md` §5.1. The generous padding on the title link keeps the
  * hit area the full height of the header row rather than just the glyphs.
  */
-function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapacity }) {
-  const isRunning = task.status === "running";
+function TaskCard({
+  task,
+  capacity,
+  maxJobAttempts,
+}: {
+  task: BoardTask;
+  capacity: CardMenuCapacity;
+  maxJobAttempts: number;
+}) {
   const needsAttention = task.status === "awaiting_gate";
   const isGateQueued = task.status === "gate_queued";
   const notStarted = task.currentStage === "CREATED";
@@ -46,6 +88,12 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
   // ones (see the board-splitting comment below), but they're already queued
   // and shouldn't be selectable for a batch start.
   const showCheckbox = notStarted && task.status !== "on_queue";
+  // A single admitted task's own not-yet-claimed job is not a queue — it is
+  // the ordinary sub-second gap before the next worker tick. Only show queue
+  // wording once there is genuine contention for the worker, which requires
+  // `maxParallelTasks > 1` in the first place (`capacity.limit` is that
+  // setting) — see `spec-execution-honesty.md` §4.5 / stories.md S1.
+  const showQueuePosition = capacity.limit > 1;
 
   return (
     <div className="rounded-md border border-border bg-surface-raised p-2.5 transition-colors focus-within:border-accent/60 hover:border-accent/60">
@@ -74,12 +122,26 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
               dependsOn={task.dependsOn}
             />
           </div>
-        ) : isRunning ? (
+        ) : task.execution.kind === "in_flight" ? (
           <PulseDot
             className="mt-1"
-            title="An agent is running"
-            aria-label="An agent is running"
+            title={IN_FLIGHT_TITLE[task.execution.job]}
+            aria-label={IN_FLIGHT_TITLE[task.execution.job]}
           />
+        ) : task.execution.kind === "waiting_for_worker" && showQueuePosition ? (
+          <StaticDot
+            tone="accent"
+            title={`Queued for the worker — ${ordinal(task.execution.position)} of ${task.execution.depth}`}
+          />
+        ) : task.execution.kind === "retry_backoff" ? (
+          <StaticDot
+            tone="warning"
+            title={`Stage failed; retrying in ${retryCountdownSeconds(
+              task.execution.retryAt,
+            )}s (attempt ${task.execution.attempt} of ${maxJobAttempts})`}
+          />
+        ) : task.execution.kind === "settling" ? (
+          <StaticDot tone="warning" title="Nothing is queued for this task" />
         ) : needsAttention ? (
           <span
             className="mt-1 inline-block size-2 shrink-0 rounded-full bg-warning"
@@ -132,9 +194,12 @@ function TaskCard({ task, capacity }: { task: BoardTask; capacity: CardMenuCapac
 export function TaskBoard({
   tasks,
   capacity,
+  maxJobAttempts,
 }: {
   tasks: BoardTask[];
   capacity: CardMenuCapacity;
+  /** For the `retry_backoff` card's "attempt N of {maxJobAttempts}" — `MAX_JOB_ATTEMPTS`. */
+  maxJobAttempts: number;
 }) {
   const byStage = new Map<Stage, BoardTask[]>();
   const onQueue: BoardTask[] = [];
@@ -197,7 +262,12 @@ export function TaskBoard({
           ) : (
             <div className="flex flex-col gap-2 p-2">
               {column.items.map((task) => (
-                <TaskCard key={task.id} task={task} capacity={capacity} />
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  capacity={capacity}
+                  maxJobAttempts={maxJobAttempts}
+                />
               ))}
             </div>
           )}

@@ -12,6 +12,8 @@ import { formatCost } from "@/lib/utils";
 import { resolveProviderAuth } from "@/server/config/env";
 import { credentialSource } from "@/server/git/credentials";
 import { providerFor } from "@/server/git/providers";
+import { MAX_JOB_ATTEMPTS } from "@/server/jobs/queue";
+import { executionStateFor, executionStates } from "@/server/pipeline/execution";
 import { capacity } from "@/server/pipeline/orchestrator";
 import { listDependencies, listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
 import { resolveQuotaStatus, spendToday } from "@/server/usage/quota";
@@ -74,10 +76,15 @@ export default async function DashboardPage(props: {
   const range = customRange ?? defaultDateRange();
 
   const repos = listRepos();
+  // One derivation, read once per render — see `execution.ts`. `idle` is the
+  // default for every task this map has no entry for (everything not
+  // admitted), which is most of them.
+  const execution = executionStates();
   const allTasks: BoardTask[] = listTasks().map((task) => ({
     ...task,
     costUsd: totalCostForTask(task.id),
     dependsOn: listDependencies(task.id),
+    execution: executionStateFor(task.id, execution),
   }));
   // S1/S2: today's tasks (or the applied custom range) plus every open/active
   // task regardless of date — see `filterBoardTasks`. The header counters
@@ -88,6 +95,15 @@ export default async function DashboardPage(props: {
   const notStarted = tasks.filter((task) => task.currentStage === "CREATED").length;
   const waiting = tasks.filter((task) => task.status === "awaiting_gate").length;
   const spend = tasks.reduce((sum, task) => sum + task.costUsd, 0);
+  // The true numbers behind "N of M slots in use" — see `execution.ts` and
+  // `spec-execution-honesty.md` §6.5. `waitingForWorker` is only meaningful
+  // once more than one task can be admitted at once; below that the board's
+  // own card-level rule (`TaskBoard`'s `showQueuePosition`) already suppresses
+  // the per-card wording, and the header follows the same rule so the two
+  // never disagree.
+  const inFlightCount = tasks.filter((task) => task.execution.kind === "in_flight").length;
+  const waitingForWorker =
+    slots.limit > 1 ? tasks.filter((task) => task.execution.kind === "waiting_for_worker").length : 0;
 
   // S1/S2/S3's bottom-of-page bar. Recomputed on every request that renders
   // this route, same as everything else here — no separate polling.
@@ -109,6 +125,11 @@ export default async function DashboardPage(props: {
         <div>
           <h1 className="text-lg font-semibold tracking-tight">Pipeline</h1>
           <p className="mt-1 text-xs text-muted">
+            {/* The true number first — "N of M slots in use" counts admitted
+                tasks, not tasks the worker is actually executing, and the two
+                diverge above `maxParallelTasks = 1` — see §6.5. */}
+            {inFlightCount} running
+            {waitingForWorker > 0 ? ` · ${waitingForWorker} waiting for the worker` : ""} ·{" "}
             {slots.active} of {slots.limit} slot{slots.limit === 1 ? "" : "s"} in use ·{" "}
             {notStarted} not started · {waiting} waiting for approval ·{" "}
             {formatCost(spend)} spent in total
@@ -150,7 +171,7 @@ export default async function DashboardPage(props: {
           }
         />
       ) : (
-        <TaskBoard tasks={tasks} capacity={slots} />
+        <TaskBoard tasks={tasks} capacity={slots} maxJobAttempts={MAX_JOB_ATTEMPTS} />
       )}
 
       <UsageBar spendToday={todaySpend} quota={quota} />
