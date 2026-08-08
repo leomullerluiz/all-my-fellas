@@ -6,7 +6,7 @@ import {
   parseMultipartFields,
   serverError,
 } from "@/server/http/respond";
-import { CapacityError, DependencyError, capacity, startTask } from "@/server/pipeline/orchestrator";
+import { CapacityError, DependencyError, QuotaError, capacity, startTask } from "@/server/pipeline/orchestrator";
 import {
   createTask,
   getRepo,
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
       startTask(created.id);
       return json({ task: getTask(created.id) ?? created, started: true }, { status: 201 });
     } catch (error) {
-      if (error instanceof CapacityError || error instanceof DependencyError) {
+      if (error instanceof CapacityError || error instanceof DependencyError || error instanceof QuotaError) {
         // The task is created and safe at `CREATED`; only the optional start
         // was refused. Return 409 with the task so the client can navigate to
         // it instead of losing the input.

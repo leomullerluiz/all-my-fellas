@@ -177,6 +177,22 @@ export function requeueOrphanedJobs(): number {
   return result.length;
 }
 
+/**
+ * Whether a `quota_wake` job is already pending, regardless of which task
+ * it is attached to — the job's effect (`promoteQueue()`) is global, so a
+ * second one enqueued while the first is still pending would just call
+ * `promoteQueue` twice for nothing (§4.5).
+ */
+export function hasPendingQuotaWake(): boolean {
+  return (
+    db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.kind, "quota_wake"), eq(jobs.status, "pending")))
+      .get() !== undefined
+  );
+}
+
 export function parsePayload<T>(job: JobRow): T {
   return JSON.parse(job.payloadJson) as T;
 }

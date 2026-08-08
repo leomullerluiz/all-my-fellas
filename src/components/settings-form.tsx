@@ -330,7 +330,33 @@ export function SettingsForm({
             turn the quota display off for that mode.
           </CardDescription>
         </CardHeader>
-        <CardBody>
+        <CardBody className="flex flex-col gap-4">
+          <Field
+            label="Enforcement"
+            htmlFor="quotaEnforcement"
+            hint={
+              'This enforces one combined limit across every provider (Claude, ChatGPT, Gemini), ' +
+              'not a per-provider guarantee — see the note in docs. "Off" only shows the bar; ' +
+              '"Warn" starts anyway and logs it; "Hold" refuses new starts once the limit is reached ' +
+              '(a "Start anyway" button still overrides it per task).'
+            }
+          >
+            <Select
+              id="quotaEnforcement"
+              value={settings.quotaEnforcement}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  quotaEnforcement: event.target.value as AppSettings["quotaEnforcement"],
+                }))
+              }
+            >
+              <option value="off">Off — display only</option>
+              <option value="warn">Warn — start anyway, log it</option>
+              <option value="hold">Hold — refuse new starts</option>
+            </Select>
+          </Field>
+
           <div className="grid gap-4 sm:grid-cols-2">
             {QUOTA_MODES.map(({ mode, label }) => (
               <div key={mode} className="flex flex-col gap-3 rounded-md border border-border p-3">

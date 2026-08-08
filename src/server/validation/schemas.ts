@@ -281,13 +281,23 @@ export const updateSettingsSchema = z.object({
   providers: providersMapSchema.optional(),
   maxTurns: turnsMapSchema.optional(),
   maxParallelTasks: z.number().int().min(1).max(8).optional(),
-  qaMaxCycles: z.number().int().min(0).max(10).optional(),
+  // Was `qaMaxCycles`, which matches no field on `AppSettings` (the field is
+  // `reworkMaxCycles`) — `z.object` silently strips unknown keys, so every
+  // PATCH carrying it was discarded before this fix. Fixed in the same edit
+  // that adds the quota/spend-ceiling fields below, since both touch this
+  // exact schema in this exact change — see `techplan.md`'s risk note.
+  reworkMaxCycles: z.number().int().min(0).max(10).optional(),
+  /** Pre-selected value of "require human code review" on the new-task form. */
+  humanCodeReviewDefault: z.boolean().optional(),
   autoApprovePlanForLowCriticality: z.boolean().optional(),
   workspaceRetentionDays: z.number().int().min(0).max(365).optional(),
   /** `null` clears the setting — keep transcripts forever. */
   transcriptRetentionDays: z.number().int().min(0).max(3650).nullable().optional(),
   theme: z.enum(THEMES).optional(),
   quotaLimits: quotaLimitsSchema.optional(),
+  quotaEnforcement: z.enum(["off", "warn", "hold"]).optional(),
+  /** `null` clears the ceiling — no per-stage dollar cap. */
+  maxCostPerStageUsd: z.number().min(0).nullable().optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 

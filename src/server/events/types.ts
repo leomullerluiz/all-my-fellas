@@ -1,3 +1,4 @@
+import type { Cadence } from "../config/env";
 import type { LlmProviderId } from "../config/llm-providers";
 import type { Stage } from "../pipeline/stages";
 
@@ -53,7 +54,11 @@ export type PipelineEvent =
       type: "verification_finished";
       status: "passed" | "failed" | "skipped" | "errored";
       reason?: string;
-    };
+    }
+  /** `enforcement: "warn"` let a start proceed over the configured quota. */
+  | { type: "quota_warning"; usedUsd: number; limitUsd: number; cadence: Cadence }
+  /** `overrideQuota: true` skipped a `"hold"` refusal that would otherwise have fired. */
+  | { type: "quota_overridden"; usedUsd: number; limitUsd: number; cadence: Cadence };
 
 /**
  * Every `PipelineEvent` variant's `type`, derived from the union rather than
@@ -92,6 +97,8 @@ const PIPELINE_EVENT_TYPE_SET = {
   verification_output: true,
   verification_command_finished: true,
   verification_finished: true,
+  quota_warning: true,
+  quota_overridden: true,
 } satisfies Record<PipelineEvent["type"], true>;
 
 export const PIPELINE_EVENT_TYPES = Object.keys(

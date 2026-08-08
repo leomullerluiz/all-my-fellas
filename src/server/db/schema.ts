@@ -315,7 +315,20 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
-export const JOB_KINDS = ["run_stage", "deliver", "verify", "cleanup_workspace"] as const;
+export const JOB_KINDS = [
+  "run_stage",
+  "deliver",
+  "verify",
+  "cleanup_workspace",
+  /**
+   * Wakes `promoteQueue` at a quota period's `nextReset`, so a task parked at
+   * `on_queue` on a `QuotaError` is re-checked without waiting for an
+   * unrelated slot-freeing transition. Its `taskId` is whichever task's park
+   * triggered it — the job's effect (`promoteQueue()`) is global, not
+   * task-specific, so no two of these are ever enqueued at once (§4.5).
+   */
+  "quota_wake",
+] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
 export const JOB_STATUSES = ["pending", "claimed", "done", "failed"] as const;

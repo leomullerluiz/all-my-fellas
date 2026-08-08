@@ -204,3 +204,60 @@ describe("quota limits setting", () => {
     expect(response.status).toBe(400);
   });
 });
+
+describe("quota enforcement setting (S2)", () => {
+  it("defaults to off, so an existing installation's behaviour is unchanged", () => {
+    expect(store.defaultSettings().quotaEnforcement).toBe("off");
+  });
+
+  it("PATCH persists a valid enforcement mode", async () => {
+    const response = await patch({ quotaEnforcement: "hold" });
+    expect(response.status).toBe(200);
+    expect(store.getSettings().quotaEnforcement).toBe("hold");
+  });
+
+  it("PATCH rejects an unknown enforcement mode", async () => {
+    const response = await patch({ quotaEnforcement: "block" });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("per-stage spend ceiling setting (S3)", () => {
+  it("defaults to null — no ceiling", () => {
+    expect(store.defaultSettings().maxCostPerStageUsd).toBeNull();
+  });
+
+  it("PATCH persists a positive ceiling and PATCH null clears it", async () => {
+    const response = await patch({ maxCostPerStageUsd: 5 });
+    expect(response.status).toBe(200);
+    expect(store.getSettings().maxCostPerStageUsd).toBe(5);
+
+    const cleared = await patch({ maxCostPerStageUsd: null });
+    expect(cleared.status).toBe(200);
+    expect(store.getSettings().maxCostPerStageUsd).toBeNull();
+  });
+
+  it("PATCH rejects a negative ceiling", async () => {
+    const response = await patch({ maxCostPerStageUsd: -1 });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("reworkMaxCycles / humanCodeReviewDefault PATCH (bug fix)", () => {
+  // `updateSettingsSchema` used to declare `qaMaxCycles`, which matches no
+  // field on `AppSettings` (the field is `reworkMaxCycles`) — `z.object`
+  // silently strips unknown keys, so a `reworkMaxCycles` PATCH was discarded
+  // before this fix. `humanCodeReviewDefault` was not declared at all.
+
+  it("PATCH actually updates reworkMaxCycles", async () => {
+    const response = await patch({ reworkMaxCycles: 4 });
+    expect(response.status).toBe(200);
+    expect(store.getSettings().reworkMaxCycles).toBe(4);
+  });
+
+  it("PATCH actually updates humanCodeReviewDefault", async () => {
+    const response = await patch({ humanCodeReviewDefault: true });
+    expect(response.status).toBe(200);
+    expect(store.getSettings().humanCodeReviewDefault).toBe(true);
+  });
+});

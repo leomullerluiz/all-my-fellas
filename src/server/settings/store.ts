@@ -5,6 +5,7 @@ import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { settings } from "../db/schema";
 import type { AgentStage } from "../pipeline/stages";
+import type { QuotaEnforcement } from "../usage/quota";
 
 /**
  * Runtime settings that a user can change from the Settings screen.
@@ -52,6 +53,20 @@ export type AppSettings = {
    * so this is always a configured value, never a fetched one.
    */
   quotaLimits: QuotaConfig;
+  /**
+   * How a configured quota limit is enforced when a task tries to enter the
+   * pipeline — see `usage/quota.ts`'s `QuotaEnforcement` and
+   * `orchestrator.ts`'s `assertWithinQuota`. Defaults to `"off"` so an
+   * existing installation's behaviour is unchanged until it opts in.
+   */
+  quotaEnforcement: QuotaEnforcement;
+  /**
+   * Per-stage dollar ceiling, checked by every LLM provider while a session
+   * runs (a stop-loss, not a hard cap — the check happens after the turn that
+   * crosses it). `null` means no ceiling. See `spec-execution-honesty.md`'s
+   * §3 counterpart and `techplan.md`'s S3.
+   */
+  maxCostPerStageUsd: number | null;
 };
 
 export function defaultSettings(): AppSettings {
@@ -97,6 +112,8 @@ export function defaultSettings(): AppSettings {
     transcriptRetentionDays: limits.transcriptRetentionDays,
     theme: "system",
     quotaLimits: resolveQuota(),
+    quotaEnforcement: "off",
+    maxCostPerStageUsd: null,
   };
 }
 

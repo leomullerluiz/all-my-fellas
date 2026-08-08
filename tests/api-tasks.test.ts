@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
  * Route-handler tests.
@@ -427,6 +427,59 @@ describe("POST /api/tasks/:id/start", () => {
 
     const response = await startRoute.POST(new Request("http://test"), params(task.id));
     expect(response.status).toBe(200);
+  });
+
+  describe("quota-held (S2)", () => {
+    afterEach(() => {
+      delete process.env.ANTHROPIC_API_KEY;
+      settings.updateSettings({
+        quotaEnforcement: "off",
+        quotaLimits: { api_key: { limitUsd: null, cadence: "daily" } },
+      });
+    });
+
+    function seedOverQuota() {
+      process.env.ANTHROPIC_API_KEY = "key";
+      settings.updateSettings({
+        quotaEnforcement: "hold",
+        quotaLimits: { api_key: { limitUsd: 1, cadence: "daily" } },
+      });
+      const spender = seed({ title: "Spender" });
+      const run = service.createStageRun({ taskId: spender.id, stage: "DEVELOPMENT", attempt: 1 });
+      service.updateStageRun(run.id, {
+        status: "done",
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+        costUsd: 5,
+      });
+    }
+
+    it("returns 409 with a quota_exceeded code instead of a 500", async () => {
+      seedOverQuota();
+      const task = seed();
+
+      const response = await startRoute.POST(new Request("http://test"), params(task.id));
+      expect(response.status).toBe(409);
+      const payload = (await response.json()) as { error: string; code: string };
+      expect(payload.code).toBe("quota_exceeded");
+      expect(service.getTask(task.id)!.currentStage).toBe("CREATED");
+    });
+
+    it("starts anyway when the body carries overrideQuota: true", async () => {
+      seedOverQuota();
+      const task = seed();
+
+      const response = await startRoute.POST(
+        new Request("http://test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overrideQuota: true }),
+        }),
+        params(task.id),
+      );
+      expect(response.status).toBe(200);
+      expect(service.getTask(task.id)!.status).toBe("running");
+    });
   });
 });
 

@@ -1,10 +1,12 @@
 import { capacityBlockedReason } from "@/lib/capacity";
+import { formatCost, formatDateTime } from "@/lib/utils";
 
 import { db } from "../db/client";
 import { appendEvent } from "../events/store";
 import { workspaceHasGitDir } from "../git/workspace";
-import { cancelPendingJobs, cancelScheduledCleanup, enqueueJob } from "../jobs/queue";
+import { cancelPendingJobs, cancelScheduledCleanup, enqueueJob, hasPendingQuotaWake } from "../jobs/queue";
 import { getSettings } from "../settings/store";
+import { type Cadence, resolveQuotaStatus } from "../usage/quota";
 import {
   type DependencySummary,
   type EditableTaskFields,
@@ -261,20 +263,95 @@ function assertPrerequisitesMet(taskId: string): void {
 }
 
 /**
+ * Raised when starting (or resuming, or retrying) a task would exceed the
+ * configured spend quota under `enforcement: "hold"`.
+ *
+ * Carries what the UI needs to explain itself — the limit, what has been
+ * spent, the cadence and when it resets — rather than just refusing. See
+ * spec §4.3.
+ */
+export class QuotaError extends Error {
+  constructor(
+    readonly limitUsd: number,
+    readonly usedUsd: number,
+    readonly cadence: Cadence,
+    readonly resetAt: number,
+  ) {
+    super(
+      `Spend limit of ${formatCost(limitUsd)} per ${cadence === "daily" ? "day" : "hour"} ` +
+        `reached (${formatCost(usedUsd)} used); resets ${formatDateTime(resetAt)}.`,
+    );
+    this.name = "QuotaError";
+  }
+}
+
+/**
+ * Throws unless admitting this task is within the configured spend quota, or
+ * appends a `quota_warning`/`quota_overridden` event and lets it proceed.
+ *
+ * Must be called inside the same transaction as the transition it guards —
+ * same reasoning as {@link assertSlotAvailable} — and before it: money is a
+ * harder refusal than concurrency, and the two produce different messages
+ * (§4.3).
+ *
+ * Pool-wide: this checks total spend across every provider against the
+ * *Claude* auth mode's configured limit (`resolveQuotaStatus`'s own
+ * documented gap, §4.8) — this spec does not segment quota by provider.
+ */
+function assertWithinQuota(taskId: string, overrideQuota: boolean): void {
+  const settings = getSettings();
+  if (settings.quotaEnforcement === "off") return;
+
+  const status = resolveQuotaStatus();
+  if (status.state !== "exceeded") return;
+
+  if (settings.quotaEnforcement === "warn") {
+    appendEvent(taskId, null, {
+      type: "quota_warning",
+      usedUsd: status.usedUsd,
+      limitUsd: status.limitUsd,
+      cadence: status.cadence,
+    });
+    return;
+  }
+
+  // enforcement === "hold"
+  if (overrideQuota) {
+    appendEvent(taskId, null, {
+      type: "quota_overridden",
+      usedUsd: status.usedUsd,
+      limitUsd: status.limitUsd,
+      cadence: status.cadence,
+    });
+    return;
+  }
+
+  throw new QuotaError(status.limitUsd, status.usedUsd, status.cadence, status.resetAt);
+}
+
+/**
  * Enters the pipeline, subject to admission control.
  *
  * The capacity check and the transition share one transaction so the invariant
  * "at most `MAX_PARALLEL_TASKS` tasks are in flight" cannot be raced. The
  * dependency check runs first: it is a hard, unconditional gate that must
- * win even when a slot happens to be free.
+ * win even when a slot happens to be free; quota runs next, since no amount
+ * of waiting for a slot fixes a spend refusal (§4.3).
  *
+ * @param overrideQuota Skips only {@link assertWithinQuota}'s `"hold"`
+ *   refusal — the "Start anyway" affordance. Has no effect on capacity or
+ *   dependency refusals, which protect invariants rather than the user's
+ *   wallet.
  * @throws {DependencyError} when a prerequisite has not reached `COMPLETED`.
+ * @throws {QuotaError} when `enforcement: "hold"` and usage is over the
+ *   configured limit, unless `overrideQuota` is set.
  * @throws {CapacityError} when no slot is free.
  * @throws {InvalidTransitionError} when the task is not at `CREATED`.
  */
-export function startTask(taskId: string): Transition {
+export function startTask(taskId: string, options: { overrideQuota?: boolean } = {}): Transition {
   return db.transaction(() => {
     assertPrerequisitesMet(taskId);
+    assertWithinQuota(taskId, options.overrideQuota ?? false);
     assertSlotAvailable();
     const transition = advanceTask(taskId, { kind: "start" });
     appendEvent(taskId, null, { type: "task_started" });
@@ -335,10 +412,12 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
  * most one task, since one transition frees at most one slot; each
  * subsequent slot-freeing transition calls this again.
  *
- * A `CapacityError` stops the loop outright — every remaining candidate would
- * fail the same admission check, so trying them is wasted work. The
- * per-candidate races — `DependencyError`, `InvalidTransitionError` (the task
- * was started elsewhere in the same instant), `TaskNotFoundError`
+ * A `CapacityError` or a `QuotaError` stops the loop outright — every
+ * remaining candidate would fail the same admission check (a quota refusal
+ * refuses every candidate in the same instant, exactly like capacity), so
+ * trying them is wasted work — one `costSince` call, not one per candidate.
+ * The per-candidate races — `DependencyError`, `InvalidTransitionError` (the
+ * task was started elsewhere in the same instant), `TaskNotFoundError`
  * (cancelled/deleted meanwhile) and `StaleQueueEntryError` (the `gate_queued`
  * equivalent) — say nothing about the rest of the queue, so the loop moves on
  * to the next candidate. Skipping a `DependencyError` candidate is also the
@@ -369,7 +448,7 @@ export function promoteQueue(): void {
       }
       return;
     } catch (error) {
-      if (error instanceof CapacityError) return;
+      if (error instanceof CapacityError || error instanceof QuotaError) return;
 
       const expected =
         error instanceof DependencyError ||
@@ -448,6 +527,23 @@ export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
         // is what re-checks this task once its prerequisites (or a slot)
         // change, rather than requiring a second manual start.
         updateTask(task.id, { status: "on_queue" });
+        results.push({
+          taskId: task.id,
+          title: task.title,
+          started: false,
+          queued: true,
+          reason: error.message,
+        });
+        continue;
+      }
+      if (error instanceof QuotaError) {
+        // Parked exactly like the two refusals above; also schedules the
+        // period-boundary wake-up that re-checks it without waiting for an
+        // unrelated slot-freeing transition — see §4.5.
+        updateTask(task.id, { status: "on_queue" });
+        if (!hasPendingQuotaWake()) {
+          enqueueJob({ taskId: task.id, kind: "quota_wake", runAfter: error.resetAt });
+        }
         results.push({
           taskId: task.id,
           title: task.title,
@@ -716,6 +812,8 @@ export function decideGate(input: {
  * not bugs.
  * @throws {GateError} when no approval row exists for the gate — a real bug,
  * since a `gate_queued` task can only exist after `decideGate` recorded one.
+ * @throws {QuotaError} when `enforcement: "hold"` and usage is over the
+ * configured limit.
  * @throws {CapacityError} when no slot is free after all.
  */
 export function resumeGatedTask(taskId: string): Transition {
@@ -737,6 +835,7 @@ export function resumeGatedTask(taskId: string): Transition {
       throw new GateError(`Task ${taskId} is gate_queued on ${gate} with no recorded approval.`);
     }
 
+    assertWithinQuota(taskId, false);
     assertSlotAvailable();
 
     const signal: PipelineSignal = {
@@ -891,6 +990,9 @@ export function retryAvailability(taskId: string): RetryAvailability | null {
  * under the retried run (§8.1).
  *
  * @throws {TaskNotFoundError} when the task does not exist.
+ * @throws {QuotaError} when `enforcement: "hold"` and usage is over the
+ * configured limit — a granted rework cycle is new spend and passes the same
+ * admission check a fresh start would.
  * @throws {NotRetryableError} when the task has not failed, has no recorded
  * cause, or its workspace is gone.
  * @throws {CapacityError} when no slot is free.
@@ -901,11 +1003,18 @@ export function retryTask(taskId: string): Transition {
     if (!task) throw new TaskNotFoundError(taskId);
 
     const availability = computeRetryAvailability(task);
-    if (!availability.available) {
-      if (availability.code === "capacity") {
-        throw new CapacityError(getSettings().maxParallelTasks, capacity().blocking);
-      }
+    // Hard, unconditional refusals (not failed / no recorded cause / workspace
+    // gone) win even over quota — same reasoning as `assertPrerequisitesMet`
+    // running before `assertWithinQuota` in `startTask`. Quota runs before
+    // capacity, since no amount of waiting for a slot fixes a spend refusal.
+    if (!availability.available && availability.code !== "capacity") {
       throw new NotRetryableError(availability.code, availability.reason);
+    }
+
+    assertWithinQuota(taskId, false);
+
+    if (!availability.available) {
+      throw new CapacityError(getSettings().maxParallelTasks, capacity().blocking);
     }
 
     cancelScheduledCleanup(taskId);

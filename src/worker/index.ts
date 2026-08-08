@@ -18,7 +18,7 @@ import {
   executeDelivery,
   executeVerification,
 } from "../server/pipeline/execute";
-import { advanceTask } from "../server/pipeline/orchestrator";
+import { advanceTask, promoteQueue } from "../server/pipeline/orchestrator";
 import { runMaintenanceSweep } from "../server/pipeline/audit/retention";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
@@ -92,6 +92,12 @@ async function handleJob(job: JobRow): Promise<void> {
       await executeCleanup(job.taskId);
       break;
     }
+    case "quota_wake": {
+      // Global by nature — re-checks every parked task, not just the one
+      // this job happens to be attached to (§4.5).
+      promoteQueue();
+      break;
+    }
     default: {
       // A job kind added to `JOB_KINDS` without a case here used to complete
       // silently — the job finished, nothing ran, and the task hung on its
@@ -133,7 +139,7 @@ function handleJobFailure(job: JobRow, error: unknown): void {
   const failureKind = error instanceof StageJobError ? error.kind : undefined;
 
   const run =
-    job.kind === "cleanup_workspace"
+    job.kind === "cleanup_workspace" || job.kind === "quota_wake"
       ? null
       : getStageRun(parsePayload<{ stageRunId?: string }>(job).stageRunId ?? "");
 
@@ -152,8 +158,10 @@ function handleJobFailure(job: JobRow, error: unknown): void {
     });
   }
 
-  // A cleanup failure must not take the whole task down — it already finished.
-  if (job.kind !== "cleanup_workspace" && taskIsActive(job.taskId)) {
+  // A cleanup or quota-wake failure must not take a task down — neither is
+  // that task's own stage run (quota_wake's `taskId` is just whichever park
+  // triggered it, per `db/schema.ts`'s `JOB_KINDS` comment).
+  if (job.kind !== "cleanup_workspace" && job.kind !== "quota_wake" && taskIsActive(job.taskId)) {
     try {
       advanceTask(job.taskId, {
         kind: "stage_failed",
@@ -193,7 +201,10 @@ async function tick(): Promise<void> {
   activeJob = job;
 
   // A task cancelled while the job sat in the queue should not start now.
-  if (job.kind !== "cleanup_workspace" && !taskIsActive(job.taskId)) {
+  // `quota_wake`'s effect (`promoteQueue()`) is global, not scoped to the
+  // task it happens to be attached to, so it runs regardless of that task's
+  // own status.
+  if (job.kind !== "cleanup_workspace" && job.kind !== "quota_wake" && !taskIsActive(job.taskId)) {
     log("info", `Skipping job ${job.id}: task ${job.taskId} is no longer active.`);
     completeJob(job.id);
     activeJob = null;

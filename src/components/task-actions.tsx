@@ -230,6 +230,9 @@ export function TaskControls({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
+  // Set by a `quota_exceeded` 409 on Start — offers the "Start anyway"
+  // affordance (`overrideQuota: true`) rather than just refusing (§4.6).
+  const [quotaHeld, setQuotaHeld] = useState<string | null>(null);
 
   const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
   // `retry` reflects `retryAvailability`'s answer for whatever status the task
@@ -251,13 +254,23 @@ export function TaskControls({
   const blockedReason = dependencyReason ?? capacityBlockedReason(capacity);
   const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
 
-  async function call(action: string, url: string, method = "POST") {
+  async function call(action: string, url: string, method = "POST", body?: unknown) {
     setBusy(action);
+    if (action === "start") setQuotaHeld(null);
 
-    const response = await fetch(url, { method });
+    const response = await fetch(url, {
+      method,
+      ...(body !== undefined
+        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+        : {}),
+    });
     if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      toast.error(payload.error ?? `Could not ${action} the task.`);
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+      if (action === "start" && payload.code === "quota_exceeded") {
+        setQuotaHeld(payload.error ?? "Spend limit reached.");
+      } else {
+        toast.error(payload.error ?? `Could not ${action} the task.`);
+      }
       setBusy(null);
       return;
     }
@@ -288,6 +301,19 @@ export function TaskControls({
         >
           {busy === "start" ? "Starting…" : "Start"}
         </Button>
+        {quotaHeld ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy !== null}
+            title={quotaHeld}
+            onClick={() =>
+              call("start", `/api/tasks/${taskId}/start`, "POST", { overrideQuota: true })
+            }
+          >
+            {busy === "start" ? "Starting…" : "Start anyway"}
+          </Button>
+        ) : null}
         <Link href={`/tasks/${taskId}/edit`}>
           <Button variant="secondary" size="sm">
             Edit
@@ -307,6 +333,7 @@ export function TaskControls({
           </Button>
         ) : null}
         {blockedReason ? <span className="text-xs text-muted">{blockedReason}</span> : null}
+        {quotaHeld ? <span className="text-xs text-warning">{quotaHeld}</span> : null}
       </div>
     );
   }
