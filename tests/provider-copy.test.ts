@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { changeRequestNounFor } from "@/lib/provider-copy";
 
@@ -24,12 +25,16 @@ import { changeRequestNounFor } from "@/lib/provider-copy";
 const SRC_ROOT = path.resolve(import.meta.dirname, "../src");
 const PROVIDERS_DIR = path.resolve(SRC_ROOT, "server/git/providers");
 
+const DISPLAY_NAMES = ["GitHub", "GitLab", "Bitbucket", "Azure DevOps"];
+const CHANGE_REQUEST_NOUNS = [/pull requests?/i, /merge requests?/i];
+const CREDENTIAL_VARS = ["GITHUB_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN", "AZURE_DEVOPS_TOKEN"];
+
 /**
  * The one documented exception (§8): a format example that has to name
  * *something* to illustrate a shape, and asserts nothing about the user's
- * actual provider.
+ * actual provider. Relative to whatever root is being scanned.
  */
-const ALLOWLISTED_CREDENTIAL_VAR_FILES = [path.resolve(SRC_ROOT, "server/git/credentials.ts")];
+const CREDENTIAL_VAR_ALLOWLIST = ["server/git/credentials.ts"];
 
 function walk(dir: string): string[] {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -45,69 +50,124 @@ function walk(dir: string): string[] {
   return files;
 }
 
-/** Every `.ts`/`.tsx` file under `src/`, excluding the provider modules themselves. */
-function sourceFiles(): string[] {
-  return walk(SRC_ROOT).filter((file) => !file.startsWith(PROVIDERS_DIR + path.sep));
-}
-
 /** Strips block and line comments, matching `diff-viewer-safety.test.ts`'s approach. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
-const DISPLAY_NAMES = ["GitHub", "GitLab", "Bitbucket", "Azure DevOps"];
-const CHANGE_REQUEST_NOUNS = [/pull requests?/i, /merge requests?/i];
-const CREDENTIAL_VARS = ["GITHUB_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN", "AZURE_DEVOPS_TOKEN"];
+type Violation = { file: string; match: string };
 
-describe("provider-copy source scan", () => {
-  it.each(DISPLAY_NAMES)("bans the display name %s outside providers/", (name) => {
-    for (const file of sourceFiles()) {
-      const code = stripComments(fs.readFileSync(file, "utf8"));
-      expect(code, `${name} found in ${path.relative(SRC_ROOT, file)}`).not.toContain(name);
+/**
+ * Walks every `.ts`/`.tsx` file under `root`, excluding `providersDir` (the
+ * abstraction itself) and `CREDENTIAL_VAR_ALLOWLIST`, and reports every banned
+ * literal found in stripped-comment source. This is the scanner the CI check
+ * runs — `sourceScanViolations` below runs it against the real tree, and the
+ * fixture tests run it against a throwaway directory to prove it actually
+ * catches a regression rather than trivially passing.
+ */
+function scanTree(root: string, providersDir: string): Violation[] {
+  const violations: Violation[] = [];
+  for (const file of walk(root)) {
+    if (file.startsWith(providersDir + path.sep)) continue;
+    const relative = path.relative(root, file).replace(/\\/g, "/");
+    const code = stripComments(fs.readFileSync(file, "utf8"));
+
+    for (const name of DISPLAY_NAMES) {
+      if (code.includes(name)) violations.push({ file: relative, match: name });
     }
-  });
-
-  it.each(CHANGE_REQUEST_NOUNS)("bans %s (case-insensitive, singular or plural) outside providers/", (pattern) => {
-    for (const file of sourceFiles()) {
-      const code = stripComments(fs.readFileSync(file, "utf8"));
+    for (const pattern of CHANGE_REQUEST_NOUNS) {
       const match = code.match(pattern);
-      expect(match, `${pattern} found in ${path.relative(SRC_ROOT, file)}: "${match?.[0]}"`).toBeNull();
+      if (match) violations.push({ file: relative, match: match[0] });
     }
-  });
+    if (!CREDENTIAL_VAR_ALLOWLIST.includes(relative)) {
+      for (const variable of CREDENTIAL_VARS) {
+        if (code.includes(variable)) violations.push({ file: relative, match: variable });
+      }
+    }
+  }
+  return violations;
+}
 
-  it.each(CREDENTIAL_VARS)("bans the credential variable %s outside providers/ (and its one documented example)", (variable) => {
-    for (const file of sourceFiles()) {
-      if (ALLOWLISTED_CREDENTIAL_VAR_FILES.includes(file)) continue;
-      const code = stripComments(fs.readFileSync(file, "utf8"));
-      expect(code, `${variable} found in ${path.relative(SRC_ROOT, file)}`).not.toContain(variable);
-    }
+describe("provider-copy source scan — real tree", () => {
+  it("comes back clean against src/, outside the provider modules", () => {
+    const violations = scanTree(SRC_ROOT, PROVIDERS_DIR);
+    expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
   });
 
   it("still allows BITBUCKET_TOKEN_ACME as a naming-shape example in credentials.ts", () => {
-    const file = ALLOWLISTED_CREDENTIAL_VAR_FILES[0];
-    const code = fs.readFileSync(file, "utf8");
-    expect(code).toContain("BITBUCKET_TOKEN_ACME");
+    const file = path.resolve(SRC_ROOT, "server/git/credentials.ts");
+    expect(fs.readFileSync(file, "utf8")).toContain("BITBUCKET_TOKEN_ACME");
+  });
+
+  it("does not scan providers/ itself, where the display names and nouns legitimately live", () => {
+    const violations = scanTree(PROVIDERS_DIR, PROVIDERS_DIR);
+    expect(violations).toEqual([]);
+  });
+});
+
+describe("provider-copy source scan — fixture tree", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function fixtureTree(files: Record<string, string>): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "provider-copy-fixture-"));
+    tempDirs.push(root);
+    for (const [relative, content] of Object.entries(files)) {
+      const full = path.join(root, relative);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+    return root;
+  }
+
+  it("fails on a new component file that hardcodes 'GitHub'", () => {
+    const root = fixtureTree({
+      "components/repo-link.tsx": 'export const label = "Open on GitHub";',
+    });
+
+    const violations = scanTree(root, path.join(root, "server/git/providers"));
+    expect(violations).toEqual([{ file: "components/repo-link.tsx", match: "GitHub" }]);
+  });
+
+  it("fails on 'pull requests' (plural) and 'Merge Request' (capitalized), not just the exact-case singular", () => {
+    const root = fixtureTree({
+      "components/a.tsx": 'export const a = "Open pull requests here";',
+      "components/b.tsx": 'export const b = "Open a Merge Request";',
+    });
+
+    const violations = scanTree(root, path.join(root, "server/git/providers"));
+    expect(violations.map((v) => v.file).sort()).toEqual(["components/a.tsx", "components/b.tsx"]);
+  });
+
+  it("fails on a *_TOKEN literal the display-name pattern would miss", () => {
+    const root = fixtureTree({
+      "components/hint.tsx": 'export const hint = "GITLAB_TOKEN";',
+    });
+
+    const violations = scanTree(root, path.join(root, "server/git/providers"));
+    expect(violations).toEqual([{ file: "components/hint.tsx", match: "GITLAB_TOKEN" }]);
   });
 
   it("passes the same banned word appearing only in a comment", () => {
-    const source = 'export const x = 1; // Mentions GitLab and "pull request" for humans only.';
-    const code = stripComments(source);
-    expect(code).not.toContain("GitLab");
-    expect(code).not.toMatch(/pull request/i);
+    const root = fixtureTree({
+      "components/note.tsx":
+        'export const x = 1; // Mentions GitLab and "pull request" for humans only.',
+    });
+
+    const violations = scanTree(root, path.join(root, "server/git/providers"));
+    expect(violations).toEqual([]);
   });
 
-  it("passes GitHub's own display name inside providers/github.ts", () => {
-    const file = path.resolve(PROVIDERS_DIR, "github.ts");
-    const code = stripComments(fs.readFileSync(file, "utf8"));
-    // The provider modules are the exception — see §8.
-    expect(code).toContain("GitHub");
-    expect(code.toLowerCase()).toContain("pull request");
-  });
+  it("passes the same banned word inside server/git/providers/", () => {
+    const root = fixtureTree({
+      "server/git/providers/github.ts": 'export const displayName = "GitHub";',
+    });
 
-  it("fails on a fixture containing 'GitHub' in a component file", () => {
-    const banned = 'export const label = "Open on GitHub";';
-    const code = stripComments(banned);
-    expect(code).toContain("GitHub");
+    const violations = scanTree(root, path.join(root, "server/git/providers"));
+    expect(violations).toEqual([]);
   });
 });
 
