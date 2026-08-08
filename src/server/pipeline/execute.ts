@@ -281,12 +281,20 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     // Every provider builds a partial result for exactly this case
     // (`StageExecutionError.partial`) — the transcript of a failed run is the
     // one most worth having, and today it is thrown away. See §12.2.
-    if (error instanceof StageExecutionError && error.partial.transcript) {
-      saveTranscript({
-        stageRunId,
-        sessionId: error.partial.sessionId ?? null,
-        transcript: error.partial.transcript,
-      });
+    //
+    // The two writes below are deliberately independent: a budget stop or a
+    // turn-boundary abort can accumulate real cost with no transcript growth
+    // at all (no new message since the last successful turn), and gating the
+    // cost write on `partial.transcript` being truthy silently recorded that
+    // spend as `$0` — see spec §5.4 / stories.md S1.
+    if (error instanceof StageExecutionError) {
+      if (error.partial.transcript) {
+        saveTranscript({
+          stageRunId,
+          sessionId: error.partial.sessionId ?? null,
+          transcript: error.partial.transcript,
+        });
+      }
       updateStageRun(stageRunId, {
         inputTokens: error.partial.inputTokens ?? 0,
         outputTokens: error.partial.outputTokens ?? 0,
