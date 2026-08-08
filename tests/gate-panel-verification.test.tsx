@@ -13,6 +13,8 @@ afterEach(() => {
   cleanup();
 });
 
+const GITHUB_PROVIDER = { displayName: "GitHub", changeRequestNoun: "pull request" };
+
 /**
  * The four verification states on the `HUMAN_CODE_REVIEW` gate panel.
  * `passed` must be the only one rendered with the success tone — the other
@@ -48,20 +50,20 @@ const CASES: Array<{ name: string; summary: VerificationSummary; label: RegExp; 
 describe("GatePanel verification badge", () => {
   for (const { name, summary, label } of CASES) {
     it(`renders the ${name} state`, () => {
-      render(<GatePanel taskId="task_1" gate="HUMAN_CODE_REVIEW" verification={summary} />);
+      render(<GatePanel taskId="task_1" gate="HUMAN_CODE_REVIEW" provider={GITHUB_PROVIDER} verification={summary} />);
       expect(screen.getByText(label)).toBeTruthy();
     });
   }
 
   it("renders nothing when verification is not supplied (e.g. PLAN_GATE)", () => {
-    render(<GatePanel taskId="task_1" gate="PLAN_GATE" verification={null} />);
+    render(<GatePanel taskId="task_1" gate="PLAN_GATE" provider={GITHUB_PROVIDER} verification={null} />);
     expect(screen.queryByText(/Verification/)).toBeNull();
   });
 
   it("only the passed state uses the success tone", () => {
     for (const { name, summary, toneClass } of CASES) {
       cleanup();
-      render(<GatePanel taskId="task_1" gate="HUMAN_CODE_REVIEW" verification={summary} />);
+      render(<GatePanel taskId="task_1" gate="HUMAN_CODE_REVIEW" provider={GITHUB_PROVIDER} verification={summary} />);
       const badge = screen.getByText(/^Verification/);
       if (name === "passed") {
         expect(badge.className).toContain(toneClass);

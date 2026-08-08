@@ -2,14 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ArtifactTabs } from "@/components/artifact-tabs";
+import { ExecutionDot } from "@/components/execution-dot";
 import { LiveLog } from "@/components/live-log";
 import { RunStatusBadge, StageBadge, StatusBadge } from "@/components/stage-badge";
 import { GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
+import { executionCopy } from "@/lib/execution-copy";
 import { formatBytes, formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
 import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
 import { providerFor } from "@/server/git/providers";
+import { MAX_JOB_ATTEMPTS } from "@/server/jobs/queue";
+import { executionStateFor, executionStates } from "@/server/pipeline/execution";
 import { capacity, retryAvailability } from "@/server/pipeline/orchestrator";
 import { STAGE_LABELS, isGate } from "@/server/pipeline/stages";
 import { summarizeVerification } from "@/server/pipeline/verification-summary";
@@ -47,7 +51,18 @@ export default async function TaskDetailPage(props: {
   // rendered page and the API response can never disagree for this task.
   const retry = retryAvailability(id);
   const notStarted = task.currentStage === "CREATED";
-  const live = ["running", "awaiting_gate", "gate_queued"].includes(task.status);
+  // Same derivation the board reads — computed once per render, not persisted.
+  const execution = executionStateFor(id, executionStates());
+  const executionState = executionCopy(execution, MAX_JOB_ATTEMPTS);
+  // `gate_queued` has a recorded decision and no running stage — there is
+  // nothing to reconnect to, so `LiveLog` should say "closed", not
+  // "reconnecting" — see spec-execution-honesty.md §6.6. `awaiting_gate` is
+  // kept on its own: another tab can still emit `gate_decided` for it.
+  const live =
+    execution.kind === "in_flight" ||
+    execution.kind === "waiting_for_worker" ||
+    execution.kind === "retry_backoff" ||
+    task.status === "awaiting_gate";
 
   // Only read the workspace when a diff can actually exist; on the gate the
   // summary tells the reviewer how big the review is before they open it.
@@ -134,6 +149,16 @@ export default async function TaskDetailPage(props: {
           ) : null}
         </div>
 
+        {/* Same wording/tone rules as the board — see `execution-copy.ts`.
+            `idle` (not admitted, or admitted with nothing to report) renders
+            nothing here; `StatusBadge`/`StageBadge` above already cover it. */}
+        {executionState ? (
+          <p className="flex items-center gap-1.5 text-xs text-muted">
+            <ExecutionDot copy={executionState} />
+            {executionState.description}
+          </p>
+        ) : null}
+
         {task.failureReason ? (
           <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
             {task.failureReason}
@@ -149,6 +174,13 @@ export default async function TaskDetailPage(props: {
         <GatePanel
           taskId={task.id}
           gate={task.currentStage}
+          // Only the two plain fields a client component can receive as
+          // props — `RepositoryProvider` itself carries methods, which
+          // cannot cross the server/client boundary.
+          provider={{
+            displayName: providerFor(task.repo.provider).displayName,
+            changeRequestNoun: providerFor(task.repo.provider).changeRequestNoun,
+          }}
           diffSummary={diffSummary}
           verification={verificationSummary}
         />

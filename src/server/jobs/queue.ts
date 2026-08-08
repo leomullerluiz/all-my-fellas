@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { newId } from "../db/ids";
@@ -18,12 +18,19 @@ import { type JobKind, type JobRow, jobs, tasks } from "../db/schema";
  * `difficulty` is set by the Architect, so a freshly started task has `NULL`.
  * It sorts with `M` — neutral — rather than last, which would starve
  * un-estimated work behind anything already estimated.
+ *
+ * Exported so `../pipeline/execution.ts` can compute a queue position in the
+ * exact order `claimNextJob` will actually drain it, rather than retyping the
+ * ranking a third time.
  */
-const PRIORITY_RANK = sql`CASE ${tasks.priority}
+export const PRIORITY_RANK = sql`CASE ${tasks.priority}
   WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 
-const DIFFICULTY_RANK = sql`CASE ${tasks.difficulty}
+export const DIFFICULTY_RANK = sql`CASE ${tasks.difficulty}
   WHEN 'S' THEN 0 WHEN 'L' THEN 2 ELSE 1 END`;
+
+/** Transient job failures are retried twice with backoff before the task fails. */
+export const MAX_JOB_ATTEMPTS = 3;
 
 export type RunStagePayload = { stageRunId: string };
 export type DeliverPayload = Record<string, never>;
@@ -57,14 +64,30 @@ export function enqueueJob({
   return id;
 }
 
-/** Number of tasks currently occupying a worker slot. */
-export function runningTaskCount(): number {
-  const row = db
-    .select({ count: sql<number>`count(distinct ${jobs.taskId})` })
+/**
+ * Anything with a `.select()` shaped like {@link db}'s — either `db` itself or
+ * the `tx` handed to a `db.transaction()` callback. Letting callers pass a
+ * transaction is what lets {@link inFlightTaskIds} be reused from inside
+ * `../pipeline/execution.ts`'s single read-only transaction instead of being
+ * reimplemented there.
+ */
+type Queryable = Pick<typeof db, "select">;
+
+/**
+ * The kind of claimed job each in-flight task holds right now, keyed by task id.
+ *
+ * `cleanup_workspace` is excluded: it is claimed like any other job, but a
+ * workspace deletion is not an agent (or any other stage) running, and the
+ * task it belongs to has already finished — see `spec-execution-honesty.md`
+ * §6.1. This replaces the never-called `runningTaskCount`, which counted it.
+ */
+export function inFlightTaskIds(executor: Queryable = db): Map<string, JobKind> {
+  const rows = executor
+    .select({ taskId: jobs.taskId, kind: jobs.kind })
     .from(jobs)
-    .where(eq(jobs.status, "claimed"))
-    .get();
-  return row?.count ?? 0;
+    .where(and(eq(jobs.status, "claimed"), ne(jobs.kind, "cleanup_workspace")))
+    .all();
+  return new Map(rows.map((row) => [row.taskId, row.kind]));
 }
 
 /**

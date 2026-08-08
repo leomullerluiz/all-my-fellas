@@ -10,7 +10,13 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { formatBytes } from "@/lib/utils";
 import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
-export type RepoOption = { id: string; name: string; defaultBranch: string };
+export type RepoOption = {
+  id: string;
+  name: string;
+  defaultBranch: string;
+  /** "merge request" on GitLab — resolved server-side, see `tasks/new/page.tsx`. */
+  changeRequestNoun: string;
+};
 
 /** A task selectable as a prerequisite: title plus the repo it belongs to. */
 export type DependencyOption = { id: string; title: string; repoId: string; repoName: string };
@@ -255,7 +261,9 @@ export function NewTaskForm({
               label="Title"
               htmlFor="title"
               error={errors.title}
-              hint="Also used for the branch name and the pull request title."
+              hint={`Also used for the branch name and the ${
+                selectedRepo?.changeRequestNoun ?? "change request"
+              } title.`}
             >
               <Input
                 id="title"

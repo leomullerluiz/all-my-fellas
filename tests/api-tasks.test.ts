@@ -19,6 +19,7 @@ process.env.WORKSPACES_DIR = path.join(tempDir, "workspaces");
 let service: typeof import("@/server/tasks/service");
 let settings: typeof import("@/server/settings/store");
 let orchestrator: typeof import("@/server/pipeline/orchestrator");
+let queue: typeof import("@/server/jobs/queue");
 let tasksRoute: typeof import("@/app/api/tasks/route");
 let taskRoute: typeof import("@/app/api/tasks/[id]/route");
 let startRoute: typeof import("@/app/api/tasks/[id]/start/route");
@@ -45,6 +46,7 @@ beforeAll(async () => {
   service = await import("@/server/tasks/service");
   settings = await import("@/server/settings/store");
   orchestrator = await import("@/server/pipeline/orchestrator");
+  queue = await import("@/server/jobs/queue");
   tasksRoute = await import("@/app/api/tasks/route");
   taskRoute = await import("@/app/api/tasks/[id]/route");
   startRoute = await import("@/app/api/tasks/[id]/start/route");
@@ -806,5 +808,68 @@ describe("GET /api/tasks", () => {
     expect(payload.capacity.slotAvailable).toBe(true);
     expect(payload.capacity.blocking.map((t) => t.id)).not.toContain(task.id);
     expect(payload.capacity.blocking).toEqual([]);
+  });
+
+  it("reports execution per task and a worker block, leaving capacity unchanged", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id); // job scheduled, not yet claimed by any worker
+
+    const response = await tasksRoute.GET(new Request("http://test/api/tasks"));
+    const payload = (await response.json()) as {
+      tasks: Array<{ id: string; execution: { kind: string } }>;
+      capacity: { limit: number; active: number; slotAvailable: boolean };
+      worker: { inFlight: number; waiting: number; backoff: number };
+    };
+
+    const found = payload.tasks.find((t) => t.id === task.id);
+    expect(found?.execution.kind).toBe("waiting_for_worker");
+    expect(payload.worker).toEqual({ inFlight: 0, waiting: 1, backoff: 0 });
+    // Unchanged from the pre-existing fixture in the test above this one.
+    expect(payload.capacity).toMatchObject({ limit: 1, active: 1, slotAvailable: false });
+  });
+
+  it("reports in_flight in the worker block once the job is claimed", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id);
+    queue.claimNextJob(99);
+
+    const response = await tasksRoute.GET(new Request("http://test/api/tasks"));
+    const payload = (await response.json()) as {
+      tasks: Array<{ id: string; execution: { kind: string; job?: string } }>;
+      worker: { inFlight: number; waiting: number; backoff: number };
+    };
+
+    const found = payload.tasks.find((t) => t.id === task.id);
+    expect(found?.execution).toEqual({ kind: "in_flight", job: "agent" });
+    expect(payload.worker).toEqual({ inFlight: 1, waiting: 0, backoff: 0 });
+  });
+});
+
+describe("GET /api/tasks/:id execution", () => {
+  it("returns in_flight for a task with a claimed job", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id);
+    queue.claimNextJob(99);
+
+    const response = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await response.json()) as { execution: { kind: string } };
+    expect(payload.execution.kind).toBe("in_flight");
+  });
+
+  it("returns waiting_for_worker for a task with only a pending job", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id);
+
+    const response = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await response.json()) as { execution: { kind: string } };
+    expect(payload.execution.kind).toBe("waiting_for_worker");
+  });
+
+  it("returns idle for a task with no job (not started)", async () => {
+    const task = seed();
+
+    const response = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await response.json()) as { execution: { kind: string } };
+    expect(payload.execution.kind).toBe("idle");
   });
 });

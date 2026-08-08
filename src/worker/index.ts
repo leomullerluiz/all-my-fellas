@@ -1,9 +1,12 @@
 import "dotenv/config";
 
-import { hasGithubToken, resolveProviderAuth } from "../server/config/env";
+import { resolveProviderAuth } from "../server/config/env";
 import { closeDatabase } from "../server/db/client";
 import { appendEvent } from "../server/events/store";
+import { credentialSource } from "../server/git/credentials";
+import { providerFor } from "../server/git/providers";
 import {
+  MAX_JOB_ATTEMPTS,
   claimNextJob,
   completeJob,
   failJob,
@@ -22,7 +25,7 @@ import { advanceTask } from "../server/pipeline/orchestrator";
 import { runMaintenanceSweep } from "../server/pipeline/audit/retention";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
-import { getStageRun, markStageRunStatus } from "../server/tasks/service";
+import { getStageRun, listRepos, markStageRunStatus } from "../server/tasks/service";
 
 /**
  * The pipeline worker.
@@ -33,8 +36,6 @@ import { getStageRun, markStageRunStatus } from "../server/tasks/service";
  */
 
 const TICK_MS = 1_000;
-/** Transient failures are retried twice with backoff before the task fails. */
-const MAX_JOB_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [5_000, 20_000];
 /** How often the transcript retention sweep runs, beyond the one at startup. */
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1_000;
@@ -62,8 +63,24 @@ function banner(): void {
       "No Claude credential found — agent stages will fail. Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY.",
     );
   }
-  if (!hasGithubToken()) {
-    log("warn", "GITHUB_TOKEN is not set — cloning private repos and delivery will fail.");
+  // Warn per connection that is actually configured, rather than about a
+  // single credential variable — a GitLab-only install does not need
+  // GITHUB_TOKEN, and naming it anyway would be exactly the lie §7 is about.
+  // Mirrors the dashboard's `SetupNotice`.
+  for (const repo of listRepos()) {
+    const provider = providerFor(repo.provider);
+    const credential = credentialSource({
+      provider,
+      credentialRef: repo.credentialRef,
+      credentialUsername: repo.credentialUsername,
+    });
+    if (!credential.present) {
+      log(
+        "warn",
+        `${repo.name}: ${credential.variable} is not set, so cloning private repositories ` +
+          `and opening a ${provider.changeRequestNoun} will fail.`,
+      );
+    }
   }
   log(
     "info",

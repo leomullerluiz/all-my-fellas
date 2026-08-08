@@ -564,12 +564,12 @@ function verificationSection(taskId: string): string {
 }
 
 /**
- * Builds the pull request body from the stories and the developer report.
+ * Builds the change request body from the stories and the developer report.
  *
  * Exported for `tests/execute-pr-body.test.ts` — the only other caller,
  * `executeDelivery`, needs a real git push and provider API call to reach it.
  */
-export function buildPullRequestBody(taskId: string, taskTitle: string): string {
+export function buildChangeRequestBody(taskId: string, taskTitle: string): string {
   const stories = latestArtifact(taskId, "stories")?.contentMd ?? "";
   const devReport = latestArtifact(taskId, "dev_report")?.contentMd ?? "";
   const qaReport = latestArtifact(taskId, "qa_report")?.contentMd ?? "";
@@ -664,13 +664,13 @@ export async function executeDelivery(stageRunId: string): Promise<void> {
       connection: task.repo,
       headBranch: task.branchName,
       title: task.title,
-      body: buildPullRequestBody(task.id, task.title),
+      body: buildChangeRequestBody(task.id, task.title),
     });
 
     updateTask(task.id, { prUrl: change.url });
 
     if (change.status === "created") {
-      appendEvent(task.id, stageRunId, { type: "pr_opened", url: change.url });
+      appendEvent(task.id, stageRunId, { type: "pr_opened", url: change.url, noun: change.noun });
     } else {
       appendEvent(task.id, stageRunId, {
         type: "log",
