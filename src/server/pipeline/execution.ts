@@ -2,7 +2,8 @@ import { and, asc, eq, gt, lte } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { type JobKind, jobs, tasks } from "../db/schema";
-import { DIFFICULTY_RANK, inFlightTaskIds, PRIORITY_RANK, taskWorkOnly } from "../jobs/queue";
+import { inFlightTaskIds, taskWorkOnly } from "../jobs/queue";
+import { DIFFICULTY_RANK, PRIORITY_RANK } from "./task-ranking";
 
 /**
  * What the worker is doing with a task right now, derived at render time from

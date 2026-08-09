@@ -5,7 +5,7 @@ import { ArtifactTabs } from "@/components/artifact-tabs";
 import { ExecutionDot } from "@/components/execution-dot";
 import { LiveLog } from "@/components/live-log";
 import { RunStatusBadge, StageBadge, StatusBadge } from "@/components/stage-badge";
-import { DeliveryOutcomeBanner, GatePanel, TaskControls } from "@/components/task-actions";
+import { ArchivedBanner, DeliveryOutcomeBanner, GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { executionCopy } from "@/lib/execution-copy";
@@ -110,8 +110,11 @@ export default async function TaskDetailPage(props: {
             dependsOn={dependsOn}
             retry={retry}
             paused={task.paused}
+            archived={task.archivedAt !== null}
           />
         </div>
+
+        {task.archivedAt !== null ? <ArchivedBanner taskId={task.id} /> : null}
 
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
           <Badge tone="neutral">{task.repo.name}</Badge>

@@ -1,5 +1,6 @@
 import {
   badRequest,
+  flattenIssues,
   isMultipartRequest,
   json,
   parseBody,
@@ -15,34 +16,46 @@ import {
   startTask,
 } from "@/server/pipeline/orchestrator";
 import {
+  costByTaskId,
   createTask,
+  dependenciesByTaskId,
   getRepo,
   getTask,
   listAttachmentsForCopy,
-  listDependencies,
   listTasks,
-  totalCostForTask,
 } from "@/server/tasks/service";
 import { validateAttachmentFiles } from "@/server/validation/attachments";
 import { createTaskSchema, listTasksQuerySchema } from "@/server/validation/schemas";
 import type { CreateTaskInput } from "@/server/validation/schemas";
 
-/** `GET /api/tasks?status=` — board and list views, plus current capacity. */
+/** `GET /api/tasks?status=&repo=&priority=&q=&archived=` — board and list views, plus current capacity. */
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const parsed = listTasksQuerySchema.safeParse({
       status: url.searchParams.get("status") ?? undefined,
+      repo: url.searchParams.get("repo") ?? undefined,
+      priority: url.searchParams.get("priority") ?? undefined,
+      q: url.searchParams.get("q") ?? undefined,
+      archived: url.searchParams.get("archived") ?? undefined,
     });
-    if (!parsed.success) return badRequest("Unknown status filter.");
+    if (!parsed.success) return badRequest("Invalid query parameter.", flattenIssues(parsed.error));
 
-    // One derivation, one round trip — every task below reads its own entry
-    // rather than the route recomputing it per task.
+    // One derivation, one round trip each — every task below reads its own
+    // entry rather than the route issuing one query per task (§9.1).
     const execution = executionStates();
-    const tasks = listTasks(parsed.data).map((task) => ({
+    const costs = costByTaskId();
+    const dependencies = dependenciesByTaskId();
+    const tasks = listTasks({
+      status: parsed.data.status,
+      repoId: parsed.data.repo,
+      priority: parsed.data.priority,
+      q: parsed.data.q,
+      includeArchived: parsed.data.archived === "1",
+    }).map((task) => ({
       ...task,
-      costUsd: totalCostForTask(task.id),
-      dependsOn: listDependencies(task.id),
+      costUsd: costs.get(task.id) ?? 0,
+      dependsOn: dependencies.get(task.id) ?? [],
       execution: executionStateFor(task.id, execution),
     }));
 

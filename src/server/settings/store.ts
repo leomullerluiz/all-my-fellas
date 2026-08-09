@@ -104,6 +104,20 @@ export type AppSettings = {
   /** "Stop starting things" (§9.2) — the worker's `tick()` claims no new jobs while set. */
   queueHeld: boolean;
   notifications: NotificationSettings;
+  /**
+   * Archive terminal tasks older than N days automatically. `null` (the
+   * default) means no auto-archive sweep runs — see
+   * `spec-board-at-scale.md` §5.4. Not yet swept by the worker; the knob
+   * exists so a value other than the default is provably inert.
+   */
+  autoArchiveDays: number | null;
+  /**
+   * The board's `AutoRefresh` polling interval, in milliseconds, while at
+   * least one task is `running` or `awaiting_gate`. `page.tsx` backs off to
+   * `boardRefreshMs * 7.5` (≈30s at the default) once nothing is live — see
+   * `spec-board-at-scale.md` §9.2.
+   */
+  boardRefreshMs: number;
 };
 
 export function defaultSettings(): AppSettings {
@@ -152,6 +166,8 @@ export function defaultSettings(): AppSettings {
     quotaEnforcement: "off",
     maxCostPerStageUsd: null,
     queueHeld: false,
+    autoArchiveDays: null,
+    boardRefreshMs: 4000,
     notifications: {
       browser: true,
       webhookUrl: null,

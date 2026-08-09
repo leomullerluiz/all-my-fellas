@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { newId } from "../db/ids";
@@ -131,15 +131,69 @@ export function getTaskWithRepo(id: string): TaskWithRepo | null {
   return row ? { ...row.task, repo: row.repo } : null;
 }
 
-export function listTasks(filter?: { status?: string }): TaskWithRepo[] {
+/**
+ * Escapes SQLite `LIKE` wildcards (`%`, `_`) in free-text search input so a
+ * literal percent or underscore in a title/description search does not act
+ * as a wildcard. Paired with `ESCAPE '\'` in the `LIKE` clause below.
+ */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+export type ListTasksFilter = {
+  status?: string;
+  /** Narrows to one repository. */
+  repoId?: string;
+  priority?: Priority;
+  /** Case-insensitive substring match against title or description. */
+  q?: string;
+  /**
+   * `false` (the default) excludes archived tasks — see
+   * `spec-board-at-scale.md` §5.2. `true` includes them (`?archived=1`).
+   */
+  includeArchived?: boolean;
+};
+
+export function listTasks(filter?: ListTasksFilter): TaskWithRepo[] {
+  const conditions = [];
+  if (filter?.status) conditions.push(eq(tasks.status, filter.status as TaskRow["status"]));
+  if (filter?.repoId) conditions.push(eq(tasks.repoId, filter.repoId));
+  if (filter?.priority) conditions.push(eq(tasks.priority, filter.priority));
+  if (filter?.q) {
+    // SQLite's `LIKE` is already case-insensitive over ASCII, so no
+    // `lower()` wrapping is needed on either side. `drizzle-orm`'s `like()`
+    // helper has no `ESCAPE` clause, so this is built directly to keep a
+    // literal `%`/`_` in the search text from acting as a wildcard.
+    const pattern = `%${escapeLikePattern(filter.q)}%`;
+    conditions.push(
+      sql`(${tasks.title} LIKE ${pattern} ESCAPE '\\' OR ${tasks.description} LIKE ${pattern} ESCAPE '\\')`,
+    );
+  }
+  if (!filter?.includeArchived) conditions.push(isNull(tasks.archivedAt));
+
   const rows = db
     .select({ task: tasks, repo: repos })
     .from(tasks)
     .innerJoin(repos, eq(tasks.repoId, repos.id))
-    .where(filter?.status ? eq(tasks.status, filter.status as TaskRow["status"]) : undefined)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(tasks.createdAt))
     .all();
   return rows.map((row) => ({ ...row.task, repo: row.repo }));
+}
+
+/**
+ * Archives a task: sets `archived_at`, which hides it from the board, the
+ * list view and the dependency picker while every row (cost, artifacts,
+ * approvals) stays intact and every `/usage` total keeps counting it — see
+ * `spec-board-at-scale.md` §5.2.
+ */
+export function archiveTask(id: string): TaskRow | null {
+  return updateTask(id, { archivedAt: Date.now() });
+}
+
+/** Clears `archived_at`, restoring `id` to the board, list view and picker. */
+export function unarchiveTask(id: string): TaskRow | null {
+  return updateTask(id, { archivedAt: null });
 }
 
 /** A task offered as a selectable prerequisite in the "Depends on" picker. */
@@ -160,8 +214,13 @@ const UNSELECTABLE_DEPENDENCY_STATUSES: ReadonlySet<TaskRow["status"]> = new Set
 
 /**
  * Candidates for the "Depends on" picker: every task except `excludeId`
- * (the task being edited cannot depend on itself) and every task in an
- * unselectable status.
+ * (the task being edited cannot depend on itself), every task in an
+ * unselectable status, and every archived task — an archived task is
+ * unselectable for the same reason a terminal one is (it will never
+ * meaningfully block or unblock the dependent), and `listTasks()`'s default
+ * of excluding `archivedAt !== null` already does the filtering; this stays
+ * unconditional (no `includeArchived` escape hatch) per
+ * `spec-board-at-scale.md` §5.3.
  *
  * `repoId` narrows the result to a single repository, since a prerequisite is
  * only meaningful against the code the task itself will change. Passing
@@ -364,6 +423,36 @@ export function listDependencies(taskId: string): DependencySummary[] {
 }
 
 /**
+ * {@link listDependencies}, for every task at once — one query instead of one
+ * per task, for the board's aggregate render (`spec-board-at-scale.md` §9.1).
+ * A task with no prerequisites has no entry in the returned map; callers
+ * default it to `[]`, matching `listDependencies`' own empty-array result.
+ */
+export function dependenciesByTaskId(): Map<string, DependencySummary[]> {
+  const rows = db
+    .select({
+      taskId: taskDependencies.taskId,
+      id: tasks.id,
+      title: tasks.title,
+      status: tasks.status,
+      currentStage: tasks.currentStage,
+      createdAt: taskDependencies.createdAt,
+    })
+    .from(taskDependencies)
+    .innerJoin(tasks, eq(taskDependencies.dependsOnTaskId, tasks.id))
+    .orderBy(taskDependencies.createdAt)
+    .all();
+
+  const byTaskId = new Map<string, DependencySummary[]>();
+  for (const row of rows) {
+    const list = byTaskId.get(row.taskId) ?? [];
+    list.push({ id: row.id, title: row.title, status: row.status, currentStage: row.currentStage });
+    byTaskId.set(row.taskId, list);
+  }
+  return byTaskId;
+}
+
+/**
  * The subset of `taskId`'s prerequisites that have not reached `COMPLETED`.
  *
  * Anything else — `queued`, `on_queue`, `running`, `awaiting_gate`, `failed`,
@@ -497,6 +586,17 @@ export function updateTask(id: string, patch: Partial<TaskRow>): TaskRow | null 
   );
 }
 
+/**
+ * Sets `updated_at` to an exact, caller-chosen value rather than `Date.now()`
+ * — the one operation {@link updateTask} cannot express, since it always
+ * stamps the current time over whatever the patch says. Used by
+ * `bumpToFrontOfQueue` (`spec-board-at-scale.md` §8.3), which needs
+ * `updated_at` set *older* than every other queued task's, not newer.
+ */
+export function setTaskUpdatedAt(id: string, updatedAt: number): void {
+  db.update(tasks).set({ updatedAt }).where(eq(tasks.id, id)).run();
+}
+
 /** Moves a task to a new stage and derives its board status. */
 export function setTaskStage(
   id: string,
@@ -574,6 +674,31 @@ export function markStageRunStatus(
   const timestamps: Partial<StageRunRow> =
     status === "running" ? { startedAt: Date.now() } : { finishedAt: Date.now() };
   updateStageRun(id, { status, ...timestamps, ...patch });
+}
+
+/**
+ * `stage_runs.started_at` of each task's currently-`running` stage run, keyed
+ * by task id — one query for the whole board render rather than one per
+ * card, for S1's "{stage label} · {elapsed}" meta line
+ * (`spec-board-at-scale.md` §3.1). A task with no running stage run has no
+ * entry. At most one `running` row exists per task at a time; if that were
+ * ever violated the latest `startedAt` wins, since that is the run whose
+ * elapsed time the card is actually claiming to show.
+ */
+export function activeStageRunStarts(): Map<string, number> {
+  const rows = db
+    .select({ taskId: stageRuns.taskId, startedAt: stageRuns.startedAt })
+    .from(stageRuns)
+    .where(eq(stageRuns.status, "running"))
+    .all();
+
+  const byTaskId = new Map<string, number>();
+  for (const row of rows) {
+    if (row.startedAt === null) continue;
+    const existing = byTaskId.get(row.taskId);
+    if (existing === undefined || row.startedAt > existing) byTaskId.set(row.taskId, row.startedAt);
+  }
+  return byTaskId;
 }
 
 /** How many DEVELOPMENT runs the task has had; drives the QA rework counter. */
@@ -1000,6 +1125,25 @@ export function totalCostForTask(taskId: string): number {
     .where(eq(stageRuns.taskId, taskId))
     .get();
   return row?.total ?? 0;
+}
+
+/**
+ * {@link totalCostForTask}, for every task at once via one `GROUP BY` —
+ * the board's aggregate render collapses what used to be one query per task
+ * into this single one (`spec-board-at-scale.md` §9.1). A task with no
+ * stage runs has no entry; callers default it to `0`, matching
+ * `totalCostForTask`'s own zero result.
+ */
+export function costByTaskId(): Map<string, number> {
+  const rows = db
+    .select({
+      taskId: stageRuns.taskId,
+      total: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
+    })
+    .from(stageRuns)
+    .groupBy(stageRuns.taskId)
+    .all();
+  return new Map(rows.map((row) => [row.taskId, row.total]));
 }
 
 /**

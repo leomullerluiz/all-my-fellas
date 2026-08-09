@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, notInArray } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { newId } from "../db/ids";
 import { type JobKind, type JobRow, jobs, tasks } from "../db/schema";
+import { DIFFICULTY_RANK, PRIORITY_RANK } from "../pipeline/task-ranking";
 
 /**
  * Minimal job queue on top of SQLite.
@@ -15,19 +16,13 @@ import { type JobKind, type JobRow, jobs, tasks } from "../db/schema";
  * Ordering used when several jobs are eligible in the same tick: highest
  * priority first, lowest estimated complexity as the tiebreaker, then FIFO.
  *
- * `difficulty` is set by the Architect, so a freshly started task has `NULL`.
- * It sorts with `M` — neutral — rather than last, which would starve
- * un-estimated work behind anything already estimated.
- *
- * Exported so `../pipeline/execution.ts` can compute a queue position in the
- * exact order `claimNextJob` will actually drain it, rather than retyping the
- * ranking a third time.
+ * Re-exported from `../pipeline/task-ranking` — the single definition shared
+ * with the orchestrator's JS comparator and the board's On Queue column, see
+ * that module's docblock. Kept re-exported here (rather than requiring every
+ * caller to switch imports) since this file's own `claimNextJob` already
+ * refers to `queue.ts` for these names.
  */
-export const PRIORITY_RANK = sql`CASE ${tasks.priority}
-  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
-
-export const DIFFICULTY_RANK = sql`CASE ${tasks.difficulty}
-  WHEN 'S' THEN 0 WHEN 'L' THEN 2 ELSE 1 END`;
+export { DIFFICULTY_RANK, PRIORITY_RANK };
 
 /** Transient job failures are retried twice with backoff before the task fails. */
 export const MAX_JOB_ATTEMPTS = 3;

@@ -141,12 +141,21 @@ export const tasks = sqliteTable(
      * are already the two exceptions to "status is derived from stage".
      */
     paused: integer("paused", { mode: "boolean" }).notNull().default(false),
+    /**
+     * Soft-delete timestamp — `NULL` means visible everywhere. Set by
+     * `archiveTask`/cleared by `unarchiveTask`; see `spec-board-at-scale.md`
+     * §5. Every row and every `/usage` total survives archiving: only the
+     * board, the list view and the dependency picker hide the task.
+     */
+    archivedAt: integer("archived_at"),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },
   (table) => [
     index("tasks_status_idx").on(table.status),
     index("tasks_stage_idx").on(table.currentStage),
+    index("tasks_archived_idx").on(table.archivedAt),
+    index("tasks_repo_idx").on(table.repoId),
   ],
 );
 

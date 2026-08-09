@@ -35,20 +35,20 @@ export function ClosedTaskCardMenu({
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<"reopen" | "archive" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function onMoveToCreated() {
-    if (pending) return;
-    setPending(true);
+  async function call(action: "reopen" | "archive", url: string) {
+    if (pending !== null) return;
+    setPending(action);
     setError(null);
 
     try {
-      const response = await fetch(`/api/tasks/${taskId}/reopen`, { method: "POST" });
+      const response = await fetch(url, { method: "POST" });
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        setError(payload.error ?? "Could not move the task to Created.");
-        setPending(false);
+        setError(payload.error ?? `Could not ${action === "reopen" ? "move the task to Created" : "archive the task"}.`);
+        setPending(null);
         return;
       }
       setOpen(false);
@@ -56,7 +56,15 @@ export function ClosedTaskCardMenu({
     } catch {
       setError("The request failed. Is the server still running?");
     }
-    setPending(false);
+    setPending(null);
+  }
+
+  function onMoveToCreated() {
+    void call("reopen", `/api/tasks/${taskId}/reopen`);
+  }
+
+  function onArchive() {
+    void call("archive", `/api/tasks/${taskId}/archive`);
   }
 
   return (
@@ -78,14 +86,26 @@ export function ClosedTaskCardMenu({
           className="w-52 border-border bg-surface-raised p-1 text-xs"
         >
           <DropdownMenuItem
-            disabled={pending}
+            disabled={pending !== null}
             onSelect={(event) => {
               event.preventDefault();
-              void onMoveToCreated();
+              onMoveToCreated();
             }}
             className={cn(dropdownMenuItemClassName, "hover:bg-border/40")}
           >
-            {pending ? "Moving…" : "Move to Created"}
+            {pending === "reopen" ? "Moving…" : "Move to Created"}
+          </DropdownMenuItem>
+          {/* S3 §5 — the terminal tasks are exactly the ones worth archiving
+              (§5.1's motivating case). Keeps every row; only hides the task. */}
+          <DropdownMenuItem
+            disabled={pending !== null}
+            onSelect={(event) => {
+              event.preventDefault();
+              onArchive();
+            }}
+            className={cn(dropdownMenuItemClassName, "hover:bg-border/40")}
+          >
+            {pending === "archive" ? "Archiving…" : "Archive"}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

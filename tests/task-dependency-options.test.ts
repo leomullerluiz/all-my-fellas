@@ -121,6 +121,19 @@ describe("listDependencyOptions", () => {
     }
   });
 
+  // S3 §5.3 — an archived task is unselectable regardless of its own status,
+  // same reasoning as a terminal one: it will never meaningfully block or
+  // unblock the dependent.
+  it("excludes an archived task", () => {
+    const archived = create("Archived but otherwise open");
+    service.archiveTask(archived.id);
+    const open = create("Still visible");
+
+    const options = service.listDependencyOptions().map((o) => o.id);
+    expect(options).not.toContain(archived.id);
+    expect(options).toContain(open.id);
+  });
+
   it("returns id, title, repoId and repoName for a surviving candidate", () => {
     const task = create("Set up the schema");
 

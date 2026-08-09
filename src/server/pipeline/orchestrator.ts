@@ -18,6 +18,7 @@ import {
   type EditableTaskFields,
   type NewAttachment,
   activeTasks,
+  archiveTask,
   countStageRuns,
   createStageRun,
   deleteAttachment,
@@ -33,11 +34,14 @@ import {
   recordApproval,
   saveArtifact,
   setTaskStage,
+  setTaskUpdatedAt,
   totalCostForTask,
+  unarchiveTask,
   updateTask,
   updateTaskFields,
 } from "../tasks/service";
 import type { JobKind, TaskRow } from "../db/schema";
+import { sortByPriorityThenDifficulty } from "./task-ranking";
 import {
   GRANTS_REWORK_CYCLE,
   InvalidGateDecisionError,
@@ -442,38 +446,10 @@ export function startTask(taskId: string, options: { overrideQuota?: boolean } =
   });
 }
 
-/**
- * Ranking mirroring {@link "../jobs/queue".claimNextJob}'s `PRIORITY_RANK` /
- * `DIFFICULTY_RANK`, but computed in JS: the batch sorts a handful of already
- * fetched rows rather than issuing another query, so there is no SQL
- * ordering to share with `queue.ts` here.
- */
-const PRIORITY_RANK: Record<TaskRow["priority"], number> = {
-  urgent: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-};
-
-const DIFFICULTY_RANK: Record<string, number> = { S: 0, M: 1, L: 2 };
-
-function difficultyRank(difficulty: TaskRow["difficulty"]): number {
-  return difficulty ? (DIFFICULTY_RANK[difficulty] ?? 1) : 1;
-}
-
-/**
- * Priority-descending, difficulty-ascending order — shared by
- * {@link startTasksBatch} (initial batch order) and {@link promoteQueue}
- * (which `on_queue` task goes next), so the queue drains in the same order it
- * was presented.
- */
-function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
-  return [...tasksToSort].sort((a, b) => {
-    const priorityDelta = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
-    if (priorityDelta !== 0) return priorityDelta;
-    return difficultyRank(a.difficulty) - difficultyRank(b.difficulty);
-  });
-}
+// `sortByPriorityThenDifficulty` — priority-descending, difficulty-ascending
+// order — now lives in `./task-ranking`, shared with `claimNextJob`'s SQL
+// fragments and the board's On Queue column (`spec-board-at-scale.md` §8.2)
+// instead of being redefined here a second time.
 
 /**
  * Starts or resumes the highest-priority eligible queued task, if a slot is
@@ -544,6 +520,43 @@ export function promoteQueue(): void {
       // Try the next candidate rather than giving up on the whole queue.
     }
   }
+}
+
+/**
+ * "Run this next": promotes one `on_queue`/`gate_queued` task to the front of
+ * its priority-and-difficulty tier — `spec-board-at-scale.md` §8.3.
+ *
+ * Deliberately not a stored position — see §8.4 and `techplan.md`'s "no
+ * stored queue position" rejection: order stays derived from priority,
+ * difficulty and queue time. `updated_at` is already the oldest-first
+ * tiebreaker `sortByPriorityThenDifficulty`'s callers apply on top of it
+ * (`promoteQueue`), so this sets it *older* than every other queued task's
+ * `updated_at` — not `Date.now()`, which would sort this task **last** among
+ * ties instead of first. That deliberately breaks the usual "`updated_at`
+ * only moves forward" assumption for the duration this task spends queued;
+ * the next real transition (`startTask`/`resumeGatedTask`) overwrites it with
+ * a fresh `Date.now()` the moment it leaves the queue.
+ *
+ * A no-op (rather than an error) when `taskId` is not currently queued, so a
+ * stale menu click on a task that started, was cancelled, or already ran
+ * degrades quietly instead of surfacing a 409 for something the user no
+ * longer needs to know about.
+ */
+export function bumpToFrontOfQueue(taskId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (task.status !== "on_queue" && task.status !== "gate_queued") return;
+
+  const queued = [...queuedTasks(), ...gateQueuedTasks()].filter((t) => t.id !== taskId);
+  const oldestUpdatedAt = queued.reduce(
+    (min, t) => Math.min(min, t.updatedAt),
+    task.updatedAt,
+  );
+  // Strictly older than anything else in the queue, so this task sorts first
+  // among every tie on priority and difficulty rather than merely tying the
+  // current oldest. `updateTask` cannot express this: it always stamps
+  // `Date.now()` over the patch's own `updatedAt`.
+  setTaskUpdatedAt(taskId, oldestUpdatedAt - 1);
 }
 
 export type BatchStartResult = {
@@ -647,6 +660,63 @@ export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
   }
 
   return results;
+}
+
+export type BatchArchiveResult = {
+  taskId: string;
+  title: string;
+  archived: boolean;
+  reason: string | null;
+};
+
+/**
+ * Archives several tasks in one call (S4 — `spec-board-at-scale.md` §7.2).
+ *
+ * Unlike {@link startTasksBatch}, archiving has no admission control to race
+ * — every task not already archived succeeds. A missing id is reported the
+ * same way {@link startTasksBatch} reports one, so the two batch summaries
+ * read the same shape.
+ */
+export function archiveTasksBatch(taskIds: string[]): BatchArchiveResult[] {
+  return taskIds.map((id) => {
+    const task = getTask(id);
+    if (!task) return { taskId: id, title: "Unknown task", archived: false, reason: "Task not found." };
+    if (task.archivedAt !== null) {
+      return { taskId: id, title: task.title, archived: false, reason: "Already archived." };
+    }
+    archiveTask(id);
+    return { taskId: id, title: task.title, archived: true, reason: null };
+  });
+}
+
+export type BatchCancelResult = {
+  taskId: string;
+  title: string;
+  cancelled: boolean;
+  reason: string | null;
+};
+
+/**
+ * Cancels several tasks in one call (S4). Reuses {@link cancelTask}, which is
+ * already safe to call on a task that cannot be cancelled — it returns
+ * `null` for one that already finished rather than throwing — so this only
+ * needs to translate that into the batch result shape.
+ */
+export function cancelTasksBatch(taskIds: string[]): BatchCancelResult[] {
+  return taskIds.map((id) => {
+    const task = getTask(id);
+    if (!task) return { taskId: id, title: "Unknown task", cancelled: false, reason: "Task not found." };
+    try {
+      const transition = cancelTask(id);
+      if (transition === null) {
+        return { taskId: id, title: task.title, cancelled: false, reason: "Already finished." };
+      }
+      return { taskId: id, title: task.title, cancelled: true, reason: null };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Could not cancel this task.";
+      return { taskId: id, title: task.title, cancelled: false, reason };
+    }
+  });
 }
 
 /**
@@ -1193,6 +1263,29 @@ export function reopenTask(taskId: string): TaskRow {
 
     return setTaskStage(taskId, "CREATED")!;
   });
+}
+
+/**
+ * Archives one task (§5.1): hides it from the board, the list view and the
+ * dependency picker while every row and every `/usage` total stays intact.
+ * Not a pipeline transition — safe to call on a task in any state, running or
+ * terminal alike, since archiving is orthogonal to the state machine.
+ *
+ * @throws {TaskNotFoundError} when the task does not exist.
+ */
+export function archiveTaskById(taskId: string): TaskRow {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  appendEvent(taskId, null, { type: "log", level: "info", message: "Task archived." });
+  return archiveTask(taskId)!;
+}
+
+/** Restores an archived task to the board, list view and picker. */
+export function unarchiveTaskById(taskId: string): TaskRow {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  appendEvent(taskId, null, { type: "log", level: "info", message: "Task unarchived." });
+  return unarchiveTask(taskId)!;
 }
 
 /** Cancels a task from the UI. Safe to call on an already-finished task. */

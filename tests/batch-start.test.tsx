@@ -59,6 +59,7 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     failureKind: null,
     reworkBudgetGrant: 0,
     maxCostUsd: null,
+    archivedAt: null,
     paused: false,
     createdAt: 0,
     updatedAt: 0,
@@ -66,6 +67,8 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     costUsd: 0,
     dependsOn: [],
     execution: { kind: "idle" },
+    runningStageStartedAt: null,
+    queuePosition: null,
     ...overrides,
   };
 }
@@ -74,15 +77,15 @@ const CAPACITY = { slotAvailable: true, limit: 5, blocking: [] };
 
 function renderBoard(tasks: BoardTask[]) {
   return render(
-    <BatchSelectionProvider>
+    <BatchSelectionProvider tasks={tasks.map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }))}>
       <BatchStartButton />
-      <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
+      <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} now={0} />
     </BatchSelectionProvider>,
   );
 }
 
 describe("checkbox visibility", () => {
-  it("renders a checkbox only on CREATED cards", () => {
+  it("renders a checkbox on every card, regardless of status (S4)", () => {
     renderBoard([
       makeTask({ id: "task_created", title: "Not started", currentStage: "CREATED" }),
       makeTask({
@@ -111,11 +114,11 @@ describe("checkbox visibility", () => {
       }),
     ]);
 
-    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    expect(screen.getAllByRole("checkbox")).toHaveLength(5);
     expect(screen.getByRole("checkbox", { name: /Not started/ })).toBeTruthy();
   });
 
-  it("shows no checkbox on an on_queue card but keeps its title link and actions menu", () => {
+  it("shows a checkbox on an on_queue card alongside its title link and actions menu", () => {
     renderBoard([
       makeTask({
         id: "task_on_queue",
@@ -125,7 +128,7 @@ describe("checkbox visibility", () => {
       }),
     ]);
 
-    expect(screen.queryByRole("checkbox", { name: /Parked/ })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: /Parked/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Parked" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Task actions" })).toBeTruthy();
   });
@@ -234,51 +237,88 @@ describe("BatchStartButton outcome summary", () => {
   });
 });
 
-describe("selection reset when the board reloads", () => {
-  it("clears a checked selection once boardVersion reflects a task's state changing", () => {
-    const created = makeTask({ id: "task_a", title: "Task A" });
+describe("selection survival across a board refresh (S4 §7.1)", () => {
+  it("keeps A and B selected when only unrelated task C changes stage — fails against the old boardVersion digest", () => {
+    const a = makeTask({ id: "task_a", title: "Task A" });
+    const b = makeTask({ id: "task_b", title: "Task B" });
+    const c = makeTask({ id: "task_c", title: "Task C" });
 
     const { rerender } = render(
-      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+      <BatchSelectionProvider tasks={[a, b, c].map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }))}>
         <BatchStartButton />
-        <TaskBoard tasks={[created]} capacity={CAPACITY} maxJobAttempts={3} />
+        <TaskBoard tasks={[a, b, c]} capacity={CAPACITY} maxJobAttempts={3} now={0} />
       </BatchSelectionProvider>,
     );
 
     fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
-    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task B/ }));
+    expect(screen.getByRole("button", { name: "Start selected (2)" })).toBeTruthy();
 
-    // Simulates the dashboard server component re-rendering with fresh task
-    // data (a fresh page load, `AutoRefresh`'s poll noticing the task
-    // started, or `TaskCardMenu.call()`'s refresh after an unrelated
-    // action) — `page.tsx` recomputes `boardVersion` from `id:stage:status`
-    // on every request, so it changes here because the task is no longer
-    // `CREATED`/`queued`.
-    const started = makeTask({
-      id: "task_a",
-      title: "Task A",
+    // Only task C changes stage — A and B are untouched.
+    const cStarted = makeTask({
+      id: "task_c",
+      title: "Task C",
       currentStage: "STAKEHOLDER_REFINEMENT",
       status: "running",
     });
     rerender(
-      <BatchSelectionProvider boardVersion="task_a:STAKEHOLDER_REFINEMENT:running">
+      <BatchSelectionProvider
+        tasks={[a, b, cStarted].map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }))}
+      >
         <BatchStartButton />
-        <TaskBoard tasks={[started]} capacity={CAPACITY} maxJobAttempts={3} />
+        <TaskBoard tasks={[a, b, cStarted]} capacity={CAPACITY} maxJobAttempts={3} now={0} />
       </BatchSelectionProvider>,
     );
 
-    expect(screen.queryByRole("checkbox", { name: /Task A/ })).toBeNull();
-    const button = screen.getByRole("button", { name: "Start selected" });
-    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("checkbox", { name: /Task A/ })).toHaveProperty("checked", true);
+    expect(screen.getByRole("checkbox", { name: /Task B/ })).toHaveProperty("checked", true);
+    expect(screen.getByRole("button", { name: "Start selected (2)" })).toBeTruthy();
   });
 
-  it("keeps the selection across a re-render where boardVersion is unchanged (e.g. an idle poll)", () => {
-    const tasks = [makeTask({ id: "task_a", title: "Task A" })];
+  it("drops only the selected id that becomes ineligible for every verb, keeping the rest", () => {
+    const a = makeTask({ id: "task_a", title: "Task A", status: "queued" });
+    const b = makeTask({ id: "task_b", title: "Task B", status: "queued" });
 
     const { rerender } = render(
-      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+      <BatchSelectionProvider tasks={[a, b].map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }))}>
         <BatchStartButton />
-        <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
+        <TaskBoard tasks={[a, b]} capacity={CAPACITY} maxJobAttempts={3} now={0} />
+      </BatchSelectionProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task B/ }));
+
+    // Task A completes (terminal, already archived) — ineligible for every
+    // batch verb (start/archive/cancel). Task B is untouched.
+    const aArchived = makeTask({
+      id: "task_a",
+      title: "Task A",
+      currentStage: "COMPLETED",
+      status: "completed",
+      archivedAt: Date.now(),
+    });
+    rerender(
+      <BatchSelectionProvider
+        tasks={[aArchived, b].map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }))}
+      >
+        <BatchStartButton />
+        <TaskBoard tasks={[aArchived, b]} capacity={CAPACITY} maxJobAttempts={3} now={0} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.getByRole("checkbox", { name: /Task B/ })).toHaveProperty("checked", true);
+    expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+  });
+
+  it("keeps the selection across a re-render where nothing relevant changed (e.g. an idle poll)", () => {
+    const tasks = [makeTask({ id: "task_a", title: "Task A" })];
+    const asRecord = tasks.map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }));
+
+    const { rerender } = render(
+      <BatchSelectionProvider tasks={asRecord}>
+        <BatchStartButton />
+        <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} now={0} />
       </BatchSelectionProvider>,
     );
 
@@ -286,47 +326,13 @@ describe("selection reset when the board reloads", () => {
     expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
 
     rerender(
-      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
+      <BatchSelectionProvider tasks={asRecord}>
         <BatchStartButton />
-        <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
+        <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} now={0} />
       </BatchSelectionProvider>,
     );
 
     expect(screen.getByRole("checkbox", { name: /Task A/ })).toHaveProperty("checked", true);
     expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
-  });
-
-  it("hides then reshows the checkbox as status flips between on_queue and queued", () => {
-    const queued = makeTask({ id: "task_a", title: "Task A", status: "queued" });
-
-    const { rerender } = render(
-      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
-        <BatchStartButton />
-        <TaskBoard tasks={[queued]} capacity={CAPACITY} maxJobAttempts={3} />
-      </BatchSelectionProvider>,
-    );
-
-    expect(screen.getByRole("checkbox", { name: /Task A/ })).toBeTruthy();
-
-    // Loses the capacity race and gets parked on queue: same stage, new status.
-    const onQueue = makeTask({ id: "task_a", title: "Task A", status: "on_queue" });
-    rerender(
-      <BatchSelectionProvider boardVersion="task_a:CREATED:on_queue">
-        <BatchStartButton />
-        <TaskBoard tasks={[onQueue]} capacity={CAPACITY} maxJobAttempts={3} />
-      </BatchSelectionProvider>,
-    );
-
-    expect(screen.queryByRole("checkbox", { name: /Task A/ })).toBeNull();
-
-    // The orchestrator promotes it back off the queue: checkbox reappears.
-    rerender(
-      <BatchSelectionProvider boardVersion="task_a:CREATED:queued">
-        <BatchStartButton />
-        <TaskBoard tasks={[queued]} capacity={CAPACITY} maxJobAttempts={3} />
-      </BatchSelectionProvider>,
-    );
-
-    expect(screen.getByRole("checkbox", { name: /Task A/ })).toBeTruthy();
   });
 });

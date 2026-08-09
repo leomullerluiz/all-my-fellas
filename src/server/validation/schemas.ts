@@ -4,7 +4,13 @@ import { LLM_PROVIDER_IDS } from "../config/llm-providers";
 import { PIPELINE_EVENT_TYPES } from "../events/types";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
-import { AGENT_STAGES, GATES, GATE_DECISIONS, PRIORITIES, TASK_STATUSES } from "../pipeline/stages";
+import {
+  AGENT_STAGES,
+  GATES,
+  GATE_DECISIONS,
+  PRIORITIES,
+  TASK_STATUSES,
+} from "../pipeline/stages";
 import { THEMES } from "../settings/store";
 
 /**
@@ -111,14 +117,30 @@ export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export const updateTaskSchema = taskFieldsSchema;
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
 
+/**
+ * `GET /api/tasks`'s query params (S2). Unlike `page.tsx`'s own lenient
+ * parsing (`lib/task-filter.ts`'s `parseListFilters`, which silently drops
+ * an invalid value since the board is a view convenience, not an API
+ * contract), this is a real API surface: an unknown `status`/`priority`
+ * value is a 400, same as before this story.
+ */
 export const listTasksQuerySchema = z.object({
   status: z.enum(TASK_STATUSES).optional(),
+  repo: z.string().min(1).optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  /** Free-text match against title/description; see `service.ts`'s `listTasks`. */
+  q: z.string().trim().min(1).max(200).optional(),
+  /** `"1"` includes archived tasks; anything else (including absent) excludes them. */
+  archived: z.string().optional(),
 });
 
 export const batchStartSchema = z.object({
   taskIds: z.array(z.string().min(1)).min(1, "Select at least one task."),
 });
 export type BatchStartInput = z.infer<typeof batchStartSchema>;
+
+/** Same shape as {@link batchStartSchema} — every batch verb (S4) takes a plain id list. */
+export const batchTaskIdsSchema = batchStartSchema;
 
 export const gateDecisionSchema = z
   .object({

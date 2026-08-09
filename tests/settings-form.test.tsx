@@ -45,6 +45,8 @@ const INITIAL: AppSettings = {
   quotaEnforcement: "off",
   maxCostPerStageUsd: null,
   queueHeld: false,
+  autoArchiveDays: null,
+  boardRefreshMs: 4000,
   notifications: {
     browser: true,
     webhookUrl: null,

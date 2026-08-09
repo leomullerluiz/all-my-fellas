@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { events } from "../db/schema";
@@ -110,6 +110,23 @@ export function readEventsSince(afterId = 0, limit = 500): GlobalStoredEvent[] {
     .from(events)
     .where(gt(events.id, afterId))
     .orderBy(asc(events.id))
+    .limit(limit)
+    .all()
+    .map((row) => ({ ...toStoredEvent(row), id: row.id }));
+}
+
+/**
+ * Reverse-chronological events across every task, for the `/activity` feed's
+ * initial paint (S6 §6.3). `readEventsSince` stays ascending, tail-oriented,
+ * for live polling; this is the "load the most recent N" counterpart,
+ * optionally paged further back with `beforeId`.
+ */
+export function listRecentEvents(beforeId?: number, limit = 100): GlobalStoredEvent[] {
+  return db
+    .select()
+    .from(events)
+    .where(beforeId !== undefined ? lt(events.id, beforeId) : undefined)
+    .orderBy(desc(events.id))
     .limit(limit)
     .all()
     .map((row) => ({ ...toStoredEvent(row), id: row.id }));

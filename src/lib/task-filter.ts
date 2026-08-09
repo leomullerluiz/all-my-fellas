@@ -1,4 +1,4 @@
-import type { TaskStatus } from "@/server/pipeline/stages";
+import { PRIORITIES, TASK_STATUSES, type Priority, type TaskStatus } from "@/server/pipeline/stages";
 
 /**
  * Dashboard board date filtering (S1/S2/S3).
@@ -13,8 +13,12 @@ import type { TaskStatus } from "@/server/pipeline/stages";
  * it stays trivially unit-testable, matching `quota.ts`'s `periodStart`.
  */
 
-/** Statuses that are always shown, regardless of `createdAt` or any active filter. */
-const OPEN_STATUSES: readonly TaskStatus[] = [
+/**
+ * Statuses that are always shown, regardless of `createdAt` or any active
+ * filter. Exported (S2) for the "Active" saved view, which is exactly this
+ * set — see `saved-views.tsx`.
+ */
+export const OPEN_STATUSES: readonly TaskStatus[] = [
   "queued",
   "on_queue",
   "running",
@@ -70,13 +74,72 @@ export function parseDateRangeParams(
 export type FilterableTask = { status: TaskStatus; createdAt: number };
 
 /**
+ * `"all"` is S2's explicit Reset state — distinct from the no-params default
+ * (`defaultDateRange()`, "today"). Both are reachable: a bare `/` load falls
+ * back to `defaultDateRange()`, while `?range=all` (what Reset now navigates
+ * to) means "every task, every date" — see `task-filter-bar.tsx`'s `onReset`
+ * and `page.tsx`'s param handling. Before this, Reset only ever produced
+ * `defaultDateRange()` again, so "today" was both the default *and* the
+ * widest thing Reset could show.
+ */
+export type DateRangeFilter = DateRange | "all";
+
+/**
  * S1/S2: keeps every open/active-status task (any `createdAt`), plus every
  * other task whose `createdAt` falls inside `range` (today by default, or
- * the user's custom range once applied).
+ * the user's custom range once applied). `range === "all"` short-circuits to
+ * every task, regardless of status or date.
  */
-export function filterBoardTasks<T extends FilterableTask>(tasks: T[], range: DateRange): T[] {
+export function filterBoardTasks<T extends FilterableTask>(tasks: T[], range: DateRangeFilter): T[] {
+  if (range === "all") return tasks;
   return tasks.filter((task) => {
     if (isOpenStatus(task.status)) return true;
     return task.createdAt >= range.startMs && task.createdAt <= range.endMs;
   });
+}
+
+/**
+ * The board's structured filters (S2 §4.2), all URL-driven: `?q=`, `?repo=`,
+ * `?priority=`, `?status=`. Composed with the date range separately (§4.2's
+ * "SQL narrows the candidate set, then `filterBoardTasks` applies the
+ * date/open-status rule to what's left" — see `techplan.md`'s risk note on
+ * getting that order right).
+ */
+export type ListFilters = {
+  q?: string;
+  repoId?: string;
+  priority?: Priority;
+  status?: TaskStatus;
+};
+
+/**
+ * Parses `page.tsx`'s raw `searchParams` into {@link ListFilters}, silently
+ * dropping anything invalid (an unknown `priority`/`status` value, an
+ * empty/whitespace-only `q`) rather than erroring — the board is a view
+ * convenience, not an API contract, matching `parseDateRangeParams`'s own
+ * "fall back rather than 400" convention. `GET /api/tasks`'s
+ * `listTasksQuerySchema` is the strict counterpart for the actual API
+ * surface.
+ */
+export function parseListFilters(
+  params: Record<string, string | string[] | undefined>,
+): ListFilters {
+  const first = (value: string | string[] | undefined): string | undefined =>
+    Array.isArray(value) ? value[0] : value;
+
+  const q = first(params.q)?.trim();
+  const repoId = first(params.repo)?.trim();
+  const priorityRaw = first(params.priority);
+  const statusRaw = first(params.status);
+
+  const filters: ListFilters = {};
+  if (q) filters.q = q;
+  if (repoId) filters.repoId = repoId;
+  if (priorityRaw && (PRIORITIES as readonly string[]).includes(priorityRaw)) {
+    filters.priority = priorityRaw as Priority;
+  }
+  if (statusRaw && (TASK_STATUSES as readonly string[]).includes(statusRaw)) {
+    filters.status = statusRaw as TaskStatus;
+  }
+  return filters;
 }

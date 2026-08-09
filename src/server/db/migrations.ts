@@ -162,6 +162,18 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "tasks", "paused", "INTEGER NOT NULL DEFAULT 0");
     },
   },
+  {
+    name: "task archiving",
+    up: (sqlite) => {
+      // `NULL` means visible everywhere — see `schema.ts`'s `tasks.archivedAt`
+      // comment. `spec-board-at-scale.md` §5/§12.
+      addColumn(sqlite, "tasks", "archived_at", "INTEGER");
+      sqlite.exec(`CREATE INDEX IF NOT EXISTS tasks_archived_idx ON tasks(archived_at)`);
+      // Added alongside archiving since both land with §4's query-side
+      // filtering, which narrows by repository as often as by date.
+      sqlite.exec(`CREATE INDEX IF NOT EXISTS tasks_repo_idx ON tasks(repo_id)`);
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

@@ -210,7 +210,44 @@ const ACTION_SUCCESS_TOAST: Record<string, string> = {
   delete: "Task deleted.",
   pause: "Task paused: the current stage will finish, then wait.",
   resume: "Task resumed.",
+  archive: "Task archived.",
+  unarchive: "Task unarchived.",
 };
+
+/**
+ * S3 §5.2 — shown on an archived task's detail page. The task stays
+ * reachable by direct URL; this is the only thing that changes.
+ */
+export function ArchivedBanner({ taskId }: { taskId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  async function unarchive() {
+    setBusy(true);
+    const response = await fetch(`/api/tasks/${taskId}/unarchive`, { method: "POST" });
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      toast.error(payload.error ?? "Could not unarchive the task.");
+      setBusy(false);
+      return;
+    }
+    toast.success("Task unarchived.");
+    setBusy(false);
+    router.refresh();
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+      <span>
+        This task is archived — hidden from the board, the list view and the dependency picker.
+        Its cost still counts toward every usage total.
+      </span>
+      <Button variant="secondary" size="sm" disabled={busy} onClick={unarchive}>
+        {busy ? "Unarchiving…" : "Unarchive"}
+      </Button>
+    </div>
+  );
+}
 
 /**
  * Shown instead of the "Open {noun} ↗" link when `deliveryOutcome ===
@@ -313,6 +350,7 @@ export function TaskControls({
   dependsOn = [],
   retry = null,
   paused = false,
+  archived = false,
 }: {
   taskId: string;
   taskTitle: string;
@@ -331,6 +369,8 @@ export function TaskControls({
   retry?: RetryAvailability | null;
   /** `tasks.paused` (§9.2) — offers Resume instead of Pause once set. */
   paused?: boolean;
+  /** `tasks.archivedAt !== null` (S3). Renders `ArchivedBanner` separately; here it just hides Archive. */
+  archived?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -398,6 +438,10 @@ export function TaskControls({
     if (confirmed) void call("delete", `/api/tasks/${taskId}`, "DELETE");
   }
 
+  function onArchive() {
+    void call("archive", `/api/tasks/${taskId}/archive`);
+  }
+
   if (notStarted) {
     return (
       <div className="flex flex-wrap items-center gap-2">
@@ -432,6 +476,11 @@ export function TaskControls({
             Duplicate
           </Button>
         </Link>
+        {!archived ? (
+          <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onArchive}>
+            {busy === "archive" ? "Archiving…" : "Archive"}
+          </Button>
+        ) : null}
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onDelete}>
           {busy === "delete" ? "Deleting…" : "Delete"}
         </Button>
@@ -514,6 +563,11 @@ export function TaskControls({
           Duplicate
         </Button>
       </Link>
+      {!archived ? (
+        <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onArchive}>
+          {busy === "archive" ? "Archiving…" : "Archive"}
+        </Button>
+      ) : null}
       {/* The approval already succeeded — this is not an error state, just
           an explanation of why the task hasn't resumed yet (S2). Failures are
           reported by toast, so nothing competes with it for this slot. */}
