@@ -75,6 +75,7 @@ const RUN_TONES: Record<StageRunStatus, NonNullable<BadgeProps["tone"]>> = {
   done: "success",
   failed: "danger",
   rejected: "danger",
+  cancelled: "neutral",
 };
 
 export function RunStatusBadge({ status }: { status: StageRunStatus }) {

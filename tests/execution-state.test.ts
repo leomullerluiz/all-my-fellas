@@ -144,6 +144,31 @@ describe("executionStates", () => {
     expect(state).toEqual({ kind: "waiting_for_worker", position: 1, depth: 1 });
   });
 
+  it("excludes a claimed quota_wake job from in_flight", () => {
+    // `quota_wake`'s effect is global; its `taskId` is merely whichever park
+    // scheduled it, so the parked task is not executing and `jobToUiKind` has
+    // no honest answer for the kind. Filtered alongside `cleanup_workspace`
+    // for that reason — without it, a task parked on quota reports `in_flight`
+    // with an unmappable job, which is the exact conflation §6.1 removes.
+    const parked = makeTask("Parked on quota", "on_queue");
+    queue.enqueueJob({ taskId: parked.id, kind: "quota_wake" });
+    queue.claimNextJob(99);
+
+    const state = execution.executionStateFor(parked.id, execution.executionStates());
+    expect(state).toEqual({ kind: "idle" });
+  });
+
+  it("excludes an eligible quota_wake job from another task's depth", () => {
+    const waiting = makeTask("Waiting", "running");
+    const parked = makeTask("Parked on quota", "on_queue");
+    queue.enqueueJob({ taskId: waiting.id, kind: "run_stage" });
+    queue.enqueueJob({ taskId: parked.id, kind: "quota_wake" });
+
+    const states = execution.executionStates();
+    expect(states.get(waiting.id)).toEqual({ kind: "waiting_for_worker", position: 1, depth: 1 });
+    expect(execution.executionStateFor(parked.id, states)).toEqual({ kind: "idle" });
+  });
+
   it("marks a pending job with a future runAfter retry_backoff, not waiting_for_worker", () => {
     const backoff = makeTask("Backing off", "running");
     const waiting = makeTask("Waiting", "running");

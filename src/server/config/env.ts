@@ -58,6 +58,15 @@ export function resolvePromptsDir(): string {
   return path.resolve(/* turbopackIgnore: true */ PROJECT_ROOT, "prompts");
 }
 
+/**
+ * Where the dashboard is reachable, for the `url` field of an outbound
+ * webhook notification (§8.3) — a notification fired from the worker process
+ * has no request to derive an origin from, unlike an API route.
+ */
+export function resolveAppUrl(): string {
+  return str("APP_URL", "http://localhost:3000").replace(/\/+$/, "");
+}
+
 export type AuthMode = "subscription" | "api_key" | "missing";
 
 export type ProviderAuth = {

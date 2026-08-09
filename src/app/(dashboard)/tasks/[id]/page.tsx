@@ -109,6 +109,7 @@ export default async function TaskDetailPage(props: {
             capacity={slots}
             dependsOn={dependsOn}
             retry={retry}
+            paused={task.paused}
           />
         </div>
 

@@ -23,6 +23,12 @@ services:
       - pipeline-data:/app/data
       - pipeline-workspaces:/app/workspaces
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   worker:
     build:
@@ -43,6 +49,17 @@ services:
     # Give the worker time to finish the stage it is running before it is killed.
     stop_grace_period: 5m
     restart: unless-stopped
+    # The worker has no HTTP server of its own (§7.4) — it is reported on by
+    # `web`'s /api/health, which reads the heartbeat row this container
+    # writes. Hitting `web` rather than itself is deliberate: a healthcheck
+    # that only proved the container was still running would miss exactly
+    # the failure mode this exists to catch (a hung, not crashed, worker).
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://web:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   pipeline-data:

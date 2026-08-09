@@ -61,7 +61,12 @@ import {
   truncateForPrompt,
 } from "./prompt";
 import { buildRepairRole, repairInstructionFor } from "./repair";
-import { type StageExecutionResult, StageExecutionError, runStage } from "./run-stage";
+import {
+  type StageExecutionResult,
+  StageAbortedError,
+  StageExecutionError,
+  runStage,
+} from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, type FailureKind, isAgentStage } from "./stages";
 import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
@@ -235,6 +240,8 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
  *   repair call itself failing or its output still not validating — in both
  *   cases the *original* rejected text is what gets persisted as
  *   `rejected_output` and reported, since that is what a human would triage.
+ *   The one exception is a cancellation (§6.5), which is reported as itself
+ *   rather than as a validation failure — see the `StageAbortedError` branch.
  */
 async function attemptArtifactRepair(input: {
   task: TaskWithRepo;
@@ -247,9 +254,22 @@ async function attemptArtifactRepair(input: {
   attempt: number;
   original: StageExecutionResult;
   validationError: ArtifactValidationError;
+  /** The job's controller, so Cancel interrupts the repair turn too (§6.2). */
+  abortController?: AbortController;
 }): Promise<string> {
-  const { task, stageRunId, role, provider, model, workspacePath, promptTask, attempt, original, validationError } =
-    input;
+  const {
+    task,
+    stageRunId,
+    role,
+    provider,
+    model,
+    workspacePath,
+    promptTask,
+    attempt,
+    original,
+    validationError,
+    abortController,
+  } = input;
 
   appendEvent(task.id, stageRunId, {
     type: "log",
@@ -278,9 +298,23 @@ async function attemptArtifactRepair(input: {
       maxTurns: 4,
       workspacePath,
       prompt: repairPrompt,
+      abortController,
       onEvent: (event) => appendEvent(task.id, stageRunId, event),
     });
-  } catch {
+  } catch (error) {
+    // A cancellation is not a validation failure, and reporting it as one
+    // would both mislabel the run and hide why it stopped. The task already
+    // reached `CANCELLED` via `cancelTask`, so this mirrors the main
+    // execution path exactly: status `cancelled`, non-retryable, the abort's
+    // own message. `rejected_output` is still worth keeping — the artifact
+    // that failed to validate is what a human would triage afterwards.
+    if (error instanceof StageAbortedError) {
+      updateStageRun(stageRunId, { rejectedOutput: original.finalText });
+      const message = redactRemote(error.message);
+      markStageRunStatus(stageRunId, "cancelled", { error: message });
+      throw new StageJobError(message, false);
+    }
+
     // The repair turn itself failed to run (provider error, no final text,
     // ...) — fail as the original validation error, not a confusing one
     // about the repair attempt, and keep the text that was actually rejected.
@@ -314,8 +348,19 @@ async function attemptArtifactRepair(input: {
   return repaired;
 }
 
-/** Runs one agent stage end to end. */
-export async function executeAgentStage(stageRunId: string): Promise<void> {
+/**
+ * Runs one agent stage end to end.
+ *
+ * @param abortController The worker's per-job controller (§6.2), forwarded
+ *   into `runStage`'s `abortController` option so a cancellation observed by
+ *   the worker's poll can interrupt the provider mid-session. `undefined`
+ *   outside the worker (e.g. tests calling this directly) — every provider
+ *   already treats a missing controller as "never aborts".
+ */
+export async function executeAgentStage(
+  stageRunId: string,
+  abortController?: AbortController,
+): Promise<void> {
   const run = getStageRun(stageRunId);
   if (!run) throw new StageJobError(`Stage run ${stageRunId} not found.`, false);
   if (!isAgentStage(run.stage)) {
@@ -330,6 +375,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
   const model = settings.models[run.stage];
   const maxTurns = run.maxTurns ?? settings.maxTurns[run.stage];
   const provider = settings.providers[run.stage];
+  const maxCostUsd = settings.maxCostPerStageUsd ?? undefined;
 
   markStageRunStatus(stageRunId, "running");
   appendEvent(task.id, stageRunId, {
@@ -489,8 +535,10 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       role,
       model,
       maxTurns,
+      maxCostUsd,
       workspacePath,
       prompt: promptInput,
+      abortController,
       onEvent: (event) => appendEvent(task.id, stageRunId, event),
     });
   } catch (error) {
@@ -499,12 +547,20 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
     // Every provider builds a partial result for exactly this case
     // (`StageExecutionError.partial`) — the transcript of a failed run is the
     // one most worth having, and today it is thrown away. See §12.2.
-    if (error instanceof StageExecutionError && error.partial.transcript) {
-      saveTranscript({
-        stageRunId,
-        sessionId: error.partial.sessionId ?? null,
-        transcript: error.partial.transcript,
-      });
+    //
+    // The two writes below are deliberately independent: a budget stop or a
+    // turn-boundary abort can accumulate real cost with no transcript growth
+    // at all (no new message since the last successful turn), and gating the
+    // cost write on `partial.transcript` being truthy silently recorded that
+    // spend as `$0` — see spec §5.4 / stories.md S1.
+    if (error instanceof StageExecutionError) {
+      if (error.partial.transcript) {
+        saveTranscript({
+          stageRunId,
+          sessionId: error.partial.sessionId ?? null,
+          transcript: error.partial.transcript,
+        });
+      }
       updateStageRun(stageRunId, {
         inputTokens: error.partial.inputTokens ?? 0,
         outputTokens: error.partial.outputTokens ?? 0,
@@ -512,8 +568,18 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       });
     }
 
-    markStageRunStatus(stageRunId, "failed", { error: message });
-    throw new StageJobError(message);
+    // An abort is not a failure — see §6.5/§6.6. The run status makes that
+    // distinction visible in the timeline; `handleJobFailure` (worker) reads
+    // it back to skip its normal fail-the-task bookkeeping, since the task
+    // already reached `CANCELLED` via `cancelTask` before this landed.
+    markStageRunStatus(stageRunId, error instanceof StageAbortedError ? "cancelled" : "failed", {
+      error: message,
+    });
+    // A budget stop (§5.4) or an abort (§6.5) is not retried: the worker's
+    // ordinary retry policy would otherwise re-run the session (spending up
+    // to the same ceiling again) or re-run a stage the user already cancelled.
+    const retryable = error instanceof StageExecutionError ? error.retryable : true;
+    throw new StageJobError(message, retryable);
   }
 
   saveTranscript({
@@ -553,6 +619,7 @@ export async function executeAgentStage(stageRunId: string): Promise<void> {
       attempt: run.attempt,
       original: result,
       validationError: error,
+      abortController,
     });
   }
 

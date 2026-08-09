@@ -1,10 +1,17 @@
 import OpenAI from "openai";
 
+import { formatCost } from "@/lib/utils";
+
 import { resolveOpenAiAuth } from "../../config/env";
 import { buildStagePrompt, buildSystemPrompt } from "../prompt";
 import { estimateCostUsd } from "./pricing";
 import { executeTool, summarizeToolInput, toolSchemasForRole } from "./tool-runtime";
-import { StageExecutionError, type RunStageOptions, type StageExecutionResult } from "./types";
+import {
+  StageAbortedError,
+  StageExecutionError,
+  type RunStageOptions,
+  type StageExecutionResult,
+} from "./types";
 
 /**
  * Executes one pipeline stage against the OpenAI (ChatGPT) API.
@@ -93,14 +100,55 @@ export async function runOpenAiStage(
   let turn = 0;
 
   while (turn < options.maxTurns) {
+    // Checked between turns, not just relied on to abort the in-flight
+    // request below: the signal can fire in the gap after one turn returns
+    // and before the next request is issued, and an in-flight HTTP request
+    // being aborted does not stop the loop from starting the next one on its
+    // own (§6.4).
+    if (options.abortController?.signal.aborted) {
+      throw new StageAbortedError(
+        `The ${role.name} session was cancelled after ${turn} turn(s).`,
+        { inputTokens, outputTokens, numTurns: turn, transcript },
+      );
+    }
+
+    // A stop-loss, not a hard cap (§5.3): this can only ever check the cost
+    // of turns already taken, since the API reports usage after a turn
+    // completes, never before.
+    if (options.maxCostUsd !== undefined) {
+      const spent = estimateCostUsd(options.model, inputTokens, outputTokens);
+      if (spent >= options.maxCostUsd) {
+        throw new StageExecutionError(
+          `The ${role.name} session stopped after ${turn} turn(s): spend ceiling of ` +
+            `${formatCost(options.maxCostUsd)} reached (${formatCost(spent)} spent).`,
+          { costUsd: spent, inputTokens, outputTokens, numTurns: turn, transcript },
+          false,
+        );
+      }
+    }
+
     turn++;
 
-    const response = await client.chat.completions.create({
-      model: options.model,
-      messages,
-      tools: tools.length > 0 ? tools : undefined,
-      signal: options.abortController?.signal,
-    });
+    let response;
+    try {
+      response = await client.chat.completions.create({
+        model: options.model,
+        messages,
+        tools: tools.length > 0 ? tools : undefined,
+        signal: options.abortController?.signal,
+      });
+    } catch (error) {
+      // The request-level `signal` above already stops an in-flight call;
+      // this converts that into the same cancelled shape the between-turns
+      // check above produces, rather than a generic crash.
+      if (options.abortController?.signal.aborted) {
+        throw new StageAbortedError(
+          `The ${role.name} session was cancelled mid-request (turn ${turn}).`,
+          { inputTokens, outputTokens, numTurns: turn, transcript },
+        );
+      }
+      throw error;
+    }
     inputTokens += response.usage?.prompt_tokens ?? 0;
     outputTokens += response.usage?.completion_tokens ?? 0;
 

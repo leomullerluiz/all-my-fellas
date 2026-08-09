@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Admission control: at most `MAX_PARALLEL_TASKS` tasks may be in flight.
@@ -19,6 +19,8 @@ let orchestrator: typeof import("@/server/pipeline/orchestrator");
 let service: typeof import("@/server/tasks/service");
 let settings: typeof import("@/server/settings/store");
 let queue: typeof import("@/server/jobs/queue");
+let quotaModule: typeof import("@/server/usage/quota");
+let eventsModule: typeof import("@/server/events/store");
 let repoId: string;
 
 beforeAll(async () => {
@@ -26,6 +28,8 @@ beforeAll(async () => {
   service = await import("@/server/tasks/service");
   settings = await import("@/server/settings/store");
   queue = await import("@/server/jobs/queue");
+  quotaModule = await import("@/server/usage/quota");
+  eventsModule = await import("@/server/events/store");
 
   repoId = service.createRepo({
     name: "acme/app",
@@ -268,6 +272,187 @@ describe("retry is admission controlled", () => {
   });
 });
 
+describe("quota admission (S2)", () => {
+  beforeEach(() => {
+    settings.updateSettings({ maxParallelTasks: 5, quotaEnforcement: "off" });
+    process.env.ANTHROPIC_API_KEY = "key";
+  });
+
+  afterAll(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    settings.updateSettings({
+      quotaEnforcement: "off",
+      quotaLimits: { api_key: { limitUsd: null, cadence: "daily" } },
+    });
+  });
+
+  /** Records $11 of spend today against a task, so a $10 daily limit is exceeded. */
+  function seedOverQuota(limitUsd = 10) {
+    settings.updateSettings({
+      quotaLimits: { api_key: { limitUsd, cadence: "daily" } },
+    });
+    const spender = create("Spender");
+    const run = service.createStageRun({ taskId: spender.id, stage: "DEVELOPMENT", attempt: 1 });
+    service.updateStageRun(run.id, {
+      status: "done",
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+      costUsd: limitUsd + 1,
+    });
+  }
+
+  it("off: a start over the limit succeeds exactly as today", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "off" });
+    const task = create("Over limit");
+
+    expect(() => orchestrator.startTask(task.id)).not.toThrow();
+    expect(service.getTask(task.id)!.status).toBe("running");
+  });
+
+  it("warn: the start succeeds and a quota_warning event is appended", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "warn" });
+    const task = create("Warned");
+
+    expect(() => orchestrator.startTask(task.id)).not.toThrow();
+    expect(service.getTask(task.id)!.status).toBe("running");
+
+    const types = eventsModule.readEvents(task.id).map((event) => event.type);
+    expect(types).toContain("quota_warning");
+  });
+
+  it("hold: startTask throws QuotaError and leaves the task untouched", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+    const task = create("Held");
+
+    expect(() => orchestrator.startTask(task.id)).toThrow(orchestrator.QuotaError);
+    const untouched = service.getTask(task.id)!;
+    expect(untouched.currentStage).toBe("CREATED");
+    expect(untouched.status).toBe("queued");
+  });
+
+  it("hold: startTasksBatch parks the task at on_queue instead of failing it", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+    const task = create("Batched, held");
+
+    const results = orchestrator.startTasksBatch([task.id]);
+    expect(results).toEqual([
+      expect.objectContaining({ taskId: task.id, started: false, queued: true }),
+    ]);
+    expect(service.getTask(task.id)!.status).toBe("on_queue");
+  });
+
+  it("hold: overrideQuota starts it and appends a quota_overridden event", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+    const task = create("Overridden");
+
+    expect(() => orchestrator.startTask(task.id, { overrideQuota: true })).not.toThrow();
+    expect(service.getTask(task.id)!.status).toBe("running");
+
+    const types = eventsModule.readEvents(task.id).map((event) => event.type);
+    expect(types).toContain("quota_overridden");
+  });
+
+  it("overrideQuota has no effect on a CapacityError refusal", () => {
+    settings.updateSettings({ maxParallelTasks: 1, quotaEnforcement: "off" });
+    const first = create("Holding the slot");
+    const second = create("Second");
+    orchestrator.startTask(first.id);
+
+    expect(() => orchestrator.startTask(second.id, { overrideQuota: true })).toThrow(
+      orchestrator.CapacityError,
+    );
+  });
+
+  it("overrideQuota has no effect on a DependencyError refusal", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+    const prerequisite = create("Prerequisite");
+    const dependent = service.createTask({
+      repoId,
+      title: "Dependent",
+      description: "A description long enough to pass validation upstream.",
+      priority: "medium",
+      dependsOn: [prerequisite.id],
+    });
+
+    expect(() => orchestrator.startTask(dependent.id, { overrideQuota: true })).toThrow(
+      orchestrator.DependencyError,
+    );
+  });
+
+  it("ordering: over-quota AND missing a prerequisite reports DependencyError, not QuotaError", () => {
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+    const prerequisite = create("Prerequisite");
+    const dependent = service.createTask({
+      repoId,
+      title: "Dependent, over quota",
+      description: "A description long enough to pass validation upstream.",
+      priority: "medium",
+      dependsOn: [prerequisite.id],
+    });
+
+    expect(() => orchestrator.startTask(dependent.id)).toThrow(orchestrator.DependencyError);
+  });
+
+  it("ordering: over-quota AND no free slot reports QuotaError, not CapacityError", () => {
+    settings.updateSettings({ maxParallelTasks: 1, quotaEnforcement: "off" });
+    // Fill the only slot with a task started while quota was still fine.
+    const holder = create("Holding the slot");
+    orchestrator.startTask(holder.id);
+
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+
+    const contender = create("Over quota, no slot");
+    expect(() => orchestrator.startTask(contender.id)).toThrow(orchestrator.QuotaError);
+  });
+
+  it("promoteQueue stops on the first QuotaError rather than checking every candidate", async () => {
+    seedOverQuota();
+    settings.updateSettings({ maxParallelTasks: 5, quotaEnforcement: "hold" });
+
+    const a = create("A");
+    const b = create("B");
+    orchestrator.startTasksBatch([a.id, b.id]);
+    expect(service.getTask(a.id)!.status).toBe("on_queue");
+    expect(service.getTask(b.id)!.status).toBe("on_queue");
+
+    const spy = vi.spyOn(quotaModule, "resolveQuotaStatus");
+    orchestrator.promoteQueue();
+    // One check for the first candidate, then the loop stops outright — not
+    // one per queued task.
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("schedules a quota_wake job the first time a batch parks a task on quota, and does not duplicate it", () => {
+    expect(queue.hasPendingQuotaWake()).toBe(false);
+
+    seedOverQuota();
+    settings.updateSettings({ quotaEnforcement: "hold" });
+    const a = create("A");
+    const b = create("B");
+
+    const spy = vi.spyOn(queue, "enqueueJob");
+
+    orchestrator.startTasksBatch([a.id]);
+    expect(queue.hasPendingQuotaWake()).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // A second park while one is already pending must not enqueue another.
+    orchestrator.startTasksBatch([b.id]);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockRestore();
+  });
+});
+
 describe("decideGate is admission controlled on resume", () => {
   it("queues instead of throwing when approving would resume into a taken slot", () => {
     const gated = create("Gated");
@@ -449,6 +634,7 @@ describe("editing and deleting a not-started task", () => {
       priority: "urgent",
       requireHumanCodeReview: false,
       dependsOn: [],
+      maxCostUsd: null,
     });
 
     const updated = service.getTask(task.id)!;
@@ -474,6 +660,7 @@ describe("editing and deleting a not-started task", () => {
       priority: task.priority,
       requireHumanCodeReview: false,
       dependsOn: [],
+      maxCostUsd: task.maxCostUsd,
     });
 
     expect(events.readEvents(task.id).some((e) => e.type === "task_edited")).toBe(false);
@@ -491,6 +678,7 @@ describe("editing and deleting a not-started task", () => {
         priority: "low",
         requireHumanCodeReview: false,
         dependsOn: [],
+        maxCostUsd: null,
       }),
     ).toThrow(orchestrator.GateError);
   });

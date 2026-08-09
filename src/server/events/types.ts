@@ -1,3 +1,4 @@
+import type { Cadence } from "../config/env";
 import type { LlmProviderId } from "../config/llm-providers";
 import type { Stage } from "../pipeline/stages";
 
@@ -33,6 +34,13 @@ export type PipelineEvent =
   | { type: "artifact_saved"; artifactType: string }
   | { type: "gate_opened"; gate: Stage }
   | { type: "gate_decided"; gate: Stage; decision: string; comment?: string }
+  /**
+   * `gate` would otherwise have parked the task waiting for a human, but the
+   * "no-approval automation" setting was on — see `state-machine.ts`'s
+   * `bypassedGate`. Never written for the silent
+   * `autoApprovePlanForLowCriticality` waiver, only for this setting.
+   */
+  | { type: "gate_bypassed"; gate: Stage }
   | { type: "git"; message: string }
   // `noun` is absent on rows written before this field existed; readers fall
   // back to the neutral "change request" — see `NEUTRAL_CHANGE_REQUEST_NOUN`.
@@ -55,7 +63,11 @@ export type PipelineEvent =
       type: "verification_finished";
       status: "passed" | "failed" | "skipped" | "errored";
       reason?: string;
-    };
+    }
+  /** `enforcement: "warn"` let a start proceed over the configured quota. */
+  | { type: "quota_warning"; usedUsd: number; limitUsd: number; cadence: Cadence }
+  /** `overrideQuota: true` skipped a `"hold"` refusal that would otherwise have fired. */
+  | { type: "quota_overridden"; usedUsd: number; limitUsd: number; cadence: Cadence };
 
 /**
  * Every `PipelineEvent` variant's `type`, derived from the union rather than
@@ -85,6 +97,7 @@ const PIPELINE_EVENT_TYPE_SET = {
   artifact_saved: true,
   gate_opened: true,
   gate_decided: true,
+  gate_bypassed: true,
   git: true,
   pr_opened: true,
   task_finished: true,
@@ -94,6 +107,8 @@ const PIPELINE_EVENT_TYPE_SET = {
   verification_output: true,
   verification_command_finished: true,
   verification_finished: true,
+  quota_warning: true,
+  quota_overridden: true,
 } satisfies Record<PipelineEvent["type"], true>;
 
 export const PIPELINE_EVENT_TYPES = Object.keys(

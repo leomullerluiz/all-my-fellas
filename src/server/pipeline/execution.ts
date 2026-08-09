@@ -1,8 +1,8 @@
-import { and, asc, eq, gt, lte, ne } from "drizzle-orm";
+import { and, asc, eq, gt, lte } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { type JobKind, jobs, tasks } from "../db/schema";
-import { DIFFICULTY_RANK, inFlightTaskIds, PRIORITY_RANK } from "../jobs/queue";
+import { DIFFICULTY_RANK, inFlightTaskIds, PRIORITY_RANK, taskWorkOnly } from "../jobs/queue";
 
 /**
  * What the worker is doing with a task right now, derived at render time from
@@ -48,9 +48,10 @@ function jobToUiKind(kind: JobKind): "agent" | "delivery" | "verification" {
     case "verify":
       return "verification";
     case "cleanup_workspace":
-      // Filtered out of every query below — see the `ne(jobs.kind, ...)`
+    case "quota_wake":
+      // Filtered out of every query below — see the `taskWorkOnly()`
       // clauses. Reaching this would mean the filter was dropped somewhere.
-      throw new Error("cleanup_workspace is not an in-flight job kind.");
+      throw new Error(`${kind} is not an in-flight job kind.`);
   }
 }
 
@@ -86,7 +87,7 @@ export function executionStates(): Map<string, ExecutionState> {
       .from(jobs)
       .innerJoin(tasks, eq(jobs.taskId, tasks.id))
       .where(
-        and(eq(jobs.status, "pending"), ne(jobs.kind, "cleanup_workspace"), lte(jobs.runAfter, now)),
+        and(eq(jobs.status, "pending"), taskWorkOnly(), lte(jobs.runAfter, now)),
       )
       .orderBy(PRIORITY_RANK, DIFFICULTY_RANK, asc(jobs.runAfter), asc(jobs.createdAt))
       .all();
@@ -94,7 +95,7 @@ export function executionStates(): Map<string, ExecutionState> {
     const backoffRows = tx
       .select({ taskId: jobs.taskId, runAfter: jobs.runAfter, attempts: jobs.attempts })
       .from(jobs)
-      .where(and(eq(jobs.status, "pending"), ne(jobs.kind, "cleanup_workspace"), gt(jobs.runAfter, now)))
+      .where(and(eq(jobs.status, "pending"), taskWorkOnly(), gt(jobs.runAfter, now)))
       .all();
 
     const admittedTaskIds = tx

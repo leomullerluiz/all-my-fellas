@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { LLM_PROVIDER_IDS } from "../config/llm-providers";
+import { PIPELINE_EVENT_TYPES } from "../events/types";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
 import { AGENT_STAGES, GATES, GATE_DECISIONS, PRIORITIES, TASK_STATUSES } from "../pipeline/stages";
@@ -79,6 +80,15 @@ export const taskFieldsSchema = z.object({
     (value) => (value === undefined ? [] : Array.isArray(value) ? value : [value]),
     z.array(z.string().min(1)).max(50),
   ),
+  /**
+   * "This whole task is not worth more than this" — checked against
+   * `totalCostForTask` before each stage is scheduled (`scheduleStage`).
+   * `null`/omitted means no ceiling. A stop-loss, not a hard cap: the check
+   * runs before the *next* stage, not mid-session — see the per-stage
+   * counterpart (`settings.maxCostPerStageUsd`) for the one enforced inside a
+   * running session.
+   */
+  maxCostPerTaskUsd: z.number().min(0).nullable().optional(),
 });
 
 export const createTaskSchema = taskFieldsSchema.extend({
@@ -283,19 +293,55 @@ const quotaLimitsSchema = z.partialRecord(
   quotaLimitSchema,
 );
 
+const notificationEventTogglesSchema = z.partialRecord(z.enum(PIPELINE_EVENT_TYPES), z.boolean());
+
+const notificationsSchema = z.object({
+  browser: z.boolean().optional(),
+  /** `null` clears the URL — the webhook is disabled. */
+  webhookUrl: z.string().trim().url().nullable().optional(),
+  // Environment variable NAME, never a secret — same rule and reserved list
+  // as a repository's `credentialRef` (§8.3/§13.5).
+  webhookSecretRef: z
+    .string()
+    .trim()
+    .max(120)
+    .nullable()
+    .optional()
+    .refine((value) => value === undefined || value === null || validateCredentialRef(value).ok, {
+      message:
+        "Use an environment variable name (A-Z, digits, underscores) that the " +
+        "pipeline does not reserve.",
+    }),
+  events: notificationEventTogglesSchema.optional(),
+});
+
 export const updateSettingsSchema = z.object({
   models: modelMapSchema.optional(),
   providers: providersMapSchema.optional(),
   maxTurns: turnsMapSchema.optional(),
   maxParallelTasks: z.number().int().min(1).max(8).optional(),
-  qaMaxCycles: z.number().int().min(0).max(10).optional(),
+  // Was `qaMaxCycles`, which matches no field on `AppSettings` (the field is
+  // `reworkMaxCycles`) — `z.object` silently strips unknown keys, so every
+  // PATCH carrying it was discarded before this fix. Fixed in the same edit
+  // that adds the quota/spend-ceiling fields below, since both touch this
+  // exact schema in this exact change — see `techplan.md`'s risk note.
+  reworkMaxCycles: z.number().int().min(0).max(10).optional(),
+  /** Pre-selected value of "require human code review" on the new-task form. */
+  humanCodeReviewDefault: z.boolean().optional(),
   autoApprovePlanForLowCriticality: z.boolean().optional(),
   codeReviewEnabled: z.enum(["always", "auto", "never"]).optional(),
+  noApprovalAutomation: z.boolean().optional(),
   workspaceRetentionDays: z.number().int().min(0).max(365).optional(),
   /** `null` clears the setting — keep transcripts forever. */
   transcriptRetentionDays: z.number().int().min(0).max(3650).nullable().optional(),
   theme: z.enum(THEMES).optional(),
   quotaLimits: quotaLimitsSchema.optional(),
+  quotaEnforcement: z.enum(["off", "warn", "hold"]).optional(),
+  /** `null` clears the ceiling — no per-stage dollar cap. */
+  maxCostPerStageUsd: z.number().min(0).nullable().optional(),
+  /** "Stop starting things" — the worker claims no new jobs while `true` (§9.2). */
+  queueHeld: z.boolean().optional(),
+  notifications: notificationsSchema.optional(),
 });
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
 

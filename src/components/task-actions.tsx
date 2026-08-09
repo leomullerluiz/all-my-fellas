@@ -208,6 +208,8 @@ const ACTION_SUCCESS_TOAST: Record<string, string> = {
   cancel: "Task cancelled.",
   retry: "Retrying the failed stage.",
   delete: "Task deleted.",
+  pause: "Task paused: the current stage will finish, then wait.",
+  resume: "Task resumed.",
 };
 
 /**
@@ -310,6 +312,7 @@ export function TaskControls({
   capacity,
   dependsOn = [],
   retry = null,
+  paused = false,
 }: {
   taskId: string;
   taskTitle: string;
@@ -326,11 +329,20 @@ export function TaskControls({
    * (`spec-retry-recovery.md` §3.1's defect 4).
    */
   retry?: RetryAvailability | null;
+  /** `tasks.paused` (§9.2) — offers Resume instead of Pause once set. */
+  paused?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
+  // Set by a `quota_exceeded` 409 on Start — offers the "Start anyway"
+  // affordance (`overrideQuota: true`) rather than just refusing (§4.6).
+  const [quotaHeld, setQuotaHeld] = useState<string | null>(null);
 
   const canCancel = ["running", "awaiting_gate", "on_queue", "gate_queued"].includes(status);
+  // Pause only makes sense on an actively-progressing task — a gate is
+  // already a wait state, and cancelling is the only brake once a task is
+  // parked on capacity or quota with no stage in flight to let finish.
+  const canPause = status === "running" || paused;
   // `retry` reflects `retryAvailability`'s answer for whatever status the task
   // is actually at (e.g. `not_failed` for a running task) — only meaningful,
   // and only rendered, once the task has actually failed.
@@ -350,13 +362,23 @@ export function TaskControls({
   const blockedReason = dependencyReason ?? capacityBlockedReason(capacity);
   const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
 
-  async function call(action: string, url: string, method = "POST") {
+  async function call(action: string, url: string, method = "POST", body?: unknown) {
     setBusy(action);
+    if (action === "start") setQuotaHeld(null);
 
-    const response = await fetch(url, { method });
+    const response = await fetch(url, {
+      method,
+      ...(body !== undefined
+        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+        : {}),
+    });
     if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      toast.error(payload.error ?? `Could not ${action} the task.`);
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+      if (action === "start" && payload.code === "quota_exceeded") {
+        setQuotaHeld(payload.error ?? "Spend limit reached.");
+      } else {
+        toast.error(payload.error ?? `Could not ${action} the task.`);
+      }
       setBusy(null);
       return;
     }
@@ -387,6 +409,19 @@ export function TaskControls({
         >
           {busy === "start" ? "Starting…" : "Start"}
         </Button>
+        {quotaHeld ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy !== null}
+            title={quotaHeld}
+            onClick={() =>
+              call("start", `/api/tasks/${taskId}/start`, "POST", { overrideQuota: true })
+            }
+          >
+            {busy === "start" ? "Starting…" : "Start anyway"}
+          </Button>
+        ) : null}
         <Link href={`/tasks/${taskId}/edit`}>
           <Button variant="secondary" size="sm">
             Edit
@@ -411,6 +446,7 @@ export function TaskControls({
           </Button>
         ) : null}
         {blockedReason ? <span className="text-xs text-muted">{blockedReason}</span> : null}
+        {quotaHeld ? <span className="text-xs text-warning">{quotaHeld}</span> : null}
       </div>
     );
   }
@@ -419,9 +455,27 @@ export function TaskControls({
   // completed task is otherwise a dead end for reusing its description,
   // priority, and attachments (`stories.md` S4). This is the only reason the
   // component renders anything at all for those statuses; the early `return
-  // null` this replaced only ever fired for them.
+  // null` this replaced only ever fired for them — including the pause and
+  // retry cases, which render their own controls above when they apply.
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {canPause ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy !== null}
+          title={
+            paused
+              ? "Resumes: schedules whatever stage was withheld, if any."
+              : "Finishes the current stage, then waits before starting the next one."
+          }
+          onClick={() =>
+            call(paused ? "resume" : "pause", `/api/tasks/${taskId}/${paused ? "resume" : "pause"}`)
+          }
+        >
+          {busy === "pause" ? "Pausing…" : busy === "resume" ? "Resuming…" : paused ? "Resume" : "Pause"}
+        </Button>
+      ) : null}
       {showRetrySection && retry?.available ? (
         <div className="flex flex-col gap-1">
           <Button
