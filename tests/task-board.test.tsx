@@ -339,3 +339,31 @@ describe("TaskBoard execution indicator", () => {
     expect(screen.queryByTitle("An agent is running")).toBeNull();
   });
 });
+
+// S9 §4.4 — a column past `COLUMN_CARD_LIMIT` (20) caps what it renders and
+// links out to the filtered list view instead of growing forever.
+describe("TaskBoard column overflow", () => {
+  it("caps a column at 20 cards and links to the filtered list view for the rest", () => {
+    const tasks = Array.from({ length: 25 }, (_, i) =>
+      makeTask({
+        id: `task_${i}`,
+        title: `Task ${i}`,
+        currentStage: "CREATED",
+        status: "queued",
+      }),
+    );
+    renderBoard(tasks);
+
+    const created = column("Created");
+    expect(within(created).getAllByRole("heading", { level: 3 })).toHaveLength(20);
+
+    const seeAll = within(created).getByRole("link", { name: /showing 20 of 25/ });
+    expect(seeAll.getAttribute("href")).toBe("/tasks?status=queued");
+  });
+
+  it("does not show a 'see all' link when a column is within the limit", () => {
+    renderBoard([makeTask({ id: "task_a", title: "Solo", status: "queued" })]);
+
+    expect(screen.queryByRole("link", { name: /see all/ })).toBeNull();
+  });
+});

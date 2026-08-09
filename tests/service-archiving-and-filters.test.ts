@@ -65,6 +65,19 @@ describe("listTasks structured filters", () => {
     expect(ids).not.toContain(neither.id);
   });
 
+  it("a literal '%' or '_' in the search text is not treated as a LIKE wildcard", () => {
+    const literalPercent = create({ title: "Discount: 50% off", description: "unrelated text" });
+    const literalUnderscore = create({ title: "feature_flag_rollout", description: "unrelated text" });
+    const decoy = create({ title: "Discount5X0Zoff", description: "would match a wildcarded '%'" });
+
+    const percentMatches = service.listTasks({ q: "50% off" }).map((t) => t.id);
+    expect(percentMatches).toContain(literalPercent.id);
+    expect(percentMatches).not.toContain(decoy.id);
+
+    const underscoreMatches = service.listTasks({ q: "feature_flag" }).map((t) => t.id);
+    expect(underscoreMatches).toContain(literalUnderscore.id);
+  });
+
   it("repoId narrows to one repository", () => {
     const mine = create({ title: "Mine" });
     const theirs = create({ title: "Theirs" }, otherRepoId);

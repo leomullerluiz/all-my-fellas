@@ -26,6 +26,7 @@ describe("taskMetaLine", () => {
       status: "on_queue",
       currentStage: "CREATED",
       createdAt: NOW - 2 * HOUR,
+      updatedAt: NOW - 2 * HOUR,
       now: NOW,
       queuePosition: 3,
     });
@@ -37,10 +38,23 @@ describe("taskMetaLine", () => {
       status: "on_queue",
       currentStage: "CREATED",
       createdAt: NOW - 2 * HOUR,
+      updatedAt: NOW - 2 * HOUR,
       now: NOW,
       queuePosition: null,
     });
     expect(line).toBe("queued 2h ago");
+  });
+
+  it("on_queue's age is time since entering the queue (updatedAt), not time since creation", () => {
+    const line = taskMetaLine({
+      status: "on_queue",
+      currentStage: "CREATED",
+      createdAt: NOW - 3 * 24 * HOUR,
+      updatedAt: NOW - 2 * HOUR,
+      now: NOW,
+      queuePosition: 1,
+    });
+    expect(line).toBe("queued 2h ago · #1 in queue");
   });
 
   it("running: '{stage label} · {elapsed}'", () => {
@@ -70,9 +84,21 @@ describe("taskMetaLine", () => {
       status: "awaiting_gate",
       currentStage: "PLAN_GATE",
       createdAt: NOW - 2 * 24 * HOUR,
+      updatedAt: NOW - 2 * 24 * HOUR,
       now: NOW,
     });
     expect(line).toBe("waiting for you · 2d");
+  });
+
+  it("awaiting_gate's age is time since reaching the gate (updatedAt), not time since creation", () => {
+    const line = taskMetaLine({
+      status: "awaiting_gate",
+      currentStage: "PLAN_GATE",
+      createdAt: NOW - 2 * 24 * HOUR,
+      updatedAt: NOW - 5 * 60_000,
+      now: NOW,
+    });
+    expect(line).toBe("waiting for you · 5m");
   });
 
   it("gate_queued: 'approved · waiting for a slot'", () => {
@@ -80,6 +106,7 @@ describe("taskMetaLine", () => {
       status: "gate_queued",
       currentStage: "PLAN_GATE",
       createdAt: NOW - HOUR,
+      updatedAt: NOW - HOUR,
       now: NOW,
     });
     expect(line).toBe("approved · waiting for a slot");
@@ -94,9 +121,24 @@ describe("taskMetaLine", () => {
       status,
       currentStage: "CREATED",
       createdAt: NOW - 3 * HOUR,
+      updatedAt: NOW - 3 * HOUR,
       now: NOW,
     });
     expect(line).toBe(`${word} · 3h ago`);
+  });
+
+  it("a terminal task's age is time since the terminal transition (updatedAt), not since creation", () => {
+    // A task that ran for 3 hours before failing 5 minutes ago must read
+    // "failed · 5m ago", not "failed · ~3h ago" — the exact bug the meta
+    // line exists to avoid (spec-board-at-scale.md §3).
+    const line = taskMetaLine({
+      status: "failed",
+      currentStage: "DEVELOPMENT",
+      createdAt: NOW - 3 * HOUR,
+      updatedAt: NOW - 5 * 60_000,
+      now: NOW,
+    });
+    expect(line).toBe("failed · 5m ago");
   });
 
   it("completed also reports its age, for consistency with the other terminal states", () => {
@@ -104,8 +146,19 @@ describe("taskMetaLine", () => {
       status: "completed",
       currentStage: "COMPLETED",
       createdAt: NOW - 3 * HOUR,
+      updatedAt: NOW - 3 * HOUR,
       now: NOW,
     });
     expect(line).toBe("completed · 3h ago");
+  });
+
+  it("falls back to createdAt-based age when updatedAt is omitted", () => {
+    const line = taskMetaLine({
+      status: "failed",
+      currentStage: "CREATED",
+      createdAt: NOW - 3 * HOUR,
+      now: NOW,
+    });
+    expect(line).toBe("failed · 3h ago");
   });
 });

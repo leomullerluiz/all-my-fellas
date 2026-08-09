@@ -12,6 +12,16 @@ export type TaskMetaInput = {
   status: TaskStatus;
   currentStage: Stage;
   createdAt: number;
+  /**
+   * `tasks.updated_at` — stamped by `updateTask` on every write, which
+   * includes every stage/status transition (`setTaskStage`, gate decisions,
+   * cancel, promotion into `on_queue`, …). Used as "time since entering the
+   * current status" for every status except `CREATED`, where "how long"
+   * means since creation, not since the last edit. Falls back to `createdAt`
+   * when omitted, so existing callers/tests that only know `createdAt`
+   * degrade to the pre-fix (created-at-based) behavior rather than crashing.
+   */
+  updatedAt?: number;
   /** Defaults to `Date.now()`; a fixed value keeps this pure for tests. */
   now?: number;
   /**
@@ -30,11 +40,15 @@ export type TaskMetaInput = {
 
 export function taskMetaLine(input: TaskMetaInput): string {
   const now = input.now ?? Date.now();
-  const age = formatRelativeAge(now - input.createdAt);
+  const createdAge = formatRelativeAge(now - input.createdAt);
+  // Every status but `CREATED` reports time-in-current-status, not
+  // time-since-creation — a task that ran for 3 hours before failing 5
+  // minutes ago must read "failed · 5m ago", not "failed · ~3h ago".
+  const age = formatRelativeAge(now - (input.updatedAt ?? input.createdAt));
 
   switch (input.status) {
     case "queued":
-      return `created ${age} ago`;
+      return `created ${createdAge} ago`;
     case "on_queue":
       return input.queuePosition
         ? `queued ${age} ago · #${input.queuePosition} in queue`

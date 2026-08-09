@@ -94,6 +94,7 @@ function TaskCard({
     status: task.status,
     currentStage: task.currentStage,
     createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
     now,
     runningStageStartedAt: task.runningStageStartedAt,
     queuePosition: task.queuePosition,
