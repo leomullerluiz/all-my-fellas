@@ -12,7 +12,7 @@ import {
   hasPendingQuotaWake,
 } from "../jobs/queue";
 import { getSettings } from "../settings/store";
-import { type Cadence, resolveQuotaStatus } from "../usage/quota";
+import { type Cadence, resolveEnforcementQuotaStatus } from "../usage/quota";
 import {
   type DependencySummary,
   type EditableTaskFields,
@@ -393,14 +393,18 @@ export class QuotaError extends Error {
  * (§4.3).
  *
  * Pool-wide: this checks total spend across every provider against the
- * *Claude* auth mode's configured limit (`resolveQuotaStatus`'s own
- * documented gap, §4.8) — this spec does not segment quota by provider.
+ * *Claude* auth mode's configured limit, via `resolveEnforcementQuotaStatus`
+ * — deliberately not the per-provider `resolveQuotaStatus` the dashboard bar
+ * uses (stories.md S2 segments *display* by provider; it does not segment
+ * *enforcement*, which stays out of scope for this delivery — see §4.8's
+ * documented gap in the brief, and `spec-spend-and-operational-control.md` §4
+ * for where per-provider enforcement would land).
  */
 function assertWithinQuota(taskId: string, overrideQuota: boolean): void {
   const settings = getSettings();
   if (settings.quotaEnforcement === "off") return;
 
-  const status = resolveQuotaStatus();
+  const status = resolveEnforcementQuotaStatus();
   if (status.state !== "exceeded") return;
 
   if (settings.quotaEnforcement === "warn") {

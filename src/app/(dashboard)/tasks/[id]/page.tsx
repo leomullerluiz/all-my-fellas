@@ -8,8 +8,10 @@ import { RunStatusBadge, StageBadge, StatusBadge } from "@/components/stage-badg
 import { DeliveryOutcomeBanner, GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
+import { UsageBar } from "@/components/usage-bar";
 import { executionCopy } from "@/lib/execution-copy";
 import { formatBytes, formatCost, formatDateTime, formatDuration, formatTokens } from "@/lib/utils";
+import { resolveProviderAuth } from "@/server/config/env";
 import { readDiffIndex, summarizeDiff } from "@/server/git/diff";
 import { providerFor } from "@/server/git/providers";
 import { MAX_JOB_ATTEMPTS } from "@/server/jobs/queue";
@@ -28,6 +30,7 @@ import {
   listVerificationRuns,
   totalCostForTask,
 } from "@/server/tasks/service";
+import { resolveQuotaStatus, spendToday } from "@/server/usage/quota";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +54,9 @@ export default async function TaskDetailPage(props: {
   // rendered page and the API response can never disagree for this task.
   const retry = retryAvailability(id);
   const notStarted = task.currentStage === "CREATED";
+  // S4: spend is shown beside the Start affordance below, not just on the
+  // dashboard — the moment a user commits new spend, not after.
+  const quotas = notStarted ? resolveQuotaStatus() : [];
   // Same derivation the board reads — computed once per render, not persisted.
   const execution = executionStateFor(id, executionStates());
   const executionState = executionCopy(execution, MAX_JOB_ATTEMPTS);
@@ -112,6 +118,14 @@ export default async function TaskDetailPage(props: {
             paused={task.paused}
           />
         </div>
+
+        {notStarted && quotas.length > 0 ? (
+          <UsageBar
+            spendToday={spendToday()}
+            authMode={resolveProviderAuth().mode}
+            quotas={quotas}
+          />
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
           <Badge tone="neutral">{task.repo.name}</Badge>

@@ -164,8 +164,22 @@ export const stageRuns = sqliteTable(
     startedAt: integer("started_at"),
     finishedAt: integer("finished_at"),
     maxTurns: integer("max_turns"),
+    /**
+     * Total input tokens, including cached ones — see `cacheReadTokens`/
+     * `cacheWriteTokens` below. A row written before those columns existed
+     * (or produced by a provider with no cache breakdown) has them at `0`.
+     */
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
+    /**
+     * The portion of `inputTokens` served from Claude's prompt cache — the
+     * cheap, already-primed remainder Anthropic bills at a fraction of a
+     * fresh input token. `0` for OpenAI/Gemini, which report no cache
+     * breakdown, and for any row written before this column existed.
+     */
+    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    /** The portion of `inputTokens` spent writing a new prompt-cache entry. */
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
     costUsd: real("cost_usd").notNull().default(0),
     error: text("error"),
     /**

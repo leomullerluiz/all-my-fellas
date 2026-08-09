@@ -100,6 +100,8 @@ describe("executeAgentStage — prompt capture (S1)", () => {
       finalText: VALID_BRIEF,
       costUsd: 0.01,
       inputTokens: 10,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       outputTokens: 5,
       numTurns: 1,
       transcript: [{ type: "result", subtype: "success", result: "ok" }],

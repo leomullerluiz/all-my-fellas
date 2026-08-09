@@ -97,6 +97,8 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
   let finalText = "";
   let costUsd = 0;
   let inputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   let outputTokens = 0;
   let numTurns = 0;
 
@@ -134,7 +136,14 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
 
         case "result": {
           costUsd = message.total_cost_usd;
-          inputTokens = message.usage.input_tokens ?? 0;
+          // `input_tokens` alone is only the uncached remainder — with prompt
+          // caching active (the normal case for a multi-turn agent session)
+          // `cache_read_input_tokens`/`cache_creation_input_tokens` carry the
+          // rest, and discarding them understated this figure by roughly
+          // 1000×. See stories.md S1.
+          cacheReadTokens = message.usage.cache_read_input_tokens ?? 0;
+          cacheWriteTokens = message.usage.cache_creation_input_tokens ?? 0;
+          inputTokens = (message.usage.input_tokens ?? 0) + cacheReadTokens + cacheWriteTokens;
           outputTokens = message.usage.output_tokens ?? 0;
           numTurns = message.num_turns;
 
@@ -211,5 +220,15 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
     );
   }
 
-  return { sessionId, finalText, costUsd, inputTokens, outputTokens, numTurns, transcript };
+  return {
+    sessionId,
+    finalText,
+    costUsd,
+    inputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    outputTokens,
+    numTurns,
+    transcript,
+  };
 }

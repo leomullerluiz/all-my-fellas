@@ -4,9 +4,11 @@ import { notFound } from "next/navigation";
 import { NewTaskForm } from "@/components/new-task-form";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { resolveProviderAuth } from "@/server/config/env";
 import { providerFor } from "@/server/git/providers";
 import { capacity } from "@/server/pipeline/orchestrator";
 import { getTask, listDependencies, listDependencyOptions, listRepos } from "@/server/tasks/service";
+import { resolveQuotaStatus, spendToday } from "@/server/usage/quota";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +66,11 @@ export default async function NewTaskPage(props: {
       capacity={capacity()}
       dependencyOptions={dependencyOptions}
       duplicateFrom={source?.id}
+      spend={{
+        spendToday: spendToday(),
+        authMode: resolveProviderAuth().mode,
+        quotas: resolveQuotaStatus(),
+      }}
       initial={
         source
           ? {

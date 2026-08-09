@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import { LLM_PROVIDER_IDS } from "../config/llm-providers";
+import { QUOTA_KEYS } from "../config/env";
+import { LLM_PROVIDER_IDS, MODEL_TIERS } from "../config/llm-providers";
 import { PIPELINE_EVENT_TYPES } from "../events/types";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
@@ -279,17 +280,22 @@ export const updateVerificationCommandsSchema = z
   .strict();
 export type UpdateVerificationCommandsInput = z.infer<typeof updateVerificationCommandsSchema>;
 
-const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.string().trim().min(1));
+/** A stage's model choice — a tier resolved per provider, or an escape-hatch literal id. See stories.md S3. */
+const modelSelectionSchema = z.union([
+  z.object({ tier: z.enum(MODEL_TIERS) }),
+  z.object({ literal: z.string().trim().min(1) }),
+]);
+const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), modelSelectionSchema);
 const turnsMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.number().int().min(1).max(500));
 const providersMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.enum(LLM_PROVIDER_IDS));
 
 const quotaLimitSchema = z.object({
   /** `null` clears the limit — the bar goes back to "quota not configured". */
   limitUsd: z.number().min(0).nullable(),
-  cadence: z.enum(["daily", "hourly"]),
+  cadence: z.enum(["daily", "hourly", "monthly"]),
 });
 const quotaLimitsSchema = z.partialRecord(
-  z.enum(["subscription", "api_key"]),
+  z.enum(QUOTA_KEYS),
   quotaLimitSchema,
 );
 
@@ -336,6 +342,8 @@ export const updateSettingsSchema = z.object({
   transcriptRetentionDays: z.number().int().min(0).max(3650).nullable().optional(),
   theme: z.enum(THEMES).optional(),
   quotaLimits: quotaLimitsSchema.optional(),
+  /** How close usage must get to a limit before the bar shows "warning". */
+  warningRatio: z.number().min(0).max(1).optional(),
   quotaEnforcement: z.enum(["off", "warn", "hold"]).optional(),
   /** `null` clears the ceiling — no per-stage dollar cap. */
   maxCostPerStageUsd: z.number().min(0).nullable().optional(),

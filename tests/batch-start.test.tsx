@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-start";
 import { TaskBoard, type BoardTask } from "@/components/task-board";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 // Both components only call `router.refresh()` after a successful fetch; a
 // stub is enough, matching `tests/task-card-menu.test.tsx`.
@@ -231,6 +232,44 @@ describe("BatchStartButton outcome summary", () => {
     // the button still shows the count.
     expect(screen.getByRole("checkbox", { name: /Task A/ })).toHaveProperty("checked", true);
     expect(screen.getByRole("button", { name: "Start selected (1)" })).toBeTruthy();
+  });
+});
+
+describe("BatchStartButton quota warning (S4 — beside every Start affordance)", () => {
+  const QUOTA_EXCEEDED: QuotaStatus = {
+    provider: "chatgpt",
+    state: "exceeded",
+    cadence: "monthly",
+    limitUsd: 10,
+    usedUsd: 12,
+    remainingUsd: 0,
+    resetAt: 0,
+  };
+
+  it("shows no quota note when nothing is configured", () => {
+    render(
+      <BatchSelectionProvider>
+        <BatchStartButton />
+        <TaskBoard tasks={[]} capacity={CAPACITY} maxJobAttempts={3} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.queryByText(/quota/i)).toBeNull();
+  });
+
+  it("shows an exceeded note beside the button without disabling it", () => {
+    render(
+      <BatchSelectionProvider>
+        <BatchStartButton quotas={[QUOTA_EXCEEDED]} />
+        <TaskBoard tasks={[makeTask({ id: "task_a", title: "Task A" })]} capacity={CAPACITY} maxJobAttempts={3} />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.getByText("ChatGPT (OpenAI) quota exceeded.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Task A/ }));
+    expect(screen.getByRole("button", { name: "Start selected (1)" }).hasAttribute("disabled")).toBe(
+      false,
+    );
   });
 });
 

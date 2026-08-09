@@ -423,7 +423,7 @@ describe("quota admission (S2)", () => {
     expect(service.getTask(a.id)!.status).toBe("on_queue");
     expect(service.getTask(b.id)!.status).toBe("on_queue");
 
-    const spy = vi.spyOn(quotaModule, "resolveQuotaStatus");
+    const spy = vi.spyOn(quotaModule, "resolveEnforcementQuotaStatus");
     orchestrator.promoteQueue();
     // One check for the first candidate, then the loop stops outright — not
     // one per queued task.

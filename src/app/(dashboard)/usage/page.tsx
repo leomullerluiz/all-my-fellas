@@ -1,9 +1,10 @@
 import Link from "next/link";
 
+import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCost, formatDateTime, formatTokens } from "@/lib/utils";
 import { STAGE_LABELS } from "@/server/pipeline/stages";
-import { costPerTask, usageByStage } from "@/server/tasks/service";
+import { costPerTask, dailySpend, usageByStage } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
 
@@ -21,11 +22,14 @@ export default async function UsagePage(props: {
   const parsedDays = rawDays ? Number.parseInt(rawDays, 10) : Number.NaN;
   const days = Number.isFinite(parsedDays) ? parsedDays : undefined;
 
-  const byStage = usageByStage();
+  const byStage = usageByStage(undefined, days);
   const byTask = costPerTask(days);
+  const daily = dailySpend({ days });
 
   const total = byTask.reduce((sum, row) => sum + row.costUsd, 0);
   const maxStageCost = Math.max(1e-9, ...byStage.map((row) => row.costUsd));
+  const maxDailyCost = Math.max(1e-9, ...daily.map((row) => row.costUsd));
+  const exportHref = `/api/usage/export${days ? `?days=${days}` : ""}`;
 
   return (
     <div className="flex flex-col gap-5">
@@ -37,34 +41,64 @@ export default async function UsagePage(props: {
             {days ? ` in the last ${days} days` : " (all time)"}.
           </p>
         </div>
-        <nav className="flex items-center gap-1 text-xs">
-          <Link
-            href="/usage"
-            className={`rounded-md px-2.5 py-1 ${
-              days ? "text-muted hover:bg-surface-raised" : "bg-surface-raised font-medium"
-            }`}
-          >
-            All time
-          </Link>
-          {WINDOWS.map((window) => (
+        <div className="flex items-center gap-3">
+          <nav className="flex items-center gap-1 text-xs">
             <Link
-              key={window.days}
-              href={`/usage?days=${window.days}`}
+              href="/usage"
               className={`rounded-md px-2.5 py-1 ${
-                days === window.days
-                  ? "bg-surface-raised font-medium"
-                  : "text-muted hover:bg-surface-raised"
+                days ? "text-muted hover:bg-surface-raised" : "bg-surface-raised font-medium"
               }`}
             >
-              {window.label}
+              All time
             </Link>
-          ))}
-        </nav>
+            {WINDOWS.map((window) => (
+              <Link
+                key={window.days}
+                href={`/usage?days=${window.days}`}
+                className={`rounded-md px-2.5 py-1 ${
+                  days === window.days
+                    ? "bg-surface-raised font-medium"
+                    : "text-muted hover:bg-surface-raised"
+                }`}
+              >
+                {window.label}
+              </Link>
+            ))}
+          </nav>
+          <a
+            href={exportHref}
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-raised hover:text-foreground"
+          >
+            Export CSV
+          </a>
+        </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>By stage (all time)</CardTitle>
+          <CardTitle>Spend per day</CardTitle>
+        </CardHeader>
+        <CardBody>
+          {daily.length === 0 ? (
+            <p className="text-xs text-muted">Nothing in this period.</p>
+          ) : (
+            <div className="flex h-32 items-end gap-1">
+              {daily.map((row) => (
+                <div
+                  key={row.date}
+                  title={`${row.date}: ${formatCost(row.costUsd)}`}
+                  className="min-h-[2px] flex-1 rounded-t bg-accent"
+                  style={{ height: `${Math.max(2, (row.costUsd / maxDailyCost) * 100)}%` }}
+                />
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>By stage</CardTitle>
         </CardHeader>
         <CardBody>
           {byStage.length === 0 ? (
@@ -127,6 +161,15 @@ export default async function UsagePage(props: {
                         >
                           {row.title}
                         </Link>
+                        {row.hasUnderReportedTokens ? (
+                          <Badge
+                            tone="warning"
+                            className="ml-2"
+                            title="At least one stage run in this task predates the cache-token accounting fix — its input tokens (and this task's total) may be understated."
+                          >
+                            tokens under-reported
+                          </Badge>
+                        ) : null}
                       </td>
                       <td className="px-4 py-2 text-muted">{row.status}</td>
                       <td className="px-4 py-2 text-muted">{formatDateTime(row.createdAt)}</td>

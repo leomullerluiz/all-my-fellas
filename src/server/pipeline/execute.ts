@@ -1,6 +1,6 @@
 import type { RoleDefinition } from "../agents/roles";
 import { roleFor } from "../agents/roles";
-import type { LlmProviderId } from "../config/llm-providers";
+import { type LlmProviderId, resolveModelId } from "../config/llm-providers";
 import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
 import { requireCredential, resolveCredential } from "../git/credentials";
@@ -372,9 +372,13 @@ export async function executeAgentStage(
 
   const role = roleFor(run.stage);
   const settings = getSettings();
-  const model = settings.models[run.stage];
   const maxTurns = run.maxTurns ?? settings.maxTurns[run.stage];
   const provider = settings.providers[run.stage];
+  // Resolved here, once, from whichever tier (or literal) is configured for
+  // this stage — see stories.md S3. `stage_runs.model` then records the
+  // resolved literal, same as it always has, so a later tier-table edit or a
+  // provider switch cannot retroactively change what a past run says it used.
+  const model = resolveModelId(provider, settings.models[run.stage]);
   const maxCostUsd = settings.maxCostPerStageUsd ?? undefined;
 
   markStageRunStatus(stageRunId, "running");
@@ -592,6 +596,8 @@ export async function executeAgentStage(
   // `markStageRunStatus` — the latter would reset `startedAt` mid-run.
   updateStageRun(stageRunId, {
     inputTokens: result.inputTokens,
+    cacheReadTokens: result.cacheReadTokens,
+    cacheWriteTokens: result.cacheWriteTokens,
     outputTokens: result.outputTokens,
     costUsd: result.costUsd,
   });

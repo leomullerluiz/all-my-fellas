@@ -77,6 +77,8 @@ function stageResult(finalText: string) {
     finalText,
     costUsd: 0.01,
     inputTokens: 10,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens: 5,
     numTurns: 1,
     transcript: [],

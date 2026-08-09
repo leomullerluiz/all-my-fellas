@@ -11,6 +11,9 @@ import {
 } from "react";
 
 import { Button } from "@/components/ui/button";
+import { worstQuotaWarning } from "@/lib/quota-warning";
+import { cn } from "@/lib/utils";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 /**
  * Multi-select state shared by the checkbox on each not-yet-started card
@@ -124,8 +127,13 @@ type BatchResult = {
  * `TaskCardMenu`'s `blockedReason` shows (both derive from
  * `capacityBlockedReason`). Queued tasks start automatically as slots free
  * up (see `orchestrator.promoteQueue`), so they are not reported as failures.
+ *
+ * `quotas` (stories.md S4) is the same array `page.tsx` already computes for
+ * the bottom-of-dashboard `UsageBar` — this button is a Start affordance in
+ * its own right, but the header row has no room for the full bar, so it
+ * shows `lib/quota-warning.ts`'s one-line reduction instead.
  */
-export function BatchStartButton() {
+export function BatchStartButton({ quotas = [] }: { quotas?: QuotaStatus[] }) {
   const router = useRouter();
   const { selected, clear } = useBatchSelection();
   const [pending, setPending] = useState(false);
@@ -169,12 +177,26 @@ export function BatchStartButton() {
   const startedCount = summary?.filter((result) => result.started).length ?? 0;
   const queued = summary?.filter((result) => result.queued) ?? [];
   const failed = summary?.filter((result) => !result.started && !result.queued) ?? [];
+  // Informational only, same as `TaskCardMenu`'s — batch start is not gated
+  // on quota (enforcement is out of scope; see stories.md).
+  const quotaWarning = worstQuotaWarning(quotas);
 
   return (
     <div className="flex flex-col items-end gap-1">
       <Button size="sm" variant="secondary" disabled={count === 0 || pending} onClick={onClick}>
         {pending ? "Starting…" : count > 0 ? `Start selected (${count})` : "Start selected"}
       </Button>
+
+      {quotaWarning ? (
+        <p
+          className={cn(
+            "max-w-xs text-right text-xs",
+            quotaWarning.state === "exceeded" ? "text-danger" : "text-warning",
+          )}
+        >
+          {quotaWarning.message}
+        </p>
+      ) : null}
 
       {error ? <p className="max-w-xs text-right text-xs text-danger">{error}</p> : null}
 

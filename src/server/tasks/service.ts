@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
+import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { newId } from "../db/ids";
 import {
@@ -36,6 +37,7 @@ import type {
 } from "../pipeline/stages";
 import { statusForStage } from "../pipeline/stages";
 import type { CommandResult } from "../pipeline/verification";
+import { cacheTokenFixAppliedAt } from "../settings/store";
 
 /** Data access for tasks and their related rows, shared by web and worker. */
 
@@ -978,7 +980,25 @@ export type UsageByStage = {
   costUsd: number;
 };
 
-export function usageByStage(taskId?: string): UsageByStage[] {
+/**
+ * Aggregated token/cost figures per stage, optionally scoped to one task and/or
+ * a rolling window.
+ *
+ * `windowDays` mirrors `costPerTask`'s cutoff-computed-inside pattern (its
+ * own comment explains why); omitted, this behaves exactly as it always has —
+ * every stage run, regardless of age. See stories.md S1: this used to take no
+ * window at all, which is why the Costs page hardcoded "(all time)" beside a
+ * selector that only affected the by-task table.
+ */
+export function usageByStage(taskId?: string, windowDays?: number): UsageByStage[] {
+  const since =
+    windowDays && Number.isFinite(windowDays) ? Date.now() - windowDays * 86_400_000 : undefined;
+
+  const conditions = [
+    taskId ? eq(stageRuns.taskId, taskId) : undefined,
+    since ? sql`${stageRuns.createdAt} >= ${since}` : undefined,
+  ].filter((condition) => condition !== undefined);
+
   return db
     .select({
       stage: stageRuns.stage,
@@ -988,7 +1008,7 @@ export function usageByStage(taskId?: string): UsageByStage[] {
       costUsd: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
     })
     .from(stageRuns)
-    .where(taskId ? eq(stageRuns.taskId, taskId) : undefined)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .groupBy(stageRuns.stage)
     .all();
 }
@@ -1007,14 +1027,31 @@ export function totalCostForTask(taskId: string): number {
  * `sinceMs`, falling back to `created_at` for a run that never reached
  * `running` (so a pending/failed-to-start run is not silently excluded from
  * "today's spend").
+ *
+ * `provider`, when given, scopes the sum to one LLM backend — see
+ * stories.md S2. `stage_runs.provider` predates this filter and was never
+ * backfilled (§4.2 of the brief), so a `NULL` row is a run whose provenance
+ * simply was not recorded yet, not evidence it was any particular provider.
+ * `"claude"` includes those `NULL` rows anyway, for continuity with the
+ * pre-multi-provider period when every run genuinely was Claude; `"chatgpt"`
+ * and `"gemini"` exclude them, since attributing an unknown run to either
+ * would be a guess this codebase otherwise refuses to make (see `schema.ts`'s
+ * `repos.provider` comment on the same tradeoff going the other way).
  */
-export function costSince(sinceMs: number): number {
+export function costSince(sinceMs: number, provider?: LlmProviderId): number {
+  const conditions = [sql`coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) >= ${sinceMs}`];
+  if (provider === "claude") {
+    conditions.push(sql`(${stageRuns.provider} = ${provider} OR ${stageRuns.provider} IS NULL)`);
+  } else if (provider) {
+    conditions.push(eq(stageRuns.provider, provider));
+  }
+
   const row = db
     .select({
       total: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
     })
     .from(stageRuns)
-    .where(sql`coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) >= ${sinceMs}`)
+    .where(and(...conditions))
     .get();
   return row?.total ?? 0;
 }
@@ -1027,6 +1064,14 @@ export type TaskCostSummary = {
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * `true` when at least one stage run contributing to this task's totals was
+   * written before the cache-token accounting fix (stories.md S1) landed on
+   * this installation — its `inputTokens` (and this task's total) may still be
+   * understated. See `cacheTokenFixAppliedAt`'s comment for why this is a
+   * per-install cutoff rather than a per-row marker.
+   */
+  hasUnderReportedTokens: boolean;
 };
 
 /**
@@ -1041,7 +1086,12 @@ export function costPerTask(windowDays?: number): TaskCostSummary[] {
       ? Date.now() - windowDays * 86_400_000
       : undefined;
 
-  return db
+  // No cutoff row (a database that has somehow never run the fix's migration)
+  // is treated as "every row predates it" — the safe default, matching
+  // `cacheTokenFixAppliedAt`'s own contract.
+  const fixCutoff = cacheTokenFixAppliedAt() ?? Number.POSITIVE_INFINITY;
+
+  const rows = db
     .select({
       taskId: tasks.id,
       title: tasks.title,
@@ -1050,11 +1100,117 @@ export function costPerTask(windowDays?: number): TaskCostSummary[] {
       costUsd: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
       inputTokens: sql<number>`coalesce(sum(${stageRuns.inputTokens}), 0)`,
       outputTokens: sql<number>`coalesce(sum(${stageRuns.outputTokens}), 0)`,
+      hasUnderReportedTokens: sql<number>`
+        exists (
+          select 1 from ${stageRuns}
+           where ${stageRuns.taskId} = ${tasks.id}
+             and ${stageRuns.createdAt} < ${fixCutoff}
+        )`,
     })
     .from(tasks)
     .leftJoin(stageRuns, eq(stageRuns.taskId, tasks.id))
     .where(since ? sql`${tasks.createdAt} >= ${since}` : undefined)
     .groupBy(tasks.id)
     .orderBy(desc(tasks.createdAt))
+    .all();
+
+  return rows.map((row) => ({ ...row, hasUnderReportedTokens: Boolean(row.hasUnderReportedTokens) }));
+}
+
+/** Optional filter shared by `stageRunExport` and `dailySpend` — see stories.md S5. */
+export type UsageExportFilter = { days?: number; taskId?: string };
+
+/** Resolves `filter.days` into the same cutoff `costPerTask` computes, or `undefined` for "all time". */
+function windowCutoff(days?: number): number | undefined {
+  return days && Number.isFinite(days) ? Date.now() - days * 86_400_000 : undefined;
+}
+
+export type StageRunExportRow = {
+  taskId: string;
+  taskTitle: string;
+  repo: string;
+  stage: Stage;
+  attempt: number;
+  provider: LlmProviderId | null;
+  model: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  status: StageRunStatus;
+};
+
+/**
+ * One row per `stage_runs` row — including `failed` and `cancelled` ones —
+ * for the CSV export. The grain someone reconciling against a provider
+ * invoice actually needs, unlike the by-stage/by-task aggregates above.
+ *
+ * Filtered by the task's `createdAt`, the same column `costPerTask` filters
+ * on, so a given `days` produces the same task set the Costs page's by-task
+ * table shows — the export and the page must not silently disagree about
+ * what "the last N days" means (see stories.md S1's whole point).
+ */
+export function stageRunExport(filter: UsageExportFilter = {}): StageRunExportRow[] {
+  const since = windowCutoff(filter.days);
+  const conditions = [
+    filter.taskId ? eq(stageRuns.taskId, filter.taskId) : undefined,
+    since ? sql`${tasks.createdAt} >= ${since}` : undefined,
+  ].filter((condition) => condition !== undefined);
+
+  return db
+    .select({
+      taskId: tasks.id,
+      taskTitle: tasks.title,
+      repo: repos.name,
+      stage: stageRuns.stage,
+      attempt: stageRuns.attempt,
+      provider: stageRuns.provider,
+      model: stageRuns.model,
+      startedAt: stageRuns.startedAt,
+      finishedAt: stageRuns.finishedAt,
+      inputTokens: stageRuns.inputTokens,
+      cacheReadTokens: stageRuns.cacheReadTokens,
+      cacheWriteTokens: stageRuns.cacheWriteTokens,
+      outputTokens: stageRuns.outputTokens,
+      costUsd: stageRuns.costUsd,
+      status: stageRuns.status,
+    })
+    .from(stageRuns)
+    .innerJoin(tasks, eq(stageRuns.taskId, tasks.id))
+    .innerJoin(repos, eq(tasks.repoId, repos.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(stageRuns.createdAt)
+    .all();
+}
+
+export type DailySpend = { date: string; costUsd: number };
+
+/**
+ * Spend bucketed by local calendar day — the daily series above the Costs
+ * page's tables (stories.md S8.2/S5). `date(...)`'s `'localtime'` modifier
+ * matters and mirrors `quota.ts`'s deliberate choice of local midnight: a
+ * chart bucketed by UTC beside a quota bar reset at local midnight would
+ * disagree by up to a day at the boundary.
+ */
+export function dailySpend(filter: UsageExportFilter = {}): DailySpend[] {
+  const since = windowCutoff(filter.days);
+  const bucket = sql<string>`date(coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) / 1000, 'unixepoch', 'localtime')`;
+  const conditions = [
+    filter.taskId ? eq(stageRuns.taskId, filter.taskId) : undefined,
+    since ? sql`coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) >= ${since}` : undefined,
+  ].filter((condition) => condition !== undefined);
+
+  return db
+    .select({
+      date: bucket.as("date"),
+      costUsd: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
+    })
+    .from(stageRuns)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .groupBy(bucket)
+    .orderBy(bucket)
     .all();
 }

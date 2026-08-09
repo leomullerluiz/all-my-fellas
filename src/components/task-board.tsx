@@ -20,6 +20,7 @@ import { BOARD_STAGES, STAGE_LABELS, type Stage } from "@/server/pipeline/stages
 // pattern `task-actions.tsx` already uses for `RetryAvailability`.
 import type { ExecutionState } from "@/server/pipeline/execution";
 import type { TaskWithRepo } from "@/server/tasks/service";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 /** One card on the board. */
 export type BoardTask = TaskWithRepo & {
@@ -47,10 +48,12 @@ function TaskCard({
   task,
   capacity,
   maxJobAttempts,
+  quotas,
 }: {
   task: BoardTask;
   capacity: CardMenuCapacity;
   maxJobAttempts: number;
+  quotas: QuotaStatus[];
 }) {
   const needsAttention = task.status === "awaiting_gate";
   const isGateQueued = task.status === "gate_queued";
@@ -98,6 +101,7 @@ function TaskCard({
               status={task.status}
               capacity={capacity}
               dependsOn={task.dependsOn}
+              quotas={quotas}
             />
           </div>
         ) : execution ? (
@@ -165,11 +169,14 @@ export function TaskBoard({
   tasks,
   capacity,
   maxJobAttempts,
+  quotas = [],
 }: {
   tasks: BoardTask[];
   capacity: CardMenuCapacity;
   /** For the `retry_backoff` card's "attempt N of {maxJobAttempts}" — `MAX_JOB_ATTEMPTS`. */
   maxJobAttempts: number;
+  /** Threaded down to each not-yet-started card's `TaskCardMenu` — see its own doc comment. */
+  quotas?: QuotaStatus[];
 }) {
   const byStage = new Map<Stage, BoardTask[]>();
   const onQueue: BoardTask[] = [];
@@ -237,6 +244,7 @@ export function TaskBoard({
                   task={task}
                   capacity={capacity}
                   maxJobAttempts={maxJobAttempts}
+                  quotas={quotas}
                 />
               ))}
             </div>
