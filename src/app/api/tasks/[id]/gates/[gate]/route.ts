@@ -1,3 +1,4 @@
+import { withActorFromRequest } from "@/server/auth/tokens";
 import { badRequest, conflict, json, notFound, parseBody, serverError } from "@/server/http/respond";
 import { GateError, TaskNotFoundError, decideGate } from "@/server/pipeline/orchestrator";
 import { gateDecisionSchema, gateParamSchema } from "@/server/validation/schemas";
@@ -9,8 +10,19 @@ import { gateDecisionSchema, gateParamSchema } from "@/server/validation/schemas
  * refused — `decideGate` never throws `CapacityError` for it, so there is no
  * matching catch branch here. `result.queued` tells the caller whether
  * execution resumed immediately or is waiting for `promoteQueue`.
+ *
+ * One of the two routes §11.1 calls out by name ("approving a gate from a
+ * phone") — a token-authenticated call here runs inside the actor context,
+ * so the resulting `gate_decided` event is attributed to the token's name.
  */
 export async function POST(
+  request: Request,
+  context: { params: Promise<{ id: string; gate: string }> },
+) {
+  return withActorFromRequest(request, () => handlePost(request, context));
+}
+
+async function handlePost(
   request: Request,
   context: { params: Promise<{ id: string; gate: string }> },
 ) {

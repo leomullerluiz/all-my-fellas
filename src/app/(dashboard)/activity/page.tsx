@@ -28,6 +28,7 @@ export default async function ActivityPage() {
     taskTitle: titleById.get(event.taskId) ?? event.taskId,
     createdAt: event.createdAt,
     payload: event.payload,
+    actor: event.actor,
   }));
 
   return (

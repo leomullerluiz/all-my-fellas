@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS events (
   seq INTEGER NOT NULL,
   type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
+  actor TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS events_task_seq_idx ON events(task_id, seq);
@@ -141,6 +142,17 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Optional bearer tokens for /api/* (§11). Empty table means the API stays
+-- open, exactly as before this shipped — see server/auth/tokens.ts.
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  last_used_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS api_tokens_hash_idx ON api_tokens(token_hash);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,

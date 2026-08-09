@@ -23,6 +23,9 @@ export type ActivityEntry = {
   taskTitle: string;
   createdAt: number;
   payload: PipelineEvent;
+  /** The API token's name, when a token-authenticated request produced this
+   *  event; `null` for a browser-originated one (§11.3). */
+  actor: string | null;
 };
 
 const MAX_ENTRIES = 300;
@@ -41,6 +44,7 @@ export function ActivityFeed({ initial }: { initial: ActivityEntry[] }) {
           taskId: string;
           createdAt: number;
           payload: PipelineEvent;
+          actor?: string | null;
         };
         if (!parsed.payload) return;
         cursorRef.current = Math.max(cursorRef.current, parsed.id);
@@ -54,6 +58,7 @@ export function ActivityFeed({ initial }: { initial: ActivityEntry[] }) {
               taskTitle: parsed.taskId,
               createdAt: parsed.createdAt,
               payload: parsed.payload,
+              actor: parsed.actor ?? null,
             },
             ...previous,
           ].slice(0, MAX_ENTRIES),
@@ -83,6 +88,11 @@ export function ActivityFeed({ initial }: { initial: ActivityEntry[] }) {
           <Link href={`/tasks/${entry.taskId}`} className="mr-2 text-accent hover:underline">
             {entry.taskTitle}
           </Link>
+          {entry.actor && (
+            <span className="mr-2 rounded border border-border px-1 text-[10px] text-muted" title="Token-authenticated action">
+              via {entry.actor}
+            </span>
+          )}
           {describe(entry.payload)}
         </li>
       ))}

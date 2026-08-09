@@ -1,3 +1,4 @@
+import { withActorFromRequest } from "@/server/auth/tokens";
 import {
   badRequest,
   flattenIssues,
@@ -90,6 +91,15 @@ export async function GET(request: Request) {
  * JSON-only contract is untouched.
  */
 export async function POST(request: Request) {
+  // A token-authenticated request (`x-api-token-name`, set by `src/proxy.ts`)
+  // runs inside the actor context for its whole lifetime, so every
+  // `appendEvent` this call makes — `task_created`, and `task_started` if
+  // `start: true` — is attributed to the token's name (§11.3). A
+  // browser-originated request carries no such header and runs unmodified.
+  return withActorFromRequest(request, () => handlePost(request));
+}
+
+async function handlePost(request: Request) {
   try {
     let fields: CreateTaskInput;
     let files: File[] = [];

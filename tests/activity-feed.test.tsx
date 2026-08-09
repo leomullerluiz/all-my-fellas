@@ -58,6 +58,7 @@ function entry(overrides: Partial<ActivityEntry> = {}): ActivityEntry {
     taskTitle: "Refactor billing",
     createdAt: Date.UTC(2026, 7, 5, 12, 0, 0),
     payload: { type: "task_started" },
+    actor: null,
     ...overrides,
   };
 }
@@ -99,6 +100,35 @@ describe("ActivityFeed", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0].textContent).toContain("task_2");
     expect(items[1].textContent).toContain("Older task");
+  });
+
+  it("shows which token authenticated an entry, and shows nothing for a browser-originated one", () => {
+    render(
+      <ActivityFeed
+        initial={[
+          entry({ id: 1, actor: "CI" }),
+          entry({ id: 2, taskId: "task_2", taskTitle: "Second task", actor: null }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("via CI")).toBeTruthy();
+    expect(screen.queryByText("via null")).toBeNull();
+  });
+
+  it("carries the actor from a live event onto the prepended row", () => {
+    render(<ActivityFeed initial={[entry({ id: 1 })]} />);
+
+    act(() => {
+      lastInstance().emit("message", {
+        id: 2,
+        taskId: "task_2",
+        createdAt: Date.UTC(2026, 7, 5, 12, 5, 0),
+        payload: { type: "task_started" },
+        actor: "phone",
+      });
+    });
+
+    expect(screen.getByText("via phone")).toBeTruthy();
   });
 
   it("ignores a malformed frame instead of tearing the stream down", () => {

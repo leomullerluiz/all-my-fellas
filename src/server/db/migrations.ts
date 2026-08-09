@@ -174,6 +174,15 @@ const MIGRATIONS: readonly Migration[] = [
       sqlite.exec(`CREATE INDEX IF NOT EXISTS tasks_repo_idx ON tasks(repo_id)`);
     },
   },
+  {
+    name: "event actor attribution for token-authenticated requests",
+    up: (sqlite) => {
+      // `NULL` for every event this database already holds, and for every
+      // browser-originated action from here on — see `schema.ts`'s
+      // `events.actor` comment. `spec-board-at-scale.md` §11.3.
+      addColumn(sqlite, "events", "actor", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };
