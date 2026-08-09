@@ -156,7 +156,7 @@ export default async function DashboardPage(props: {
           </p>
         </div>
         <div className="flex items-start gap-2">
-          <BatchStartButton />
+          <BatchStartButton quotas={quotas} />
           <Link href="/tasks/new">
             <Button>New task</Button>
           </Link>
@@ -193,7 +193,12 @@ export default async function DashboardPage(props: {
           }
         />
       ) : (
-        <TaskBoard tasks={tasks} capacity={slots} maxJobAttempts={MAX_JOB_ATTEMPTS} />
+        <TaskBoard
+          tasks={tasks}
+          capacity={slots}
+          maxJobAttempts={MAX_JOB_ATTEMPTS}
+          quotas={quotas}
+        />
       )}
 
       <UsageBar spendToday={todaySpend} authMode={claudeAuthMode} quotas={quotas} />

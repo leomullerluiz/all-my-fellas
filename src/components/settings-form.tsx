@@ -155,8 +155,10 @@ export function SettingsForm({
           <CardTitle>Provider and model per role</CardTitle>
           <CardDescription>
             Claude stays the default for every role — switching a role to ChatGPT or Gemini is
-            opt-in. The model id must match whichever provider is selected for that role; see{" "}
-            <code className="font-mono">docs/llm-providers.md</code> for accepted ids.
+            opt-in. Pick a tier (light / default / heavy) and it resolves to a valid model for
+            whichever provider is selected, even after you switch providers. A custom model id is
+            still available for anything not yet in that table; see{" "}
+            <code className="font-mono">docs/llm-providers.md</code> for details.
           </CardDescription>
         </CardHeader>
         <CardBody>

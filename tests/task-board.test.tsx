@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BatchSelectionProvider } from "@/components/batch-start";
 import { TaskBoard, type BoardTask } from "@/components/task-board";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 /**
  * S2 — the board splits `CREATED`-stage tasks into "Created" and "On Queue"
@@ -254,6 +255,38 @@ describe("TaskBoard 'Not delivered' options menu", () => {
  * to `{ limit: 5, ... }`, so queue wording is not suppressed unless a test
  * asks for it explicitly.
  */
+describe("TaskBoard threads quotas into each card's menu (S4)", () => {
+  it("passes a configured quota's warning through to a not-started card's Start item", async () => {
+    const quotas: QuotaStatus[] = [
+      {
+        provider: "gemini",
+        state: "warning",
+        cadence: "daily",
+        limitUsd: 10,
+        usedUsd: 9,
+        remainingUsd: 1,
+        resetAt: 0,
+      },
+    ];
+
+    render(
+      <BatchSelectionProvider>
+        <TaskBoard
+          tasks={[makeTask({ id: "task_a", title: "Task A" })]}
+          capacity={CAPACITY}
+          maxJobAttempts={3}
+          quotas={quotas}
+        />
+      </BatchSelectionProvider>,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Task actions" }));
+
+    expect(screen.getByText("Approaching Gemini (Google) quota.")).toBeTruthy();
+  });
+});
+
 describe("TaskBoard execution indicator", () => {
   function runningTask(overrides: Partial<BoardTask> = {}): BoardTask {
     return makeTask({ status: "running", currentStage: "DEVELOPMENT", ...overrides });

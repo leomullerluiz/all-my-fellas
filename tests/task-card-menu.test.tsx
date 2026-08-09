@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TaskCardMenu } from "@/components/task-card-menu";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 // `next/navigation`'s `useRouter` requires a router context outside the app
 // tree; the menu only calls `router.refresh()` after a successful action, so
@@ -112,6 +113,67 @@ describe("TaskCardMenu start item vs. dependencies", () => {
 
     const startItem = screen.getByRole("menuitem", { name: "Start" });
     expect(startItem.hasAttribute("aria-disabled")).toBe(false);
+  });
+});
+
+describe("TaskCardMenu quota warning (S4 — beside every Start affordance)", () => {
+  const QUOTA_WARNING: QuotaStatus = {
+    provider: "gemini",
+    state: "warning",
+    cadence: "daily",
+    limitUsd: 10,
+    usedUsd: 9,
+    remainingUsd: 1,
+    resetAt: 0,
+  };
+
+  it("shows nothing when no quota is configured", async () => {
+    render(
+      <TaskCardMenu
+        taskId="task_quota_none"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+      />,
+    );
+
+    await openMenu();
+
+    expect(screen.queryByText(/quota/i)).toBeNull();
+  });
+
+  it("shows a warning note without disabling Start when a provider is approaching its quota", async () => {
+    render(
+      <TaskCardMenu
+        taskId="task_quota_warning"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        quotas={[QUOTA_WARNING]}
+      />,
+    );
+
+    await openMenu();
+
+    expect(screen.getByText("Approaching Gemini (Google) quota.")).toBeTruthy();
+    const startItem = screen.getByRole("menuitem", { name: "Start" });
+    expect(startItem.hasAttribute("aria-disabled")).toBe(false);
+  });
+
+  it("shows an exceeded note when a provider is over its quota", async () => {
+    render(
+      <TaskCardMenu
+        taskId="task_quota_exceeded"
+        taskTitle="New task"
+        status="queued"
+        capacity={{ slotAvailable: true, limit: 1, blocking: [] }}
+        quotas={[{ ...QUOTA_WARNING, state: "exceeded" }]}
+      />,
+    );
+
+    await openMenu();
+
+    expect(screen.getByText("Gemini (Google) quota exceeded.")).toBeTruthy();
   });
 });
 

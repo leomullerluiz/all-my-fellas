@@ -42,7 +42,8 @@ const AUTH_MODE_SUFFIX: Record<AuthMode, string> = {
   missing: "",
 };
 
-function providerLabel(quota: QuotaStatus): string {
+/** Exported for `lib/quota-warning.ts`, which needs the same "provider (auth mode)" copy in the compact warning shown beside Start affordances too small for the full bar. */
+export function providerLabel(quota: QuotaStatus): string {
   const suffix = quota.provider === "claude" && quota.authMode ? AUTH_MODE_SUFFIX[quota.authMode] : "";
   return `${LLM_PROVIDER_LABELS[quota.provider]}${suffix}`;
 }
