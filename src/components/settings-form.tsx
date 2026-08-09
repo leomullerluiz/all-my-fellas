@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +38,28 @@ export function SettingsForm({
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
   const [vacuuming, setVacuuming] = useState(false);
+  // Browsers never let JS re-prompt after a user denies once, so the control
+  // must reflect that state as unavailable rather than merely "off" — this is
+  // read once on mount, not derived from `settings`, since it belongs to the
+  // browser/origin, not the saved settings row.
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("default");
+
+  useEffect(() => {
+    // Deferred to a microtask (rather than a direct call in the effect body,
+    // which `react-hooks/set-state-in-effect` flags — see the note on
+    // `WorkerHealthDot`'s `poll()`, the same shape one tick later): reading
+    // `Notification.permission` genuinely has no reactive dependency to
+    // subscribe to, so there is nothing else here to synchronize against.
+    queueMicrotask(() => {
+      if (typeof window === "undefined" || typeof window.Notification === "undefined") {
+        setNotificationPermission("unsupported");
+        return;
+      }
+      setNotificationPermission(Notification.permission);
+    });
+  }, []);
 
   function setModel(stage: AgentStage, value: string) {
     setSettings((current) => ({
@@ -78,6 +100,31 @@ export function SettingsForm({
       ...current,
       notifications: { ...current.notifications, ...patch },
     }));
+  }
+
+  /**
+   * Turning the checkbox off never needs permission. Turning it on does: if
+   * the browser hasn't asked yet, this prompts, and — critically — the local
+   * `settings` state only flips to `browser: true` if the resolved
+   * permission is `"granted"`, so a denied or dismissed prompt never reaches
+   * the Save → `PATCH /api/settings` payload as enabled.
+   */
+  async function toggleBrowserNotifications(checked: boolean) {
+    if (!checked) {
+      setNotification({ browser: false });
+      return;
+    }
+
+    if (typeof window === "undefined" || typeof window.Notification === "undefined") return;
+
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+    }
+    if (permission !== "granted") return;
+
+    setNotification({ browser: true });
   }
 
   function toggleNotificationEvent(type: PipelineEvent["type"], enabled: boolean) {
@@ -468,6 +515,35 @@ export function SettingsForm({
           </CardDescription>
         </CardHeader>
         <CardBody className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted">Desktop notifications</span>
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={settings.notifications.browser}
+                disabled={
+                  notificationPermission === "unsupported" || notificationPermission === "denied"
+                }
+                onChange={(event) => void toggleBrowserNotifications(event.target.checked)}
+              />
+              <span>
+                Show a desktop notification the instant any task enters an approval gate — even
+                in a background tab or a different window. Requires this browser&apos;s permission.
+                {notificationPermission === "denied" ? (
+                  <>
+                    {" "}
+                    <strong>Blocked by the browser</strong> — notifications were denied for this
+                    site; re-enable them from the browser&apos;s site settings to use this.
+                  </>
+                ) : null}
+                {notificationPermission === "unsupported" ? (
+                  <> This browser does not support desktop notifications.</>
+                ) : null}
+              </span>
+            </label>
+          </div>
+
           <Field
             label="Webhook URL"
             htmlFor="webhookUrl"
