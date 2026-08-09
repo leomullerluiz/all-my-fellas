@@ -1,5 +1,6 @@
+import type { RoleDefinition } from "../agents/roles";
 import { roleFor } from "../agents/roles";
-import { resolveModelId } from "../config/llm-providers";
+import { type LlmProviderId, resolveModelId } from "../config/llm-providers";
 import type { RepoRow } from "../db/schema";
 import { appendEvent } from "../events/store";
 import { requireCredential, resolveCredential } from "../git/credentials";
@@ -11,6 +12,7 @@ import {
   branchNameFor,
   commitPendingChanges,
   diffAgainstBase,
+  diffSince,
   diffStatAgainstBase,
   hasCommitsAheadOfBase,
   headCommitSha,
@@ -26,6 +28,7 @@ import {
   getTaskWithRepo,
   latestArtifact,
   latestArtifactSince,
+  listArtifactsForStageRun,
   listStageRuns,
   listVerificationRuns,
   markStageRunStatus,
@@ -33,18 +36,22 @@ import {
   saveTranscript,
   saveVerificationRuns,
   setTaskEstimate,
+  type TaskWithRepo,
   updateStageRun,
   updateTask,
 } from "../tasks/service";
 import {
+  ArtifactValidationError,
   extractHomologationVerdict,
   extractPlanEstimate,
   extractReviewVerdict,
   validateArtifact,
 } from "./artifacts";
+import { buildAttachmentSupplements } from "./attachments";
 import { redactSecrets } from "./audit/redact";
 import { renderDiffSummaryArtifact } from "./diff-summary";
 import { TaskNotFoundError, advanceTask } from "./orchestrator";
+import { loadProjectContext, MAX_PROJECT_CONTEXT_CHARS } from "./project-context";
 import {
   type ArtifactInput,
   type StagePromptInput,
@@ -53,7 +60,13 @@ import {
   buildSystemPrompt,
   truncateForPrompt,
 } from "./prompt";
-import { StageAbortedError, StageExecutionError, runStage } from "./run-stage";
+import { buildRepairRole, repairInstructionFor } from "./repair";
+import {
+  type StageExecutionResult,
+  StageAbortedError,
+  StageExecutionError,
+  runStage,
+} from "./run-stage";
 import { type AgentStage, ARTIFACT_FILENAMES, type FailureKind, isAgentStage } from "./stages";
 import type { HomologationVerdict, ReviewVerdict } from "./state-machine";
 import { type CommandResult, type VerificationOutcome, runVerification } from "./verification";
@@ -108,6 +121,25 @@ function remoteAccessFor(repo: RepoRow, required = false): RemoteAccess {
   };
 }
 
+/**
+ * A stage's own artifact from its immediately preceding attempt of the same
+ * stage — rework memory, so a rework agent does not rediscover its own
+ * reasoning every cycle (stories.md S3). `null` on a first attempt, or when
+ * (for any reason) that attempt never produced one.
+ */
+function ownPreviousArtifact(
+  taskId: string,
+  stage: AgentStage,
+  producedType: ArtifactInput["type"],
+  attempt: number,
+): ArtifactInput | null {
+  if (attempt <= 1) return null;
+  const previousRun = getStageRunByAttempt(taskId, stage, attempt - 1);
+  if (!previousRun) return null;
+  const produced = listArtifactsForStageRun(previousRun.id).find((a) => a.type === producedType);
+  return produced ? { type: produced.type, content: produced.contentMd } : null;
+}
+
 /** Collects the artifacts a role consumes, newest version of each. */
 function gatherInputs(taskId: string, stage: AgentStage, attempt: number): ArtifactInput[] {
   const role = roleFor(stage);
@@ -129,6 +161,13 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
   // comes last so it reads as the final word. `verification_report` goes
   // first: a compile error outranks an opinion.
   if (stage === "DEVELOPMENT" && attempt > 1) {
+    // What it reported last time, which the reviewer(s) rejected — read
+    // before the reports themselves, so the agent has its own account before
+    // the critique of it. See spec §5.3 on why the framing matters here: this
+    // is not "your previous report" to defend, it is what got rejected.
+    const ownPrevious = ownPreviousArtifact(taskId, stage, role.produces, attempt);
+    if (ownPrevious) inputs.push(ownPrevious);
+
     const verification = latestArtifact(taskId, "verification_report");
     if (verification) inputs.push({ type: "verification_report", content: verification.contentMd });
 
@@ -144,6 +183,15 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
       const artifact = latestArtifactSince(taskId, type, cycleStart);
       if (artifact) inputs.push({ type, content: artifact.contentMd });
     }
+  }
+
+  // A reviewer's own previous verdict on the same rework cycle — see
+  // stories.md S3. Read alongside the incremental-diff supplement `execute.ts`
+  // builds for the same attempt, so the reviewer sees both what it said last
+  // time and what changed since.
+  if ((stage === "CODE_REVIEW" || stage === "QA") && attempt > 1) {
+    const ownPrevious = ownPreviousArtifact(taskId, stage, role.produces, attempt);
+    if (ownPrevious) inputs.push(ownPrevious);
   }
 
   // A `PLAN_GATE` `request_changes` rework re-runs the Architect with the
@@ -174,6 +222,130 @@ function gatherInputs(taskId: string, stage: AgentStage, attempt: number): Artif
   }
 
   return inputs;
+}
+
+/**
+ * The one bounded repair turn for a malformed artifact — see stories.md S4.
+ *
+ * Runs as its own fresh `runStage` call rather than a literal continuation of
+ * the original session (the three providers have no shared notion of
+ * "resume" — Claude's is disabled by design, `run-stage.ts`'s doc comment —
+ * so "same session" here means the same stage/model/provider, immediately
+ * after, with the exact rejection reasons named). Exactly one attempt: a
+ * second failure means the model cannot follow the format, and a loop
+ * against that is a spend loop, not a fix.
+ *
+ * @returns the repaired, validated content.
+ * @throws {StageJobError} not-retryable, `artifact_invalid`, on either the
+ *   repair call itself failing or its output still not validating — in both
+ *   cases the *original* rejected text is what gets persisted as
+ *   `rejected_output` and reported, since that is what a human would triage.
+ *   The one exception is a cancellation (§6.5), which is reported as itself
+ *   rather than as a validation failure — see the `StageAbortedError` branch.
+ */
+async function attemptArtifactRepair(input: {
+  task: TaskWithRepo;
+  stageRunId: string;
+  role: RoleDefinition;
+  provider: LlmProviderId;
+  model: string;
+  workspacePath: string | null;
+  promptTask: StagePromptInput["task"];
+  attempt: number;
+  original: StageExecutionResult;
+  validationError: ArtifactValidationError;
+  /** The job's controller, so Cancel interrupts the repair turn too (§6.2). */
+  abortController?: AbortController;
+}): Promise<string> {
+  const {
+    task,
+    stageRunId,
+    role,
+    provider,
+    model,
+    workspacePath,
+    promptTask,
+    attempt,
+    original,
+    validationError,
+    abortController,
+  } = input;
+
+  appendEvent(task.id, stageRunId, {
+    type: "log",
+    level: "warn",
+    message: `${role.name}'s output did not validate (${validationError.problems.join("; ")}); attempting one repair turn.`,
+  });
+
+  const repairRole = buildRepairRole(role);
+  const repairPrompt: StagePromptInput = {
+    role: repairRole,
+    task: promptTask,
+    artifacts: [],
+    supplements: [
+      { label: "Document to repair", body: original.finalText, fenced: true },
+      { label: "Problems found", body: validationError.problems.map((problem) => `- ${problem}`).join("\n") },
+      { label: "Repair instructions", body: repairInstructionFor(validationError.problems) },
+    ],
+    attempt,
+  };
+
+  let repairResult: StageExecutionResult;
+  try {
+    repairResult = await runStage(provider, {
+      role: repairRole,
+      model,
+      maxTurns: 4,
+      workspacePath,
+      prompt: repairPrompt,
+      abortController,
+      onEvent: (event) => appendEvent(task.id, stageRunId, event),
+    });
+  } catch (error) {
+    // A cancellation is not a validation failure, and reporting it as one
+    // would both mislabel the run and hide why it stopped. The task already
+    // reached `CANCELLED` via `cancelTask`, so this mirrors the main
+    // execution path exactly: status `cancelled`, non-retryable, the abort's
+    // own message. `rejected_output` is still worth keeping — the artifact
+    // that failed to validate is what a human would triage afterwards.
+    if (error instanceof StageAbortedError) {
+      updateStageRun(stageRunId, { rejectedOutput: original.finalText });
+      const message = redactRemote(error.message);
+      markStageRunStatus(stageRunId, "cancelled", { error: message });
+      throw new StageJobError(message, false);
+    }
+
+    // The repair turn itself failed to run (provider error, no final text,
+    // ...) — fail as the original validation error, not a confusing one
+    // about the repair attempt, and keep the text that was actually rejected.
+    updateStageRun(stageRunId, { rejectedOutput: original.finalText });
+    markStageRunStatus(stageRunId, "failed", { error: validationError.message });
+    throw new StageJobError(validationError.message, false, "artifact_invalid");
+  }
+
+  // Added to, not overwriting, the first call's already-persisted spend — a
+  // repair turn's cost must not be discarded (stories.md S4).
+  updateStageRun(stageRunId, {
+    inputTokens: original.inputTokens + repairResult.inputTokens,
+    outputTokens: original.outputTokens + repairResult.outputTokens,
+    costUsd: original.costUsd + repairResult.costUsd,
+  });
+
+  let repaired: string;
+  try {
+    repaired = validateArtifact(role.produces, repairResult.finalText);
+  } catch {
+    updateStageRun(stageRunId, { rejectedOutput: repairResult.finalText });
+    markStageRunStatus(stageRunId, "failed", { error: validationError.message });
+    throw new StageJobError(validationError.message, false, "artifact_invalid");
+  }
+
+  appendEvent(task.id, stageRunId, {
+    type: "log",
+    level: "info",
+    message: `${role.name}'s repair turn produced a valid ${ARTIFACT_FILENAMES[role.produces]}.`,
+  });
+  return repaired;
 }
 
 /**
@@ -262,6 +434,25 @@ export async function executeAgentStage(
   if (workspacePath && (wantsFullDiff || run.stage === "PO_HOMOLOGATION")) {
     const base = task.repo.defaultBranch;
     if (wantsFullDiff) {
+      // On a rework cycle, the incremental diff since this reviewer's own
+      // last review — the smaller and more actionable of the two — comes
+      // first; the full diff below still follows, truncated as always, so
+      // the reviewer retains enough context to judge whether a fix broke
+      // something it already approved. A rework attempt whose predecessor
+      // recorded no SHA (an old run, or a first pass) simply gets no
+      // incremental supplement rather than erroring — see stories.md S3.
+      if (run.attempt > 1) {
+        const previousRun = getStageRunByAttempt(task.id, run.stage, run.attempt - 1);
+        if (previousRun?.reviewedHeadSha) {
+          const incremental = await diffSince(workspacePath, previousRun.reviewedHeadSha);
+          supplements.push({
+            label: "Changes since your last review",
+            body: truncateForPrompt(incremental || "(no changes)", MAX_DIFF_CHARS),
+            fenced: true,
+          });
+        }
+      }
+
       const diff = await diffAgainstBase(workspacePath, base);
       supplements.push({
         label: `Branch diff against origin/${base}`,
@@ -287,6 +478,29 @@ export async function executeAgentStage(
       label: "Mechanical verification (run by the pipeline, not by you)",
       body: report?.contentMd ?? "No verification has been run for this task.",
     });
+  }
+
+  // Text-shaped attachments (JSON, XML, extracted PDF text) — see
+  // stories.md S1. `role.attachments` decides who gets any at all; a task
+  // with none produces no supplements here, so the prompt is unchanged from
+  // before this existed.
+  supplements.push(...(await buildAttachmentSupplements(task.id, role)));
+
+  // Repository conventions, for every provider — see stories.md S2. On the
+  // Claude path `CLAUDE.md` is skipped here because `settingSources:
+  // ["project"]` (`providers/claude.ts`) already loads it into the SDK's own
+  // context; injecting it again would duplicate it. `AGENTS.md` and the
+  // GitHub Copilot fallback are not loaded by the SDK, so they are always
+  // injected. Never called for a `null` workspace (e.g. the Stakeholder).
+  const projectContext = loadProjectContext(workspacePath);
+  if (projectContext) {
+    const alreadyLoadedByClaudeSdk = provider === "claude" && projectContext.source === "CLAUDE.md";
+    if (!alreadyLoadedByClaudeSdk) {
+      supplements.push({
+        label: "Repository conventions",
+        body: truncateForPrompt(projectContext.content, MAX_PROJECT_CONTEXT_CHARS),
+      });
+    }
   }
 
   const inputs = gatherInputs(task.id, run.stage, run.attempt);
@@ -391,13 +605,28 @@ export async function executeAgentStage(
   // Validation failure is not retryable at the job level: re-running the same
   // prompt is unlikely to produce a differently-shaped document, and silently
   // advancing with a malformed artifact would poison every later stage.
+  //
+  // Before failing outright, one bounded repair turn is attempted — see
+  // stories.md S4. Exactly one: a second failure means the model cannot
+  // follow the format, and looping would just be a spend loop.
   let content: string;
   try {
     content = validateArtifact(role.produces, result.finalText);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    markStageRunStatus(stageRunId, "failed", { error: message });
-    throw new StageJobError(message, false, "artifact_invalid");
+    if (!(error instanceof ArtifactValidationError)) throw error;
+    content = await attemptArtifactRepair({
+      task,
+      stageRunId,
+      role,
+      provider,
+      model,
+      workspacePath,
+      promptTask: promptInput.task,
+      attempt: run.attempt,
+      original: result,
+      validationError: error,
+      abortController,
+    });
   }
 
   saveArtifact({
@@ -450,6 +679,14 @@ export async function executeAgentStage(
       level: reviewVerdict === "approved" ? "info" : "warn",
       message: `${role.name} verdict: ${reviewVerdict}.`,
     });
+
+    // Recorded on every completed review, approved or not: a
+    // `changes_requested` verdict still reviewed the branch up to this
+    // commit, and the next attempt's incremental diff should start from
+    // here regardless of which way this one came out.
+    if (workspacePath) {
+      updateStageRun(stageRunId, { reviewedHeadSha: await headCommitSha(workspacePath) });
+    }
   }
 
   if (run.stage === "PO_HOMOLOGATION") {

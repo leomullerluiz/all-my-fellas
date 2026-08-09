@@ -31,6 +31,16 @@ export type RoleDefinition = {
   needsWorkspace: boolean;
   /** Whether the agent is allowed to modify files in the workspace. */
   canWrite: boolean;
+  /**
+   * Which of the task's attachments reach this role's prompt.
+   *
+   * `"all"` — every attachment kind (JSON/XML/PDF text plus, per stories.md
+   * S5, images). `"documents"` — text-shaped kinds only, no images: a spec
+   * PDF informs a plan, a screenshot rarely does. `"none"` — the roles that
+   * review against `stories.md`, which already encodes what the attachments
+   * said, so re-sending them is cost with no benefit.
+   */
+  attachments: "all" | "documents" | "none";
 };
 
 export const ROLES: Record<AgentStage, RoleDefinition> = {
@@ -45,6 +55,9 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "brief",
     needsWorkspace: false,
     canWrite: false,
+    // No repository access at all — attachments are its only context beyond
+    // the text it was given.
+    attachments: "all",
   },
   PO_REFINEMENT: {
     stage: "PO_REFINEMENT",
@@ -56,6 +69,8 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "stories",
     needsWorkspace: true,
     canWrite: false,
+    // Writes the acceptance criteria the attachments usually describe.
+    attachments: "all",
   },
   ARCHITECTURE: {
     stage: "ARCHITECTURE",
@@ -67,6 +82,8 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "techplan",
     needsWorkspace: true,
     canWrite: false,
+    // A spec PDF or JSON schema informs the plan; a screenshot rarely does.
+    attachments: "documents",
   },
   DEVELOPMENT: {
     stage: "DEVELOPMENT",
@@ -79,6 +96,8 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "dev_report",
     needsWorkspace: true,
     canWrite: true,
+    // Implements against the mock-up.
+    attachments: "all",
   },
   CODE_REVIEW: {
     stage: "CODE_REVIEW",
@@ -93,6 +112,9 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "code_review_report",
     needsWorkspace: true,
     canWrite: false,
+    // Reviews against `stories.md`, which already encodes what the
+    // attachments said.
+    attachments: "none",
   },
   QA: {
     stage: "QA",
@@ -104,6 +126,7 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "qa_report",
     needsWorkspace: true,
     canWrite: false,
+    attachments: "none",
   },
   PO_HOMOLOGATION: {
     stage: "PO_HOMOLOGATION",
@@ -115,6 +138,9 @@ export const ROLES: Record<AgentStage, RoleDefinition> = {
     produces: "homolog_report",
     needsWorkspace: true,
     canWrite: false,
+    // Left "none" per stories.md S1/§11.2's open question: it checks
+    // acceptance criteria against `stories.md`, not the raw attachments.
+    attachments: "none",
   },
 };
 

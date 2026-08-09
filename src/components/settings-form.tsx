@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -60,6 +60,28 @@ export function SettingsForm({
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
   const [vacuuming, setVacuuming] = useState(false);
+  // Browsers never let JS re-prompt after a user denies once, so the control
+  // must reflect that state as unavailable rather than merely "off" — this is
+  // read once on mount, not derived from `settings`, since it belongs to the
+  // browser/origin, not the saved settings row.
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("default");
+
+  useEffect(() => {
+    // Deferred to a microtask (rather than a direct call in the effect body,
+    // which `react-hooks/set-state-in-effect` flags — see the note on
+    // `WorkerHealthDot`'s `poll()`, the same shape one tick later): reading
+    // `Notification.permission` genuinely has no reactive dependency to
+    // subscribe to, so there is nothing else here to synchronize against.
+    queueMicrotask(() => {
+      if (typeof window === "undefined" || typeof window.Notification === "undefined") {
+        setNotificationPermission("unsupported");
+        return;
+      }
+      setNotificationPermission(Notification.permission);
+    });
+  }, []);
 
   function setModel(stage: AgentStage, selection: ModelSelection) {
     setSettings((current) => ({
@@ -100,6 +122,31 @@ export function SettingsForm({
       ...current,
       notifications: { ...current.notifications, ...patch },
     }));
+  }
+
+  /**
+   * Turning the checkbox off never needs permission. Turning it on does: if
+   * the browser hasn't asked yet, this prompts, and — critically — the local
+   * `settings` state only flips to `browser: true` if the resolved
+   * permission is `"granted"`, so a denied or dismissed prompt never reaches
+   * the Save → `PATCH /api/settings` payload as enabled.
+   */
+  async function toggleBrowserNotifications(checked: boolean) {
+    if (!checked) {
+      setNotification({ browser: false });
+      return;
+    }
+
+    if (typeof window === "undefined" || typeof window.Notification === "undefined") return;
+
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+    }
+    if (permission !== "granted") return;
+
+    setNotification({ browser: true });
   }
 
   function toggleNotificationEvent(type: PipelineEvent["type"], enabled: boolean) {
@@ -438,9 +485,43 @@ export function SettingsForm({
                 />
                 <span>
                   Skip the human plan gate when the Architect rates criticality as{" "}
-                  <strong>low</strong>. The final delivery gate always stays manual.
+                  <strong>low</strong>. The final delivery gate stays manual unless{" "}
+                  <strong>No-approval automation</strong> below is enabled.
                 </span>
               </label>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted">No-approval automation</span>
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={settings.noApprovalAutomation}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      noApprovalAutomation: event.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  Let tasks run through to a PR with <strong>no human gates at all</strong> — see
+                  the warning below.
+                </span>
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-1.5 rounded-md border border-danger/40 bg-danger/10 p-3 text-xs text-danger sm:col-span-2">
+              <span className="font-semibold">⚠ Security warning</span>
+              <span>
+                Enabling <strong>No-approval automation</strong> skips both plan review (the plan
+                gate) and final PR approval (the stakeholder gate) for every task — the pipeline
+                will implement and open a change request without anyone approving the plan or the
+                delivered change along the way. A second homologation rejection (or one with no
+                rework budget left) still stops at the stakeholder gate; every other gate does
+                not. Only enable this if you fully trust the automation to ship unreviewed code.
+              </span>
             </div>
           </div>
         </CardBody>
@@ -572,6 +653,35 @@ export function SettingsForm({
           </CardDescription>
         </CardHeader>
         <CardBody className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted">Desktop notifications</span>
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={settings.notifications.browser}
+                disabled={
+                  notificationPermission === "unsupported" || notificationPermission === "denied"
+                }
+                onChange={(event) => void toggleBrowserNotifications(event.target.checked)}
+              />
+              <span>
+                Show a desktop notification the instant any task enters an approval gate — even
+                in a background tab or a different window. Requires this browser&apos;s permission.
+                {notificationPermission === "denied" ? (
+                  <>
+                    {" "}
+                    <strong>Blocked by the browser</strong> — notifications were denied for this
+                    site; re-enable them from the browser&apos;s site settings to use this.
+                  </>
+                ) : null}
+                {notificationPermission === "unsupported" ? (
+                  <> This browser does not support desktop notifications.</>
+                ) : null}
+              </span>
+            </label>
+          </div>
+
           <Field
             label="Webhook URL"
             htmlFor="webhookUrl"

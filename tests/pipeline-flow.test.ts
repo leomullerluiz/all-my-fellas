@@ -607,6 +607,100 @@ describe("pipeline orchestration", () => {
   });
 });
 
+describe("no-approval automation (S2/S3)", () => {
+  it("completes a task end-to-end with no PLAN_GATE/STAKEHOLDER_GATE approvals, recording two gate_bypassed events", async () => {
+    const settingsStore = await import("@/server/settings/store");
+    settingsStore.updateSettings({ noApprovalAutomation: true });
+    try {
+      const task = newTask("No approval gates");
+
+      completeCurrentStage(task.id); // Stakeholder
+      completeCurrentStage(task.id); // Product Owner
+      completeCurrentStage(task.id); // Architect -> bypasses PLAN_GATE
+
+      expect(service.getTask(task.id)!.currentStage).toBe("DEVELOPMENT");
+
+      completeCurrentStage(task.id); // Development
+      completeCurrentStage(task.id, "approved"); // Verification
+      completeCurrentStage(task.id, "approved"); // Code review
+      completeCurrentStage(task.id, "approved"); // QA
+      completeCurrentStage(task.id, undefined, "accepted"); // Homologation -> bypasses STAKEHOLDER_GATE
+
+      const delivered = service.getTask(task.id)!;
+      expect(delivered.currentStage).toBe("DELIVERY");
+      expect(delivered.status).toBe("running");
+
+      completeCurrentStage(task.id); // Delivery
+      const finished = service.getTask(task.id)!;
+      expect(finished.currentStage).toBe("COMPLETED");
+      expect(finished.status).toBe("completed");
+
+      expect(service.listApprovals(task.id)).toEqual([]);
+
+      const { readEvents } = await import("@/server/events/store");
+      const bypassed = readEvents(task.id, 0).filter(
+        (event) => event.payload.type === "gate_bypassed",
+      );
+      expect(bypassed.map((event) => event.payload)).toEqual([
+        { type: "gate_bypassed", gate: "PLAN_GATE" },
+        { type: "gate_bypassed", gate: "STAKEHOLDER_GATE" },
+      ]);
+    } finally {
+      settingsStore.updateSettings({ noApprovalAutomation: false });
+    }
+  });
+
+  it("still escalates a double homologation rejection to STAKEHOLDER_GATE even with the setting on", async () => {
+    const settingsStore = await import("@/server/settings/store");
+    settingsStore.updateSettings({ noApprovalAutomation: true });
+    try {
+      const task = newTask("No approval gates, but still escalates");
+
+      completeCurrentStage(task.id); // Stakeholder
+      completeCurrentStage(task.id); // Product Owner
+      completeCurrentStage(task.id); // Architect -> bypasses PLAN_GATE
+      completeCurrentStage(task.id); // Development #1
+      completeCurrentStage(task.id, "approved"); // Verification #1
+      completeCurrentStage(task.id, "approved"); // Code review #1
+      completeCurrentStage(task.id, "approved"); // QA #1
+      completeCurrentStage(task.id, undefined, "rejected"); // Homologation #1 — reworks
+
+      completeCurrentStage(task.id); // Development #2
+      completeCurrentStage(task.id, "approved"); // Verification #2
+      completeCurrentStage(task.id, "approved"); // Code review #2
+      completeCurrentStage(task.id, "approved"); // QA #2
+      completeCurrentStage(task.id, undefined, "rejected"); // Homologation #2 — escalates
+
+      const escalated = service.getTask(task.id)!;
+      expect(escalated.currentStage).toBe("STAKEHOLDER_GATE");
+      expect(escalated.status).toBe("awaiting_gate");
+    } finally {
+      settingsStore.updateSettings({ noApprovalAutomation: false });
+    }
+  });
+
+  it("still parks at HUMAN_CODE_REVIEW for a task that opted in, even with the setting on", async () => {
+    const settingsStore = await import("@/server/settings/store");
+    settingsStore.updateSettings({ noApprovalAutomation: true });
+    try {
+      const task = newTask("No approval gates, but human review opted in", true);
+
+      completeCurrentStage(task.id); // Stakeholder
+      completeCurrentStage(task.id); // Product Owner
+      completeCurrentStage(task.id); // Architect -> bypasses PLAN_GATE
+      completeCurrentStage(task.id); // Development
+      completeCurrentStage(task.id, "approved"); // Verification
+      completeCurrentStage(task.id, "approved"); // Code review
+      completeCurrentStage(task.id, "approved"); // QA
+
+      expect(service.getTask(task.id)!.currentStage).toBe("HUMAN_CODE_REVIEW");
+      expect(service.getTask(task.id)!.status).toBe("awaiting_gate");
+    } finally {
+      settingsStore.updateSettings({ noApprovalAutomation: false });
+    }
+  });
+});
+
 describe("homologation-driven rework", () => {
   it("reworks once on a first rejection, then escalates on a second", () => {
     const task = newTask("Wrong acceptance criteria");
