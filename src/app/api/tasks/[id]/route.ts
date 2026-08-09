@@ -8,6 +8,7 @@ import {
   parseMultipartFields,
   serverError,
 } from "@/server/http/respond";
+import { executionStateFor, executionStates } from "@/server/pipeline/execution";
 import {
   GateError,
   TaskNotFoundError,
@@ -49,6 +50,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       costUsd: totalCostForTask(id),
       dependsOn: listDependencies(id),
       retry: retryAvailability(id),
+      execution: executionStateFor(id, executionStates()),
     });
   } catch (error) {
     return serverError(error);

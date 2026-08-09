@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { DiffViewer } from "@/components/diff-viewer";
-import { GatePanel } from "@/components/task-actions";
+import { ReviewBoard } from "@/components/review-board";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
+import { providerFor } from "@/server/git/providers";
 import { getTaskWithRepo, latestArtifact } from "@/server/tasks/service";
 
 export const dynamic = "force-dynamic";
@@ -37,9 +37,16 @@ export default async function ReviewPage(props: { params: Promise<{ id: string }
         </p>
       </div>
 
-      {atGate ? <GatePanel taskId={task.id} gate="HUMAN_CODE_REVIEW" /> : null}
-
-      <DiffViewer taskId={task.id} />
+      <ReviewBoard
+        taskId={task.id}
+        atGate={atGate}
+        // `HUMAN_CODE_REVIEW`'s copy doesn't read this, but `GatePanel`
+        // takes it unconditionally — see `gateCopy`'s docblock.
+        provider={{
+          displayName: providerFor(task.repo.provider).displayName,
+          changeRequestNoun: providerFor(task.repo.provider).changeRequestNoun,
+        }}
+      />
 
       {report ? (
         <Card>

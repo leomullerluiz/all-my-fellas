@@ -366,6 +366,74 @@ describe("runMigrations", () => {
     sqlite.close();
   });
 
+  it("adds delivery_outcome, delivery_reason, pr_number and pr_state to an existing tasks table", () => {
+    const sqlite = freshDatabase("delivery-outcome-columns.db");
+    for (const column of ["delivery_outcome", "delivery_reason", "pr_number", "pr_state"]) {
+      expect(columns(sqlite, "tasks")).not.toContain(column);
+    }
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description) VALUES ('t', 'r', 'Old', 'd')",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    for (const column of ["delivery_outcome", "delivery_reason", "pr_number", "pr_state"]) {
+      expect(columns(sqlite, "tasks")).toContain(column);
+    }
+    const row = sqlite
+      .prepare(
+        "SELECT delivery_outcome AS outcome, delivery_reason AS reason, pr_number AS number, pr_state AS state FROM tasks WHERE id = 't'",
+      )
+      .get() as { outcome: string | null; reason: string | null; number: number | null; state: string | null };
+    expect(row.outcome).toBeNull();
+    expect(row.reason).toBeNull();
+    expect(row.number).toBeNull();
+    expect(row.state).toBeNull();
+    sqlite.close();
+  });
+
+  it("backfills delivery_outcome to 'created' for a task delivered before this migration", () => {
+    // A pre-migration row has `pr_url` set (delivery already ran) but no
+    // `delivery_outcome` — both the link and the banner on the task detail
+    // page gate on that column, so leaving it NULL would make a working pull
+    // request link silently vanish. See the code-review finding this
+    // backfill was added to fix.
+    const sqlite = freshDatabase("delivery-outcome-backfill.db");
+    sqlite
+      .prepare("INSERT INTO repos (id, name, url) VALUES ('r', 'acme', 'https://x/y')")
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description, pr_url, current_stage) " +
+          "VALUES ('t', 'r', 'Old', 'd', 'https://git.example.com/acme/repo/pulls/9', 'COMPLETED')",
+      )
+      .run();
+    sqlite
+      .prepare(
+        "INSERT INTO tasks (id, repo_id, title, description, current_stage) " +
+          "VALUES ('u', 'r', 'Never delivered', 'd', 'CREATED')",
+      )
+      .run();
+
+    runMigrations(sqlite);
+
+    const delivered = sqlite
+      .prepare("SELECT delivery_outcome AS outcome FROM tasks WHERE id = 't'")
+      .get() as { outcome: string | null };
+    expect(delivered.outcome).toBe("created");
+
+    const neverDelivered = sqlite
+      .prepare("SELECT delivery_outcome AS outcome FROM tasks WHERE id = 'u'")
+      .get() as { outcome: string | null };
+    expect(neverDelivered.outcome).toBeNull();
+    sqlite.close();
+  });
+
   it("adds max_cost_usd and paused to an existing tasks table, defaulting to null/false", () => {
     const sqlite = freshDatabase("spend-controls-columns.db");
     for (const column of ["max_cost_usd", "paused"]) {

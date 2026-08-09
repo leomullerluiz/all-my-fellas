@@ -12,7 +12,7 @@ import { redactRemote } from "./workspace";
  */
 
 export type ChangeRequestResult =
-  | { status: "created"; url: string; noun: string }
+  | { status: "created"; url: string; noun: string; number: number | null }
   | { status: "manual"; url: string; reason: string; noun: string };
 
 /** A repository connection, as the git layer needs to see it. */
@@ -106,7 +106,16 @@ export async function createChangeRequest(options: {
       title,
       body,
     });
-    return { status: "created", url: created.url, noun: provider.changeRequestNoun };
+    // `ChangeRequestRef.id` is typed `string | number` because a future
+    // provider might not hand back a number, but every provider implemented
+    // today does; a non-numeric id is stored as `null` rather than guessed at.
+    const number =
+      typeof created.id === "number"
+        ? created.id
+        : Number.isFinite(Number(created.id))
+          ? Number(created.id)
+          : null;
+    return { status: "created", url: created.url, noun: provider.changeRequestNoun, number };
   } catch (error) {
     return {
       status: "manual",

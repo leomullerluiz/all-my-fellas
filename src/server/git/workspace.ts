@@ -29,6 +29,13 @@ export type Workspace = {
   path: string;
   branchName: string;
   baseBranch: string;
+  /**
+   * Set when the pre-stage fetch of `baseBranch` failed. The workspace is
+   * still usable — the stage proceeds against whatever `origin/<baseBranch>`
+   * last resolved to — but the diff a reviewer sees may be stale. See
+   * stories.md S2.
+   */
+  fetchWarning?: string;
 };
 
 /** Everything a git command needs to authenticate against a remote. */
@@ -102,15 +109,15 @@ export async function prepareWorkspace(options: {
   const branchName =
     options.customBranchName?.trim() || branchNameFor(options.taskId, options.title);
   const { provider, repoUrl, credential } = options.access;
+  // `configArgs` denies git any interactive credential fallback, and for
+  // header-transport providers also carries the credential. Either way it
+  // lives only in this argv.
+  const transport = provider.transport(repoUrl, credential);
 
   if (!(await pathExists(path.join(target, ".git")))) {
     await fs.rm(target, { recursive: true, force: true });
     await fs.mkdir(path.dirname(target), { recursive: true });
 
-    const transport = provider.transport(repoUrl, credential);
-    // `configArgs` denies git any interactive credential fallback, and for
-    // header-transport providers also carries the credential. Either way it
-    // lives only in this argv.
     await remoteGit().raw([
       ...transport.configArgs,
       "clone",
@@ -126,6 +133,35 @@ export async function prepareWorkspace(options: {
     await simpleGit(target).remote(["set-url", "origin", repoUrl]);
   }
 
+  // Fetched on every call, not only the first clone (spec-delivery-lifecycle
+  // §4.2): every diff in the product is computed against `origin/<base>`, and
+  // a clone left untouched since `PO_REFINEMENT` means every later stage —
+  // including the reviewer's — reads a base frozen at that moment. A failure
+  // here is not fatal: an offline moment should not fail a stage whose work is
+  // otherwise fine, so the stage proceeds against the last known base and the
+  // caller is told, via `fetchWarning`, to record that it did.
+  let fetchWarning: string | undefined;
+  try {
+    // An explicit refspec, not just the branch name: fetching by URL rather
+    // than by the `origin` remote's name means git has no configured refspec
+    // to fall back on, and without one this would only update `FETCH_HEAD` —
+    // leaving `origin/<defaultBranch>`, which every diff in the product reads,
+    // exactly as stale as before the fetch ran.
+    await remoteGit(target).raw([
+      ...transport.configArgs,
+      "fetch",
+      "--depth",
+      "50",
+      transport.url,
+      // `+` forces the update even when it is not a fast-forward — the same
+      // as the refspec a normal `clone` configures for `origin` — so a
+      // rewritten upstream base does not leave the fetch silently failing.
+      `+${options.defaultBranch}:refs/remotes/origin/${options.defaultBranch}`,
+    ]);
+  } catch (error) {
+    fetchWarning = redactRemote(error instanceof Error ? error.message : String(error));
+  }
+
   const git = simpleGit(target);
   const identity = resolveGitIdentity();
   await git.addConfig("user.name", identity.name, false, "local");
@@ -138,11 +174,53 @@ export async function prepareWorkspace(options: {
     await git.checkoutBranch(branchName, `origin/${options.defaultBranch}`);
   }
 
-  return { taskId: options.taskId, path: target, branchName, baseBranch: options.defaultBranch };
+  return {
+    taskId: options.taskId,
+    path: target,
+    branchName,
+    baseBranch: options.defaultBranch,
+    fetchWarning,
+  };
 }
 
 export function openWorkspace(workspacePath: string): SimpleGit {
   return simpleGit(workspacePath);
+}
+
+/**
+ * Whether a git failure means "that ref does not exist" rather than "the
+ * command itself failed".
+ *
+ * `diffAgainstBase`, `diffStatAgainstBase` and `hasCommitsAheadOfBase` all
+ * treat a missing ref as "no diff" / "no commits" — a workspace whose base
+ * branch was never fetched genuinely has nothing to compare against. Any
+ * other failure (a corrupt repository, a permissions error, git itself not
+ * being on `PATH`) must not collapse into the same silent "no changes":
+ * QA's `extractReviewVerdict` fails closed on an artifact claiming no
+ * changes were made, so a swallowed command failure here would be read as a
+ * real, reviewable "nothing changed" — see spec-delivery-lifecycle.md §11.2.
+ *
+ * This matches git's *English* error text. A server running with a
+ * non-English `LANG`/`LC_ALL` would localise these messages and defeat the
+ * match, reclassifying a real command failure as "no such ref" — the
+ * opposite of what this function exists to guard against. Pinning the child
+ * process to the `C` locale was tried and reverted: passing
+ * `{...process.env, LC_ALL: "C"}` to simple-git's `.env()` replaces
+ * `_executor.env` wholesale, which trips simple-git's own
+ * `blockUnsafeOperationsPlugin` the moment the inherited environment happens
+ * to contain a var it treats as a command-injection vector (e.g. `EDITOR`) —
+ * turning a locale fix into a hard failure on exactly the hosts it was meant
+ * to help. Deployment is expected to run with an English locale (the
+ * project's own tooling and error messages are all English); revisit with a
+ * narrower env-scoping mechanism if that stops being true.
+ */
+function isNoSuchRefError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unknown revision|bad revision|ambiguous argument/i.test(message);
+}
+
+function rethrowCommandFailure(error: unknown): never {
+  throw new Error(redactRemote(error instanceof Error ? error.message : String(error)));
 }
 
 /** Diff of the task branch against its base, used to brief QA and homologation. */
@@ -153,8 +231,9 @@ export async function diffAgainstBase(
   const git = simpleGit(workspacePath);
   try {
     return await git.diff([`origin/${baseBranch}...HEAD`]);
-  } catch {
-    return "";
+  } catch (error) {
+    if (isNoSuchRefError(error)) return "";
+    rethrowCommandFailure(error);
   }
 }
 
@@ -165,8 +244,9 @@ export async function diffStatAgainstBase(
   const git = simpleGit(workspacePath);
   try {
     return await git.diff([`origin/${baseBranch}...HEAD`, "--stat"]);
-  } catch {
-    return "";
+  } catch (error) {
+    if (isNoSuchRefError(error)) return "";
+    rethrowCommandFailure(error);
   }
 }
 
@@ -192,8 +272,9 @@ export async function hasCommitsAheadOfBase(
   try {
     const output = await git.raw(["rev-list", "--count", `origin/${baseBranch}..HEAD`]);
     return Number.parseInt(output.trim(), 10) > 0;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isNoSuchRefError(error)) return false;
+    rethrowCommandFailure(error);
   }
 }
 
@@ -213,6 +294,26 @@ export async function commitPendingChanges(
   await git.add(["-A"]);
   await git.commit(message);
   return true;
+}
+
+/**
+ * Whether the workspace has uncommitted changes.
+ *
+ * `null` means "cannot tell" — the workspace directory is missing (already
+ * cleaned up, or the task never reached a stage that needs one) or the git
+ * command itself failed. Both are treated as "nothing to warn about" by the
+ * caller rather than an error: a reviewer must never be blocked by a check
+ * that only exists to warn them, and a `false` here would be actively wrong
+ * (a workspace that does not exist is not "clean").
+ */
+export async function workspaceIsDirty(workspacePath: string): Promise<boolean | null> {
+  if (!existsSync(path.join(workspacePath, ".git"))) return null;
+  try {
+    const status = await simpleGit(workspacePath).status();
+    return !status.isClean();
+  } catch {
+    return null;
+  }
 }
 
 /** Pushes the task branch with the credential attached for this command only. */

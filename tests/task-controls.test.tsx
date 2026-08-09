@@ -199,3 +199,67 @@ describe("TaskControls retry availability (S3)", () => {
     },
   );
 });
+
+describe("TaskControls Duplicate link (S4)", () => {
+  const capacity = { slotAvailable: true, limit: 1, blocking: [] };
+
+  it("renders for a not-yet-started task", () => {
+    render(
+      <TaskControls
+        taskId="task_10"
+        taskTitle="New task"
+        status="queued"
+        notStarted
+        capacity={capacity}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "Duplicate" });
+    expect(link.getAttribute("href")).toBe("/tasks/new?from=task_10");
+  });
+
+  it("renders for a completed task, which today gets no other controls at all", () => {
+    render(
+      <TaskControls
+        taskId="task_11"
+        taskTitle="Done task"
+        status="completed"
+        notStarted={false}
+        capacity={capacity}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "Duplicate" });
+    expect(link.getAttribute("href")).toBe("/tasks/new?from=task_11");
+  });
+
+  it("renders for a rejected task", () => {
+    render(
+      <TaskControls
+        taskId="task_12"
+        taskTitle="Rejected task"
+        status="rejected"
+        notStarted={false}
+        capacity={capacity}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "Duplicate" });
+    expect(link.getAttribute("href")).toBe("/tasks/new?from=task_12");
+  });
+
+  it("renders alongside Retry for a failed task", () => {
+    render(
+      <TaskControls
+        taskId="task_13"
+        taskTitle="Failed task"
+        status="failed"
+        notStarted={false}
+        capacity={capacity}
+        retry={{ available: false, code: "not_failed", reason: "x" }}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Duplicate" })).toBeTruthy();
+  });
+});

@@ -6,11 +6,19 @@ import {
   parseMultipartFields,
   serverError,
 } from "@/server/http/respond";
-import { CapacityError, DependencyError, QuotaError, capacity, startTask } from "@/server/pipeline/orchestrator";
+import { executionStateFor, executionStates } from "@/server/pipeline/execution";
+import {
+  CapacityError,
+  DependencyError,
+  QuotaError,
+  capacity,
+  startTask,
+} from "@/server/pipeline/orchestrator";
 import {
   createTask,
   getRepo,
   getTask,
+  listAttachmentsForCopy,
   listDependencies,
   listTasks,
   totalCostForTask,
@@ -28,12 +36,30 @@ export async function GET(request: Request) {
     });
     if (!parsed.success) return badRequest("Unknown status filter.");
 
+    // One derivation, one round trip — every task below reads its own entry
+    // rather than the route recomputing it per task.
+    const execution = executionStates();
     const tasks = listTasks(parsed.data).map((task) => ({
       ...task,
       costUsd: totalCostForTask(task.id),
       dependsOn: listDependencies(task.id),
+      execution: executionStateFor(task.id, execution),
     }));
-    return json({ tasks, capacity: capacity() });
+
+    // Independent of the `status` filter above: `capacity` answers "can I
+    // start another task", `worker` answers "what is the worker doing right
+    // now" — conflating them in one payload would recreate in the API the
+    // exact conflation this spec removes from the UI.
+    let inFlight = 0;
+    let waiting = 0;
+    let backoff = 0;
+    for (const state of execution.values()) {
+      if (state.kind === "in_flight") inFlight += 1;
+      else if (state.kind === "waiting_for_worker") waiting += 1;
+      else if (state.kind === "retry_backoff") backoff += 1;
+    }
+
+    return json({ tasks, capacity: capacity(), worker: { inFlight, waiting, backoff } });
   } catch (error) {
     return serverError(error);
   }
@@ -85,15 +111,23 @@ export async function POST(request: Request) {
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
-    // `maxCostPerTaskUsd` is the API/UI-facing name; `createTask` reads
-    // fields by name and ignores unknown keys, so the stray key here is
-    // harmless — but destructure it out anyway to match the `PATCH` route
-    // and avoid relying on that.
-    const { maxCostPerTaskUsd, ...createFields } = fields;
+    // Neither key is a column: `duplicateFrom` is consumed right here, and
+    // `maxCostPerTaskUsd` is the API/UI-facing name for `maxCostUsd`.
+    // `createTask` ignores unknown keys, so spreading them would be harmless —
+    // but destructure them out anyway to match the `PATCH` route, which cannot
+    // afford to rely on that.
+    const { duplicateFrom, maxCostPerTaskUsd, ...createFields } = fields;
+
+    // A duplicate (`stories.md` S4) copies the source task's attachment bytes
+    // into new rows alongside whatever was freshly uploaded on the form. A
+    // source that no longer exists is tolerated — the task is still created,
+    // just without the extra attachments.
+    const copiedAttachments = duplicateFrom ? listAttachmentsForCopy(duplicateFrom) : [];
+
     const created = createTask({
       ...createFields,
       maxCostUsd: maxCostPerTaskUsd ?? null,
-      attachments: validatedAttachments.data,
+      attachments: [...copiedAttachments, ...validatedAttachments.data],
     });
     if (!fields.start) {
       return json({ task: created, started: false }, { status: 201 });

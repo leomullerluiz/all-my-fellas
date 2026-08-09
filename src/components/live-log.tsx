@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
+import { NEUTRAL_CHANGE_REQUEST_NOUN } from "@/lib/provider-copy";
 import { cn } from "@/lib/utils";
 // From `./types`, not `./store`: `store.ts` imports the SQLite client, which
 // cannot be bundled for the browser. `./types` has no server-only imports at
@@ -118,7 +119,8 @@ function describe(event: PipelineEvent): string {
     case "git":
       return `git: ${event.message}`;
     case "pr_opened":
-      return `🔗 pull request opened: ${event.url}`;
+      // `noun` is absent on events written before the field existed.
+      return `🔗 ${event.noun ?? NEUTRAL_CHANGE_REQUEST_NOUN} opened: ${event.url}`;
     case "task_finished":
       return `■ task finished (${event.stage})${event.reason ? `: ${event.reason}` : ""}`;
     case "log":

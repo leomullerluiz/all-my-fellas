@@ -297,6 +297,29 @@ export function getAttachment(id: string): AttachmentRow | null {
   return db.select().from(attachments).where(eq(attachments.id, id)).get() ?? null;
 }
 
+/**
+ * `taskId`'s attachments, shaped as fresh `NewAttachment`s ready to hand to
+ * `createTask`/`insertAttachments` for a duplicate — see `stories.md` S4.
+ *
+ * Copies the bytes rather than sharing the row: `attachments.data` cascades
+ * with its task, so sharing would mean deleting one task's attachments
+ * destroys the other's.
+ */
+export function listAttachmentsForCopy(taskId: string): NewAttachment[] {
+  return db
+    .select()
+    .from(attachments)
+    .where(eq(attachments.taskId, taskId))
+    .orderBy(attachments.createdAt)
+    .all()
+    .map((attachment) => ({
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      size: attachment.sizeBytes,
+      buffer: attachment.data,
+    }));
+}
+
 /** Removes one attachment, scoped to `taskId` so a foreign id cannot match. */
 export function deleteAttachment(taskId: string, attachmentId: string): boolean {
   const removed = db

@@ -90,7 +90,26 @@ export const tasks = sqliteTable(
      * combine.
      */
     customBranchName: text("custom_branch_name"),
+    /**
+     * Holds either a real change request or a pre-filled compare/creation
+     * page, depending on `deliveryOutcome` below — the column never says
+     * which by itself. See `deliveryOutcome`'s comment.
+     */
     prUrl: text("pr_url"),
+    /**
+     * Which branch of `createChangeRequest`'s result actually happened:
+     * `'created'` means `prUrl` is a real change request; `'manual'` means
+     * the branch was pushed but the API call failed or no credential was
+     * configured, and `prUrl` is a compare link the user must act on by
+     * hand. `NULL` for a task that has not reached `DELIVERY` yet.
+     */
+    deliveryOutcome: text("delivery_outcome").$type<"created" | "manual">(),
+    /** Why the outcome was `manual` — rendered in the detail-page banner. */
+    deliveryReason: text("delivery_reason"),
+    /** The change request's number/iid, from `ChangeRequestRef.id`. `NULL` unless `deliveryOutcome === 'created'`. */
+    prNumber: integer("pr_number"),
+    /** `NULL` | `'open'` | `'merged'` | `'closed'` — only ever set to `'open'` today; nothing yet polls it forward. */
+    prState: text("pr_state").$type<"open" | "merged" | "closed">(),
     workspacePath: text("workspace_path"),
     /** Populated when the task reaches FAILED or REJECTED. */
     failureReason: text("failure_reason"),

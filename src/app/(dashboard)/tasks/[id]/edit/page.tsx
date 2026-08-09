@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 
 import { NewTaskForm } from "@/components/new-task-form";
+import { providerFor } from "@/server/git/providers";
 import {
   getTask,
   listAttachments,
@@ -28,6 +29,7 @@ export default async function EditTaskPage(props: { params: Promise<{ id: string
     id: repo.id,
     name: repo.name,
     defaultBranch: repo.defaultBranch,
+    changeRequestNoun: providerFor(repo.provider).changeRequestNoun,
   }));
 
   // Excludes the task itself and any task that can no longer be a prerequisite;

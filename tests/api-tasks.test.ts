@@ -19,6 +19,7 @@ process.env.WORKSPACES_DIR = path.join(tempDir, "workspaces");
 let service: typeof import("@/server/tasks/service");
 let settings: typeof import("@/server/settings/store");
 let orchestrator: typeof import("@/server/pipeline/orchestrator");
+let queue: typeof import("@/server/jobs/queue");
 let tasksRoute: typeof import("@/app/api/tasks/route");
 let taskRoute: typeof import("@/app/api/tasks/[id]/route");
 let startRoute: typeof import("@/app/api/tasks/[id]/start/route");
@@ -45,6 +46,7 @@ beforeAll(async () => {
   service = await import("@/server/tasks/service");
   settings = await import("@/server/settings/store");
   orchestrator = await import("@/server/pipeline/orchestrator");
+  queue = await import("@/server/jobs/queue");
   tasksRoute = await import("@/app/api/tasks/route");
   taskRoute = await import("@/app/api/tasks/[id]/route");
   startRoute = await import("@/app/api/tasks/[id]/start/route");
@@ -298,6 +300,98 @@ describe("POST /api/tasks", () => {
   it("creates without attachments over multipart when none are picked", async () => {
     const response = await postMultipart({ ...VALID_BODY, repoId });
     expect(response.status).toBe(201);
+  });
+
+  describe("duplicateFrom (S4)", () => {
+    it("copies the source task's attachment bytes into new rows", async () => {
+      const source = seed({ title: "Original feature" });
+      const buffer = Buffer.from("\x89PNG-fake-bytes", "binary");
+      service.insertAttachments(source.id, [
+        { filename: "diagram.png", mimeType: "image/png", size: buffer.length, buffer },
+      ]);
+
+      const response = await post({
+        ...VALID_BODY,
+        repoId,
+        title: "Copy of Original feature",
+        duplicateFrom: source.id,
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+
+      const copied = service.listAttachments(payload.task.id);
+      expect(copied.map((a) => a.filename)).toEqual(["diagram.png"]);
+      expect(copied[0].id).not.toBe(service.listAttachments(source.id)[0].id);
+
+      // Deleting the source afterward must not affect the duplicate's copy —
+      // they are independent rows, not a shared reference.
+      service.deleteTask(source.id);
+      const stillThere = service.getAttachment(copied[0].id);
+      expect(stillThere).not.toBeNull();
+      expect(stillThere!.data.toString("binary")).toBe("\x89PNG-fake-bytes");
+    });
+
+    it("merges copied attachments with newly uploaded ones", async () => {
+      const source = seed({ title: "Original with attachment" });
+      const sourceBuffer = Buffer.from("source bytes", "binary");
+      service.insertAttachments(source.id, [
+        { filename: "source.json", mimeType: "application/json", size: sourceBuffer.length, buffer: sourceBuffer },
+      ]);
+
+      const fresh = new File(['{"b":2}'], "fresh.json", { type: "application/json" });
+      const response = await postMultipart(
+        { ...VALID_BODY, repoId, title: "Copy plus a new file", duplicateFrom: source.id },
+        [fresh],
+      );
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+
+      const filenames = service.listAttachments(payload.task.id).map((a) => a.filename).sort();
+      expect(filenames).toEqual(["fresh.json", "source.json"]);
+    });
+
+    it("tolerates a duplicateFrom that no longer exists — still creates the task", async () => {
+      const response = await post({
+        ...VALID_BODY,
+        repoId,
+        title: "Copy of something gone",
+        duplicateFrom: "task_does_not_exist",
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+      expect(service.listAttachments(payload.task.id)).toEqual([]);
+    });
+
+    it("starts the duplicate at CREATED with no estimate or workspace carried over", async () => {
+      const source = seed({ title: "Estimated original" });
+      service.setTaskEstimate(source.id, "L", "high");
+      // Simulate a task that has actually run — `startTask` alone only
+      // schedules the first job; these fields are set once a real stage
+      // executes, which this pure orchestrator test does not run.
+      service.updateTask(source.id, {
+        branchName: "pipeline/task-estimated-original",
+        workspacePath: "/tmp/workspaces/task_source",
+        prUrl: "https://github.com/acme/app/pull/1",
+      });
+
+      const response = await post({
+        ...VALID_BODY,
+        repoId,
+        title: "Copy of Estimated original",
+        duplicateFrom: source.id,
+      });
+      expect(response.status).toBe(201);
+      const payload = (await response.json()) as { task: { id: string } };
+
+      const duplicate = service.getTask(payload.task.id)!;
+      expect(duplicate.currentStage).toBe("CREATED");
+      expect(duplicate.status).toBe("queued");
+      expect(duplicate.difficulty).toBeNull();
+      expect(duplicate.criticality).toBeNull();
+      expect(duplicate.branchName).toBeNull();
+      expect(duplicate.workspacePath).toBeNull();
+      expect(duplicate.prUrl).toBeNull();
+    });
   });
 
   describe("branchName", () => {
@@ -894,5 +988,68 @@ describe("GET /api/tasks", () => {
     expect(payload.capacity.slotAvailable).toBe(true);
     expect(payload.capacity.blocking.map((t) => t.id)).not.toContain(task.id);
     expect(payload.capacity.blocking).toEqual([]);
+  });
+
+  it("reports execution per task and a worker block, leaving capacity unchanged", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id); // job scheduled, not yet claimed by any worker
+
+    const response = await tasksRoute.GET(new Request("http://test/api/tasks"));
+    const payload = (await response.json()) as {
+      tasks: Array<{ id: string; execution: { kind: string } }>;
+      capacity: { limit: number; active: number; slotAvailable: boolean };
+      worker: { inFlight: number; waiting: number; backoff: number };
+    };
+
+    const found = payload.tasks.find((t) => t.id === task.id);
+    expect(found?.execution.kind).toBe("waiting_for_worker");
+    expect(payload.worker).toEqual({ inFlight: 0, waiting: 1, backoff: 0 });
+    // Unchanged from the pre-existing fixture in the test above this one.
+    expect(payload.capacity).toMatchObject({ limit: 1, active: 1, slotAvailable: false });
+  });
+
+  it("reports in_flight in the worker block once the job is claimed", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id);
+    queue.claimNextJob(99);
+
+    const response = await tasksRoute.GET(new Request("http://test/api/tasks"));
+    const payload = (await response.json()) as {
+      tasks: Array<{ id: string; execution: { kind: string; job?: string } }>;
+      worker: { inFlight: number; waiting: number; backoff: number };
+    };
+
+    const found = payload.tasks.find((t) => t.id === task.id);
+    expect(found?.execution).toEqual({ kind: "in_flight", job: "agent" });
+    expect(payload.worker).toEqual({ inFlight: 1, waiting: 0, backoff: 0 });
+  });
+});
+
+describe("GET /api/tasks/:id execution", () => {
+  it("returns in_flight for a task with a claimed job", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id);
+    queue.claimNextJob(99);
+
+    const response = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await response.json()) as { execution: { kind: string } };
+    expect(payload.execution.kind).toBe("in_flight");
+  });
+
+  it("returns waiting_for_worker for a task with only a pending job", async () => {
+    const task = seed();
+    orchestrator.startTask(task.id);
+
+    const response = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await response.json()) as { execution: { kind: string } };
+    expect(payload.execution.kind).toBe("waiting_for_worker");
+  });
+
+  it("returns idle for a task with no job (not started)", async () => {
+    const task = seed();
+
+    const response = await taskRoute.GET(new Request("http://test"), params(task.id));
+    const payload = (await response.json()) as { execution: { kind: string } };
+    expect(payload.execution.kind).toBe("idle");
   });
 });

@@ -35,7 +35,9 @@ export type PipelineEvent =
   | { type: "gate_opened"; gate: Stage }
   | { type: "gate_decided"; gate: Stage; decision: string; comment?: string }
   | { type: "git"; message: string }
-  | { type: "pr_opened"; url: string }
+  // `noun` is absent on rows written before this field existed; readers fall
+  // back to the neutral "change request" — see `NEUTRAL_CHANGE_REQUEST_NOUN`.
+  | { type: "pr_opened"; url: string; noun?: string }
   | { type: "task_finished"; stage: Stage; reason?: string }
   | { type: "log"; level: "info" | "warn" | "error"; message: string }
   /** What the `VERIFICATION` stage is about to run, before anything spawns. */

@@ -26,32 +26,50 @@ import {
 
 /** Human gate approval plus the retry / cancel controls. */
 
-const GATE_COPY: Record<
-  Gate,
-  { title: string; description: string; approve: string; approvedToast: string }
-> = {
-  PLAN_GATE: {
-    title: "Approve the technical plan",
-    description:
-      "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer.",
-    approve: "Approve plan",
-    approvedToast: "Plan approved",
-  },
-  HUMAN_CODE_REVIEW: {
-    title: "Review the code",
-    description:
-      "Code review and QA have passed. Read the diff before this ships. Requesting changes sends the work back to the Developer with your comment.",
-    approve: "Approve code",
-    approvedToast: "Code approved",
-  },
-  STAKEHOLDER_GATE: {
-    title: "Approve delivery",
-    description:
-      "QA and homologation are done. Approving pushes the branch and opens a pull request — the merge still happens on GitHub. If homologation rejected the change, requesting changes sends it back to the Developer with your comment instead of forcing an approve-or-reject choice on verified work.",
-    approve: "Approve and deliver",
-    approvedToast: "Delivery approved",
-  },
-};
+/** What `STAKEHOLDER_GATE`'s copy needs from the task's repo — nothing else reads this. */
+type GateProvider = { displayName: string; changeRequestNoun: string };
+
+/**
+ * A function rather than a static `Record`, so a caller with no provider in
+ * scope fails to typecheck instead of quietly rendering "GitHub" — see
+ * `spec-execution-honesty.md` §7.4. Every gate takes `provider`, even the two
+ * that don't read it: a per-gate signature would let a future gate skip
+ * threading it through by accident.
+ */
+function gateCopy(
+  gate: Gate,
+  provider: GateProvider,
+): { title: string; description: string; approve: string; approvedToast: string } {
+  switch (gate) {
+    case "PLAN_GATE":
+      return {
+        title: "Approve the technical plan",
+        description:
+          "The Architect has produced techplan.md with an approach, affected files and an estimate. Approving hands it to the Developer. Requesting changes sends the plan back to the Architect with your comment — the brief and the stories are kept, not re-run.",
+        approve: "Approve plan",
+        approvedToast: "Plan approved",
+      };
+    case "HUMAN_CODE_REVIEW":
+      return {
+        title: "Review the code",
+        description:
+          "Code review and QA have passed. Read the diff before this ships. Requesting changes sends the work back to the Developer with your comment.",
+        approve: "Approve code",
+        approvedToast: "Code approved",
+      };
+    case "STAKEHOLDER_GATE":
+      return {
+        title: "Approve delivery",
+        description:
+          `QA and homologation are done. Approving pushes the branch and opens a ${provider.changeRequestNoun} ` +
+          `— the merge still happens on ${provider.displayName}. If homologation rejected the change, ` +
+          "requesting changes sends it back to the Developer with your comment instead of forcing an " +
+          "approve-or-reject choice on verified work.",
+        approve: "Approve and deliver",
+        approvedToast: "Delivery approved",
+      };
+  }
+}
 
 type Decision = "approve" | "request_changes" | "reject";
 
@@ -64,11 +82,14 @@ const DECISION_TOAST: Record<Exclude<Decision, "approve">, string> = {
 export function GatePanel({
   taskId,
   gate,
+  provider,
   diffSummary,
   verification,
 }: {
   taskId: string;
   gate: Gate;
+  /** Resolved server-side from the task's repo — see `tasks/[id]/page.tsx`. */
+  provider: GateProvider;
   /** e.g. "14 files changed, +320 −87" — shown so the size is visible up front. */
   diffSummary?: string | null;
   /**
@@ -85,7 +106,7 @@ export function GatePanel({
   // — the request outcome itself is reported via toast, not this state.
   const [commentError, setCommentError] = useState<string | null>(null);
 
-  const copy = GATE_COPY[gate];
+  const copy = gateCopy(gate, provider);
   const allowed = GATE_ALLOWED_DECISIONS[gate];
   const canRequestChanges = allowed.includes("request_changes");
 
@@ -190,6 +211,84 @@ const ACTION_SUCCESS_TOAST: Record<string, string> = {
   pause: "Task paused: the current stage will finish, then wait.",
   resume: "Task resumed.",
 };
+
+/**
+ * Shown instead of the "Open {noun} ↗" link when `deliveryOutcome ===
+ * 'manual'` — the branch pushed, but the change request did not open
+ * automatically. See stories.md S1.
+ *
+ * "Try again" re-invokes only the change-request call against the
+ * already-pushed branch (`POST /api/tasks/:id/deliver-retry`); it does not
+ * push again and does not create a new `DELIVERY` stage run.
+ */
+export function DeliveryOutcomeBanner({
+  taskId,
+  reason,
+  compareUrl,
+  noun,
+}: {
+  taskId: string;
+  reason: string | null;
+  compareUrl: string;
+  noun: string;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  async function tryAgain() {
+    setBusy(true);
+    const response = await fetch(`/api/tasks/${taskId}/deliver-retry`, { method: "POST" });
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      toast.error(payload.error ?? `Could not open the ${noun}.`);
+      setBusy(false);
+      return;
+    }
+
+    // A 200 only means the retry ran, not that it succeeded — `createChangeRequest`
+    // can return `{status:"manual"}` again (e.g. the credential is still
+    // rejected), and reporting "opened" regardless would reintroduce the exact
+    // failure-looks-like-success bug this banner exists to fix. Branch the
+    // toast on the actual outcome; `router.refresh()` re-renders this banner
+    // with the fresh `delivery_reason` either way.
+    const payload = (await response.json().catch(() => ({}))) as {
+      change?: { status?: "created" | "manual"; reason?: string };
+    };
+    if (payload.change?.status === "manual") {
+      toast.error(
+        payload.change.reason
+          ? `Still not opened: ${payload.change.reason}`
+          : `The ${noun} still did not open.`,
+      );
+    } else {
+      toast.success(`${noun[0].toUpperCase()}${noun.slice(1)} opened.`);
+    }
+    setBusy(false);
+    router.refresh();
+  }
+
+  return (
+    <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+      <p className="font-medium text-foreground">
+        Branch pushed — the {noun} was not opened.
+      </p>
+      {reason ? <p className="mt-1">{reason}</p> : null}
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <a
+          href={compareUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent underline-offset-2 hover:underline"
+        >
+          Open the compare page ↗
+        </a>
+        <Button variant="secondary" size="sm" disabled={busy} onClick={tryAgain}>
+          {busy ? "Trying again…" : "Try again"}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Detail-page controls.
@@ -328,6 +427,11 @@ export function TaskControls({
             Edit
           </Button>
         </Link>
+        <Link href={`/tasks/new?from=${taskId}`}>
+          <Button variant="ghost" size="sm">
+            Duplicate
+          </Button>
+        </Link>
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onDelete}>
           {busy === "delete" ? "Deleting…" : "Delete"}
         </Button>
@@ -347,8 +451,12 @@ export function TaskControls({
     );
   }
 
-  if (!canCancel && !showRetrySection && !canPause) return null;
-
+  // Every other status still gets a Duplicate link — a rejected, failed, or
+  // completed task is otherwise a dead end for reusing its description,
+  // priority, and attachments (`stories.md` S4). This is the only reason the
+  // component renders anything at all for those statuses; the early `return
+  // null` this replaced only ever fired for them — including the pause and
+  // retry cases, which render their own controls above when they apply.
   return (
     <div className="flex flex-wrap items-center gap-2">
       {canPause ? (
@@ -401,6 +509,11 @@ export function TaskControls({
           {busy === "cancel" ? "Cancelling…" : "Cancel task"}
         </Button>
       ) : null}
+      <Link href={`/tasks/new?from=${taskId}`}>
+        <Button variant="ghost" size="sm">
+          Duplicate
+        </Button>
+      </Link>
       {/* The approval already succeeded — this is not an error state, just
           an explanation of why the task hasn't resumed yet (S2). Failures are
           reported by toast, so nothing competes with it for this slot. */}

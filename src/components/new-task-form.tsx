@@ -10,7 +10,13 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { formatBytes } from "@/lib/utils";
 import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
 
-export type RepoOption = { id: string; name: string; defaultBranch: string };
+export type RepoOption = {
+  id: string;
+  name: string;
+  defaultBranch: string;
+  /** "merge request" on GitLab — resolved server-side, see `tasks/new/page.tsx`. */
+  changeRequestNoun: string;
+};
 
 /** A task selectable as a prerequisite: title plus the repo it belongs to. */
 export type DependencyOption = { id: string; title: string; repoId: string; repoName: string };
@@ -53,6 +59,12 @@ export type TaskFormProps = {
    * (self already excluded by the caller). Narrowed here to the selected repo.
    */
   dependencyOptions?: DependencyOption[];
+  /**
+   * Id of the task this form is duplicating (`stories.md` S4), sent along on
+   * submit so the server can copy its attachments onto the new row.
+   * Create-mode only.
+   */
+  duplicateFrom?: string;
 };
 
 /**
@@ -69,6 +81,7 @@ export function NewTaskForm({
   initial,
   capacity = { slotAvailable: true, limit: 1, blocking: [] },
   dependencyOptions = [],
+  duplicateFrom,
 }: TaskFormProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -128,6 +141,7 @@ export function NewTaskForm({
       if (!isEdit) {
         form.set("start", String(start));
         if (branchName) form.set("branchName", branchName);
+        if (duplicateFrom) form.set("duplicateFrom", duplicateFrom);
       }
       for (const file of pendingFiles) form.append("attachments", file);
       for (const dependencyId of dependsOn) form.append("dependsOn", dependencyId);
@@ -145,7 +159,13 @@ export function NewTaskForm({
         requireHumanCodeReview,
         dependsOn,
         maxCostPerTaskUsd: maxCostPerTaskUsd === "" ? null : Number(maxCostPerTaskUsd),
-        ...(isEdit ? {} : { start, ...(branchName ? { branchName } : {}) }),
+        ...(isEdit
+          ? {}
+          : {
+              start,
+              ...(branchName ? { branchName } : {}),
+              ...(duplicateFrom ? { duplicateFrom } : {}),
+            }),
       };
       response = await fetch(isEdit ? `/api/tasks/${taskId}` : "/api/tasks", {
         method: isEdit ? "PATCH" : "POST",
@@ -262,7 +282,9 @@ export function NewTaskForm({
               label="Title"
               htmlFor="title"
               error={errors.title}
-              hint="Also used for the branch name and the pull request title."
+              hint={`Also used for the branch name and the ${
+                selectedRepo?.changeRequestNoun ?? "change request"
+              } title.`}
             >
               <Input
                 id="title"

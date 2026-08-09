@@ -1,5 +1,5 @@
 import { appendEvent } from "../server/events/store";
-import { failJob, parsePayload, taskIsActive } from "../server/jobs/queue";
+import { MAX_JOB_ATTEMPTS, failJob, parsePayload, taskIsActive } from "../server/jobs/queue";
 import { StageJobError } from "../server/pipeline/execute";
 import { advanceTask } from "../server/pipeline/orchestrator";
 import type { JobRow } from "../server/db/schema";
@@ -11,8 +11,12 @@ import { getStageRun, markStageRunStatus } from "../server/tasks/service";
  * load, which would start the real polling loop under a test runner.
  */
 
-/** Transient failures are retried twice with backoff before the task fails. */
-const MAX_JOB_ATTEMPTS = 3;
+/**
+ * Transient failures are retried twice with backoff before the task fails.
+ * `MAX_JOB_ATTEMPTS` comes from `jobs/queue` rather than a local copy: the
+ * dashboard renders "attempt N of {MAX_JOB_ATTEMPTS}" from that same export,
+ * and two constants would let the copy and the actual give-up point drift.
+ */
 const RETRY_BACKOFF_MS = [5_000, 20_000];
 
 export type Logger = (level: "info" | "warn" | "error", message: string) => void;

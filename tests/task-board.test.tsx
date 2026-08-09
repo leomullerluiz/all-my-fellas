@@ -52,6 +52,10 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     branchName: null,
     customBranchName: null,
     prUrl: null,
+    deliveryOutcome: null,
+    deliveryReason: null,
+    prNumber: null,
+    prState: null,
     workspacePath: null,
     failureReason: null,
     failedStage: null,
@@ -64,6 +68,10 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     repo: REPO,
     costUsd: 0,
     dependsOn: [],
+    // Most fixtures here don't care about execution state — only the "not
+    // delivered" and column-split behaviour. Tests that do care (S1's pulse
+    // regression, below) override it explicitly.
+    execution: { kind: "idle" },
     ...overrides,
   };
 }
@@ -73,7 +81,7 @@ const CAPACITY = { slotAvailable: true, limit: 5, blocking: [] };
 function renderBoard(tasks: BoardTask[]) {
   return render(
     <BatchSelectionProvider>
-      <TaskBoard tasks={tasks} capacity={CAPACITY} />
+      <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
     </BatchSelectionProvider>,
   );
 }
@@ -224,12 +232,109 @@ describe("TaskBoard 'Not delivered' options menu", () => {
 
   it("does not add the closed-column menu to running, gate, or queued indicators", () => {
     renderBoard([
-      makeTask({ id: "task_running", title: "Running one", currentStage: "DEVELOPMENT", status: "running" }),
+      makeTask({
+        id: "task_running",
+        title: "Running one",
+        currentStage: "DEVELOPMENT",
+        status: "running",
+        execution: { kind: "in_flight", job: "agent" },
+      }),
       makeTask({ id: "task_gate", title: "Gate one", currentStage: "PLAN_GATE", status: "awaiting_gate" }),
     ]);
 
     expect(screen.queryByRole("button", { name: "Task actions" })).toBeNull();
     expect(screen.getByTitle("An agent is running")).toBeTruthy();
     expect(screen.getByTitle("Waiting for your approval")).toBeTruthy();
+  });
+});
+
+/**
+ * S1 — the pulse means exactly "the worker has this task's job claimed right
+ * now", not "this task is admitted". `renderBoard` above defaults `capacity`
+ * to `{ limit: 5, ... }`, so queue wording is not suppressed unless a test
+ * asks for it explicitly.
+ */
+describe("TaskBoard execution indicator", () => {
+  function runningTask(overrides: Partial<BoardTask> = {}): BoardTask {
+    return makeTask({ status: "running", currentStage: "DEVELOPMENT", ...overrides });
+  }
+
+  it("pulses only the one in-flight card among several admitted tasks", () => {
+    renderBoard([
+      runningTask({ id: "task_flight", title: "In flight", execution: { kind: "in_flight", job: "agent" } }),
+      runningTask({
+        id: "task_wait_1",
+        title: "Waiting one",
+        execution: { kind: "waiting_for_worker", position: 1, depth: 2 },
+      }),
+      runningTask({
+        id: "task_wait_2",
+        title: "Waiting two",
+        execution: { kind: "waiting_for_worker", position: 2, depth: 2 },
+      }),
+    ]);
+
+    // Exactly one pulsing dot: `PulseDot` renders a `<motion.span>` — the only
+    // element in this render with the "An agent is running" title.
+    expect(screen.getAllByTitle("An agent is running")).toHaveLength(1);
+    expect(screen.getByTitle("Queued for the worker — 1st of 2")).toBeTruthy();
+    expect(screen.getByTitle("Queued for the worker — 2nd of 2")).toBeTruthy();
+  });
+
+  it("never renders 'An agent is running' for a waiting_for_worker card", () => {
+    renderBoard([
+      runningTask({
+        id: "task_wait",
+        title: "Waiting",
+        execution: { kind: "waiting_for_worker", position: 1, depth: 3 },
+      }),
+    ]);
+
+    expect(screen.queryByText("An agent is running")).toBeNull();
+    expect(screen.queryByTitle("An agent is running")).toBeNull();
+  });
+
+  it("shows retry-backoff wording with the attempt count, not a pulse", () => {
+    renderBoard([
+      runningTask({
+        id: "task_backoff",
+        title: "Backing off",
+        execution: { kind: "retry_backoff", retryAt: Date.now() + 14_000, attempt: 2 },
+      }),
+    ]);
+
+    expect(screen.queryByTitle("An agent is running")).toBeNull();
+    const dot = screen.getByTitle(/Stage failed; retrying in \d+s \(attempt 2 of 3\)/);
+    expect(dot).toBeTruthy();
+  });
+
+  it("shows settling wording for an admitted task with nothing queued", () => {
+    renderBoard([
+      runningTask({ id: "task_settling", title: "Stranded", execution: { kind: "settling" } }),
+    ]);
+
+    expect(screen.getByTitle("Nothing is queued for this task")).toBeTruthy();
+    expect(screen.queryByTitle("An agent is running")).toBeNull();
+  });
+
+  it("suppresses queue-position wording entirely when maxParallelTasks is 1", () => {
+    render(
+      <BatchSelectionProvider>
+        <TaskBoard
+          tasks={[
+            runningTask({
+              id: "task_wait",
+              title: "Momentarily waiting",
+              execution: { kind: "waiting_for_worker", position: 1, depth: 1 },
+            }),
+          ]}
+          capacity={{ slotAvailable: false, limit: 1, blocking: [] }}
+          maxJobAttempts={3}
+        />
+      </BatchSelectionProvider>,
+    );
+
+    expect(screen.queryByText(/Queued for the worker/)).toBeNull();
+    expect(screen.queryByTitle("An agent is running")).toBeNull();
   });
 });

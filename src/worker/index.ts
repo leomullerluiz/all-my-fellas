@@ -3,8 +3,10 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 
-import { hasGithubToken, resolveProviderAuth } from "../server/config/env";
+import { resolveProviderAuth } from "../server/config/env";
 import { closeDatabase } from "../server/db/client";
+import { credentialSource } from "../server/git/credentials";
+import { providerFor } from "../server/git/providers";
 import {
   claimNextJobUnlessHeld,
   completeJob,
@@ -22,6 +24,7 @@ import { promoteQueue } from "../server/pipeline/orchestrator";
 import { runMaintenanceSweep } from "../server/pipeline/audit/retention";
 import { getSettings } from "../server/settings/store";
 import type { JobRow } from "../server/db/schema";
+import { listRepos } from "../server/tasks/service";
 import { recordWorkerHeartbeat, recordWorkerStarted } from "../server/worker/status";
 import { handleJobFailure } from "./job-failure";
 
@@ -87,8 +90,24 @@ function banner(): void {
       "No Claude credential found — agent stages will fail. Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY.",
     );
   }
-  if (!hasGithubToken()) {
-    log("warn", "GITHUB_TOKEN is not set — cloning private repos and delivery will fail.");
+  // Warn per connection that is actually configured, rather than about a
+  // single credential variable — a GitLab-only install does not need
+  // GITHUB_TOKEN, and naming it anyway would be exactly the lie §7 is about.
+  // Mirrors the dashboard's `SetupNotice`.
+  for (const repo of listRepos()) {
+    const provider = providerFor(repo.provider);
+    const credential = credentialSource({
+      provider,
+      credentialRef: repo.credentialRef,
+      credentialUsername: repo.credentialUsername,
+    });
+    if (!credential.present) {
+      log(
+        "warn",
+        `${repo.name}: ${credential.variable} is not set, so cloning private repositories ` +
+          `and opening a ${provider.changeRequestNoun} will fail.`,
+      );
+    }
   }
   log(
     "info",

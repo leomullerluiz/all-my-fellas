@@ -97,6 +97,13 @@ export const createTaskSchema = taskFieldsSchema.extend({
    * sitting costs nothing, a task started by accident costs quota and a clone.
    */
   start: z.boolean().default(false),
+  /**
+   * The task this one duplicates, so `POST /api/tasks` can copy its
+   * attachments onto the new row — see `stories.md` S4. A missing/deleted
+   * source is tolerated (the task is still created, just without the extra
+   * attachments), so this is not validated against `getTask` here.
+   */
+  duplicateFrom: z.string().min(1).optional(),
 });
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 

@@ -85,6 +85,7 @@ function contextFor(task: TaskRow): PipelineContext {
   );
   return {
     developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
+    architectureAttempts: countStageRuns(task.id, "ARCHITECTURE"),
     homologationAttempts: countStageRuns(task.id, "PO_HOMOLOGATION"),
     reworkMaxCycles: settings.reworkMaxCycles,
     reworkBudgetGrant: task.reworkBudgetGrant,
@@ -821,12 +822,18 @@ export function decideGate(input: {
       comment: input.comment,
     });
 
-    // A comment the Developer never sees is worse than useless — the same code
-    // would come back. Persist it as a real artifact so it flows through the
-    // existing input machinery in `gatherInputs`.
-    if (input.decision === "request_changes") {
-      const comment = input.comment?.trim();
-      if (!comment) {
+    // A comment the next agent never sees is worse than useless — the same
+    // gap would come back. Persist it as a real artifact so it flows through
+    // the existing input machinery in `gatherInputs`. Written on
+    // `request_changes` (where it is required) and also on `approve` at
+    // `PLAN_GATE` when the reviewer left one (optional there) — an approving
+    // "use the existing helper instead" is exactly as worth keeping as a
+    // rejecting one, and today's bug was that only the latter was persisted.
+    const trimmedComment = input.comment?.trim();
+    const isPlanApprovalWithComment =
+      input.decision === "approve" && input.gate === "PLAN_GATE" && !!trimmedComment;
+    if (input.decision === "request_changes" || isPlanApprovalWithComment) {
+      if (input.decision === "request_changes" && !trimmedComment) {
         throw new GateError("Requesting changes needs a comment saying what to change.");
       }
       // `artifacts.stage_run_id` is NOT NULL and making it nullable would mean
@@ -836,11 +843,12 @@ export function decideGate(input: {
       if (!reviewedRun) {
         throw new GateError("The task has no stage run to attach the review to.");
       }
+      const heading = input.decision === "request_changes" ? "Requested Changes" : "Reviewer Comment";
       saveArtifact({
         taskId: input.taskId,
         stageRunId: reviewedRun.id,
         type: "human_review",
-        contentMd: `## Requested Changes\n\n${comment}\n`,
+        contentMd: `## ${heading}\n\n${trimmedComment}\n`,
       });
     }
 
