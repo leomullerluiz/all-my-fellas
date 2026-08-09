@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NewTaskForm } from "@/components/new-task-form";
 
@@ -10,8 +10,18 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
 }));
 
+const DRAFT_STORAGE_KEY = "new-task-form:draft";
+
+// The autosave feature (stories.md S1–S3) reads/writes real `localStorage`;
+// clearing it on both sides of every test keeps drafts from leaking between
+// the unrelated suites already in this file.
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
 });
 
 const REPOS = [
@@ -446,5 +456,293 @@ describe("NewTaskForm spend at the decision point (S4)", () => {
       />,
     );
     expect(screen.getByText(/\$5\.00 used of \$10\.00/)).toBeTruthy();
+  });
+});
+
+function readDraft(): Record<string, unknown> | null {
+  const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+  return raw === null ? null : (JSON.parse(raw) as Record<string, unknown>);
+}
+
+/**
+ * The restore/hydrate effect defers its `setState` calls to a microtask (see
+ * `new-task-form.tsx`'s doc comment on that effect), so the write effect's
+ * very first echo write also lands one microtask after mount. Waiting for it
+ * here mirrors what a real browser paint/interaction would already overlap.
+ */
+async function waitForHydration() {
+  await vi.waitFor(() => expect(readDraft()).not.toBeNull());
+}
+
+/**
+ * S1 — every tracked field is written to the dedicated `localStorage` draft
+ * key as it changes, in create mode only, without files.
+ */
+describe("NewTaskForm autosave (S1)", () => {
+  it("persists the repository, title, branch name, description, priority, spend ceiling and review checkbox as they change", async () => {
+    render(<NewTaskForm repos={TWO_REPOS} dependencyOptions={[]} />);
+    await waitForHydration();
+
+    fireEvent.change(repoSelect(), { target: { value: "repo_2" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Autosaved title" } });
+    fireEvent.change(screen.getByLabelText("Branch name"), {
+      target: { value: "feature/autosave" },
+    });
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "An autosaved description." },
+    });
+    fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "urgent" } });
+    fireEvent.change(screen.getByLabelText("Spend ceiling (USD)"), {
+      target: { value: "5.5" },
+    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /Require human code review before delivery/ }),
+    );
+
+    expect(readDraft()).toMatchObject({
+      repoId: "repo_2",
+      title: "Autosaved title",
+      branchName: "feature/autosave",
+      description: "An autosaved description.",
+      priority: "urgent",
+      maxCostPerTaskUsd: "5.5",
+      requireHumanCodeReview: true,
+    });
+  });
+
+  it("persists the depends-on selection", async () => {
+    render(
+      <NewTaskForm
+        repos={REPOS}
+        dependencyOptions={[
+          { id: "task_a", title: "Set up the schema", repoId: "repo_1", repoName: "acme/app" },
+        ]}
+      />,
+    );
+    await waitForHydration();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Set up the schema/ }));
+
+    expect(readDraft()).toMatchObject({ dependsOn: ["task_a"] });
+  });
+
+  it("writes nothing in edit mode", async () => {
+    render(
+      <NewTaskForm
+        repos={REPOS}
+        mode="edit"
+        taskId="task_edit"
+        initial={{
+          repoId: "repo_1",
+          title: "Existing",
+          description: "An existing description, long enough to pass validation.",
+          priority: "medium",
+          requireHumanCodeReview: false,
+          attachments: [],
+          dependsOn: [],
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Edited title" } });
+
+    // Give the (no-op, in edit mode) hydrate microtask a turn to run too.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readDraft()).toBeNull();
+  });
+
+  it("never includes file data in the stored draft", async () => {
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    await waitForHydration();
+
+    const file = new File(["content"], "note.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Attachments"), { target: { files: [file] } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "With an attachment" } });
+
+    const draft = readDraft();
+    expect(draft).not.toBeNull();
+    expect(JSON.stringify(draft)).not.toContain("note.txt");
+  });
+});
+
+/**
+ * S2 — a stored draft pre-fills the create form on a fresh mount, silently
+ * and without a click, except when `initial` (the duplicate-from flow) is
+ * supplied, which always wins.
+ */
+describe("NewTaskForm draft restore (S2)", () => {
+  it("pre-fills fields from a stored draft on mount", async () => {
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({
+        repoId: "repo_2",
+        title: "Restored title",
+        branchName: "feature/restored",
+        description: "Restored description.",
+        priority: "high",
+        requireHumanCodeReview: true,
+        dependsOn: [],
+        maxCostPerTaskUsd: "9.99",
+      }),
+    );
+
+    render(<NewTaskForm repos={TWO_REPOS} dependencyOptions={[]} />);
+
+    await screen.findByDisplayValue("Restored title");
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Restored title");
+    expect((screen.getByLabelText("Branch name") as HTMLInputElement).value).toBe(
+      "feature/restored",
+    );
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe(
+      "Restored description.",
+    );
+    expect((repoSelect()).value).toBe("repo_2");
+    expect((screen.getByLabelText("Priority") as HTMLSelectElement).value).toBe("high");
+    expect((screen.getByLabelText("Spend ceiling (USD)") as HTMLInputElement).value).toBe("9.99");
+    expect(
+      (screen.getByRole("checkbox", {
+        name: /Require human code review before delivery/,
+      }) as HTMLInputElement).checked,
+    ).toBe(true);
+  });
+
+  it("does not announce restoration with a toast", () => {
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({ title: "Restored title" }),
+    );
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("lets a duplicate-from `initial` prop take precedence over a stored draft", () => {
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({ title: "Stale draft title", description: "Stale draft description." }),
+    );
+
+    render(
+      <NewTaskForm
+        repos={REPOS}
+        initial={{
+          repoId: "repo_1",
+          title: "Copy of Original feature",
+          description: "The original description, long enough to pass validation.",
+          priority: "high",
+          requireHumanCodeReview: true,
+          attachments: [],
+          dependsOn: [],
+        }}
+        duplicateFrom="task_source"
+      />,
+    );
+
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe(
+      "Copy of Original feature",
+    );
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe(
+      "The original description, long enough to pass validation.",
+    );
+  });
+
+  it("renders unchanged defaults when there is no stored draft", () => {
+    render(<NewTaskForm repos={TWO_REPOS} dependencyOptions={[]} />);
+
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("");
+    expect(repoSelect().value).toBe("repo_1");
+    expect((screen.getByLabelText("Priority") as HTMLSelectElement).value).toBe("medium");
+    expect(
+      (screen.getByRole("checkbox", {
+        name: /Require human code review before delivery/,
+      }) as HTMLInputElement).checked,
+    ).toBe(false);
+  });
+});
+
+/**
+ * S3 — the stored draft is cleared once `POST /api/tasks` succeeds, and left
+ * alone on a failed request so the user's work is still recoverable.
+ */
+describe("NewTaskForm draft cleared on success (S3)", () => {
+  async function fillRequiredFields() {
+    await waitForHydration();
+    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "repo_1" } });
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "A perfectly reasonable title" },
+    });
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "A description long enough to pass the twenty character minimum." },
+    });
+  }
+
+  it("removes the draft after a successful 'Add to queue' submit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { id: "task_new" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    await fillRequiredFields();
+    expect(readDraft()).not.toBeNull();
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.waitFor(() => expect(readDraft()).toBeNull());
+
+    vi.unstubAllGlobals();
+  });
+
+  it("removes the draft after a successful 'Start now' submit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { id: "task_new" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    await fillRequiredFields();
+    expect(readDraft()).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Start now/ }));
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await vi.waitFor(() => expect(readDraft()).toBeNull());
+
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the draft when the request fails", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "Invalid request payload.", details: {} }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+    await fillRequiredFields();
+    expect(readDraft()).not.toBeNull();
+
+    fireEvent.submit(document.querySelector("form")!);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(readDraft()).not.toBeNull();
+    expect(readDraft()).toMatchObject({ title: "A perfectly reasonable title" });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the form at defaults, not the just-created task's values, after reloading /tasks/new", () => {
+    // Simulates the state after S3's success path already ran clearNewTaskDraft().
+    window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+
+    render(<NewTaskForm repos={REPOS} dependencyOptions={[]} />);
+
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("");
   });
 });
