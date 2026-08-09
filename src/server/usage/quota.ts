@@ -16,6 +16,19 @@ import { costSince } from "../tasks/service";
 export type { Cadence };
 
 /**
+ * How a configured quota limit is enforced at admission time (§2 / stories.md
+ * S2). `resolveQuotaStatus` below never changes behaviour based on this — it
+ * stays a pure read-out for the dashboard bar; `assertWithinQuota`
+ * (`orchestrator.ts`) is what actually branches on it.
+ *
+ * - `"off"` — today's behaviour: the bar renders, nothing is refused. Default,
+ *   so an existing installation with no opinion behaves exactly as before.
+ * - `"warn"` — the start proceeds; a `quota_warning` event is appended.
+ * - `"hold"` — the start is refused (`QuotaError`) unless overridden.
+ */
+export type QuotaEnforcement = "off" | "warn" | "hold";
+
+/**
  * Start of the current period, in **local server time**.
  *
  * S2's acceptance criteria pin "daily" to local midnight and "hourly" to the

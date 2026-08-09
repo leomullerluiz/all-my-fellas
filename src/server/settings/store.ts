@@ -4,7 +4,9 @@ import { type QuotaConfig, resolveLimits, resolveModels, resolveQuota } from "..
 import type { LlmProviderId } from "../config/llm-providers";
 import { db } from "../db/client";
 import { settings } from "../db/schema";
+import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "../events/types";
 import type { AgentStage } from "../pipeline/stages";
+import type { QuotaEnforcement } from "../usage/quota";
 
 /**
  * Runtime settings that a user can change from the Settings screen.
@@ -18,6 +20,39 @@ const SETTINGS_KEY = "app";
 /** `"system"` follows the browser's `prefers-color-scheme`; the other two are explicit. */
 export const THEMES = ["dark", "light", "system"] as const;
 export type Theme = (typeof THEMES)[number];
+
+/** Per-event-type opt-in for the webhook dispatcher (§8.4). */
+export type NotificationEventToggles = Record<PipelineEvent["type"], boolean>;
+
+export type NotificationSettings = {
+  /** Whether the browser should request permission and show desktop notifications. */
+  browser: boolean;
+  webhookUrl: string | null;
+  /**
+   * The environment variable *name* the shared secret is read from, never
+   * the value — same indirection every other credential in this product
+   * uses (`repos.credential_ref`). `null` means the webhook is unsigned.
+   */
+  webhookSecretRef: string | null;
+  events: NotificationEventToggles;
+};
+
+/**
+ * Notifying on everything trains the user to ignore it (§8.4) — only the
+ * subset where a human is either blocked or has to decide starts enabled.
+ */
+const DEFAULT_NOTIFIED_EVENTS: ReadonlySet<PipelineEvent["type"]> = new Set([
+  "gate_opened",
+  "task_finished",
+  "pr_opened",
+  "quota_warning",
+]);
+
+function defaultNotificationEvents(): NotificationEventToggles {
+  const toggles = {} as NotificationEventToggles;
+  for (const type of PIPELINE_EVENT_TYPES) toggles[type] = DEFAULT_NOTIFIED_EVENTS.has(type);
+  return toggles;
+}
 
 export type AppSettings = {
   /** Model id per agent stage. */
@@ -52,6 +87,23 @@ export type AppSettings = {
    * so this is always a configured value, never a fetched one.
    */
   quotaLimits: QuotaConfig;
+  /**
+   * How a configured quota limit is enforced when a task tries to enter the
+   * pipeline — see `usage/quota.ts`'s `QuotaEnforcement` and
+   * `orchestrator.ts`'s `assertWithinQuota`. Defaults to `"off"` so an
+   * existing installation's behaviour is unchanged until it opts in.
+   */
+  quotaEnforcement: QuotaEnforcement;
+  /**
+   * Per-stage dollar ceiling, checked by every LLM provider while a session
+   * runs (a stop-loss, not a hard cap — the check happens after the turn that
+   * crosses it). `null` means no ceiling. See `spec-execution-honesty.md`'s
+   * §3 counterpart and `techplan.md`'s S3.
+   */
+  maxCostPerStageUsd: number | null;
+  /** "Stop starting things" (§9.2) — the worker's `tick()` claims no new jobs while set. */
+  queueHeld: boolean;
+  notifications: NotificationSettings;
 };
 
 export function defaultSettings(): AppSettings {
@@ -97,6 +149,15 @@ export function defaultSettings(): AppSettings {
     transcriptRetentionDays: limits.transcriptRetentionDays,
     theme: "system",
     quotaLimits: resolveQuota(),
+    quotaEnforcement: "off",
+    maxCostPerStageUsd: null,
+    queueHeld: false,
+    notifications: {
+      browser: true,
+      webhookUrl: null,
+      webhookSecretRef: null,
+      events: defaultNotificationEvents(),
+    },
   };
 }
 
@@ -127,6 +188,11 @@ export function getSettings(): AppSettings {
       ...base.quotaLimits,
       ...(stored.quotaLimits ?? {}),
     },
+    notifications: {
+      ...base.notifications,
+      ...(stored.notifications ?? {}),
+      events: { ...base.notifications.events, ...(stored.notifications?.events ?? {}) },
+    },
   };
 }
 
@@ -136,12 +202,15 @@ export function getSettings(): AppSettings {
  * resending the whole map.
  */
 export type SettingsPatch = Partial<
-  Omit<AppSettings, "models" | "providers" | "maxTurns" | "quotaLimits">
+  Omit<AppSettings, "models" | "providers" | "maxTurns" | "quotaLimits" | "notifications">
 > & {
   models?: Partial<Record<AgentStage, string>>;
   providers?: Partial<Record<AgentStage, LlmProviderId>>;
   maxTurns?: Partial<Record<AgentStage, number>>;
   quotaLimits?: Partial<QuotaConfig>;
+  notifications?: Partial<Omit<NotificationSettings, "events">> & {
+    events?: Partial<NotificationEventToggles>;
+  };
 };
 
 /** Merges `patch` into the stored overrides and returns the new effective settings. */
@@ -156,6 +225,11 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
     quotaLimits: {
       ...current.quotaLimits,
       ...(patch.quotaLimits ?? {}),
+    },
+    notifications: {
+      ...current.notifications,
+      ...(patch.notifications ?? {}),
+      events: { ...current.notifications.events, ...(patch.notifications?.events ?? {}) },
     },
   };
 

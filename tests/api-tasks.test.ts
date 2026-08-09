@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
  * Route-handler tests.
@@ -522,6 +522,59 @@ describe("POST /api/tasks/:id/start", () => {
     const response = await startRoute.POST(new Request("http://test"), params(task.id));
     expect(response.status).toBe(200);
   });
+
+  describe("quota-held (S2)", () => {
+    afterEach(() => {
+      delete process.env.ANTHROPIC_API_KEY;
+      settings.updateSettings({
+        quotaEnforcement: "off",
+        quotaLimits: { api_key: { limitUsd: null, cadence: "daily" } },
+      });
+    });
+
+    function seedOverQuota() {
+      process.env.ANTHROPIC_API_KEY = "key";
+      settings.updateSettings({
+        quotaEnforcement: "hold",
+        quotaLimits: { api_key: { limitUsd: 1, cadence: "daily" } },
+      });
+      const spender = seed({ title: "Spender" });
+      const run = service.createStageRun({ taskId: spender.id, stage: "DEVELOPMENT", attempt: 1 });
+      service.updateStageRun(run.id, {
+        status: "done",
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+        costUsd: 5,
+      });
+    }
+
+    it("returns 409 with a quota_exceeded code instead of a 500", async () => {
+      seedOverQuota();
+      const task = seed();
+
+      const response = await startRoute.POST(new Request("http://test"), params(task.id));
+      expect(response.status).toBe(409);
+      const payload = (await response.json()) as { error: string; code: string };
+      expect(payload.code).toBe("quota_exceeded");
+      expect(service.getTask(task.id)!.currentStage).toBe("CREATED");
+    });
+
+    it("starts anyway when the body carries overrideQuota: true", async () => {
+      seedOverQuota();
+      const task = seed();
+
+      const response = await startRoute.POST(
+        new Request("http://test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overrideQuota: true }),
+        }),
+        params(task.id),
+      );
+      expect(response.status).toBe(200);
+      expect(service.getTask(task.id)!.status).toBe("running");
+    });
+  });
 });
 
 describe("PATCH /api/tasks/:id", () => {
@@ -549,6 +602,41 @@ describe("PATCH /api/tasks/:id", () => {
     const updated = service.getTask(task.id)!;
     expect(updated.title).toBe("Renamed");
     expect(updated.priority).toBe("urgent");
+  });
+
+  it("stores maxCostPerTaskUsd under the maxCostUsd column and does not leak the API field name into the edit event", async () => {
+    const events = await import("@/server/events/store");
+    const task = seed();
+
+    const response = await patch(task.id, {
+      ...VALID_BODY,
+      repoId,
+      maxCostPerTaskUsd: 5,
+    });
+
+    expect(response.status).toBe(200);
+    expect(service.getTask(task.id)!.maxCostUsd).toBe(5);
+
+    const edited = events.readEvents(task.id).find((event) => event.type === "task_edited");
+    expect(edited).toBeDefined();
+    const fields = (edited!.payload as { fields: string[] }).fields;
+    expect(fields).toContain("maxCostUsd");
+    expect(fields).not.toContain("maxCostPerTaskUsd");
+  });
+
+  it("does not record a spurious edit event when only maxCostPerTaskUsd is re-sent unchanged", async () => {
+    const events = await import("@/server/events/store");
+    const task = seed({ maxCostUsd: 5 } as Partial<typeof VALID_BODY> & { maxCostUsd: number });
+
+    const response = await patch(task.id, {
+      ...VALID_BODY,
+      title: task.title,
+      repoId,
+      maxCostPerTaskUsd: 5,
+    });
+
+    expect(response.status).toBe(200);
+    expect(events.readEvents(task.id).some((e) => e.type === "task_edited")).toBe(false);
   });
 
   it("returns 409 for every stage past CREATED", async () => {

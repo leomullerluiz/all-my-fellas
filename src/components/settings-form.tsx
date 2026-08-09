@@ -10,6 +10,7 @@ import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/compon
 import { Field, Input, Select } from "@/components/ui/field";
 import type { Cadence, ProviderAuth } from "@/server/config/env";
 import { LLM_PROVIDER_IDS, LLM_PROVIDER_LABELS, type LlmProviderId } from "@/server/config/llm-providers";
+import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/types";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
 import type { AppSettings } from "@/server/settings/store";
 import type { TranscriptStorageStats } from "@/server/tasks/service";
@@ -68,6 +69,23 @@ export function SettingsForm({
       quotaLimits: {
         ...current.quotaLimits,
         [mode]: { ...current.quotaLimits[mode], ...patch },
+      },
+    }));
+  }
+
+  function setNotification(patch: Partial<Omit<AppSettings["notifications"], "events">>) {
+    setSettings((current) => ({
+      ...current,
+      notifications: { ...current.notifications, ...patch },
+    }));
+  }
+
+  function toggleNotificationEvent(type: PipelineEvent["type"], enabled: boolean) {
+    setSettings((current) => ({
+      ...current,
+      notifications: {
+        ...current.notifications,
+        events: { ...current.notifications.events, [type]: enabled },
       },
     }));
   }
@@ -256,6 +274,32 @@ export function SettingsForm({
             </div>
 
             <Field
+              label="Spend ceiling per stage (USD)"
+              htmlFor="maxCostPerStageUsd"
+              hint={
+                "No single agent session should ever exceed this. Checked after the turn that " +
+                "crosses it, not before — a stop-loss, not a hard cap, since no provider reports " +
+                "what a turn will cost before running it. The Claude figure is the SDK's own " +
+                "estimate of equivalent API spend, not a bill. Blank means no ceiling."
+              }
+            >
+              <Input
+                id="maxCostPerStageUsd"
+                type="number"
+                min={0}
+                step="0.01"
+                value={settings.maxCostPerStageUsd ?? ""}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setSettings((current) => ({
+                    ...current,
+                    maxCostPerStageUsd: raw === "" ? null : Number(raw),
+                  }));
+                }}
+              />
+            </Field>
+
+            <Field
               label="Workspace retention (days)"
               htmlFor="workspaceRetentionDays"
               hint="How long a finished task's clone is kept on disk for inspection. 0 deletes it immediately."
@@ -330,7 +374,33 @@ export function SettingsForm({
             turn the quota display off for that mode.
           </CardDescription>
         </CardHeader>
-        <CardBody>
+        <CardBody className="flex flex-col gap-4">
+          <Field
+            label="Enforcement"
+            htmlFor="quotaEnforcement"
+            hint={
+              'This enforces one combined limit across every provider (Claude, ChatGPT, Gemini), ' +
+              'not a per-provider guarantee — see the note in docs. "Off" only shows the bar; ' +
+              '"Warn" starts anyway and logs it; "Hold" refuses new starts once the limit is reached ' +
+              '(a "Start anyway" button still overrides it per task).'
+            }
+          >
+            <Select
+              id="quotaEnforcement"
+              value={settings.quotaEnforcement}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  quotaEnforcement: event.target.value as AppSettings["quotaEnforcement"],
+                }))
+              }
+            >
+              <option value="off">Off — display only</option>
+              <option value="warn">Warn — start anyway, log it</option>
+              <option value="hold">Hold — refuse new starts</option>
+            </Select>
+          </Field>
+
           <div className="grid gap-4 sm:grid-cols-2">
             {QUOTA_MODES.map(({ mode, label }) => (
               <div key={mode} className="flex flex-col gap-3 rounded-md border border-border p-3">
@@ -384,6 +454,89 @@ export function SettingsForm({
           <Button type="button" variant="secondary" disabled={vacuuming} onClick={() => void runVacuum()}>
             {vacuuming ? "Running VACUUM…" : "Run VACUUM"}
           </Button>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Notifications and queue</CardTitle>
+          <CardDescription>
+            A configured webhook receives one POST per enabled event — Slack, Discord, ntfy, n8n
+            or your own script all take a plain webhook, so there is no per-vendor integration
+            here. Delivery is fire-and-forget: a failure is logged and retried, never blocks the
+            pipeline. Browser notifications ride the board-wide event stream instead.
+          </CardDescription>
+        </CardHeader>
+        <CardBody className="flex flex-col gap-4">
+          <Field
+            label="Webhook URL"
+            htmlFor="webhookUrl"
+            hint="Blank disables the webhook entirely."
+          >
+            <Input
+              id="webhookUrl"
+              type="url"
+              placeholder="https://example.com/hooks/pipeline"
+              value={settings.notifications.webhookUrl ?? ""}
+              onChange={(event) =>
+                setNotification({ webhookUrl: event.target.value === "" ? null : event.target.value })
+              }
+            />
+          </Field>
+
+          <Field
+            label="Signing secret (env var name)"
+            htmlFor="webhookSecretRef"
+            hint={
+              'The NAME of an environment variable holding the secret, never the value itself — ' +
+              "same rule every repository credential in this product follows. When set, deliveries " +
+              "carry an X-Signature: sha256=<hmac> header over the raw body. Blank ships unsigned."
+            }
+          >
+            <Input
+              id="webhookSecretRef"
+              placeholder="PIPELINE_WEBHOOK_SECRET"
+              className="font-mono text-xs"
+              value={settings.notifications.webhookSecretRef ?? ""}
+              onChange={(event) =>
+                setNotification({ webhookSecretRef: event.target.value === "" ? null : event.target.value })
+              }
+            />
+          </Field>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted">Events</span>
+            <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-3">
+              {PIPELINE_EVENT_TYPES.map((type) => (
+                <label key={type} className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={settings.notifications.events[type]}
+                    onChange={(event) => toggleNotificationEvent(type, event.target.checked)}
+                  />
+                  <span className="font-mono">{type}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5 border-t border-border pt-4">
+            <span className="text-xs font-medium text-muted">Queue hold</span>
+            <label className="flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={settings.queueHeld}
+                onChange={(event) =>
+                  setSettings((current) => ({ ...current, queueHeld: event.target.checked }))
+                }
+              />
+              <span>
+                Stop the worker from claiming any <strong>new</strong> job. A job already running
+                finishes normally — this does not abort anything in flight.
+              </span>
+            </label>
+          </div>
         </CardBody>
       </Card>
 

@@ -51,6 +51,7 @@ export default async function EditTaskPage(props: { params: Promise<{ id: string
         requireHumanCodeReview: task.requireHumanCodeReview,
         attachments: listAttachments(task.id),
         dependsOn: listDependencies(task.id).map((dependency) => dependency.id),
+        maxCostPerTaskUsd: task.maxCostUsd,
       }}
       dependencyOptions={dependencyOptions}
     />

@@ -1,10 +1,18 @@
 import { capacityBlockedReason } from "@/lib/capacity";
+import { formatCost, formatDateTime } from "@/lib/utils";
 
 import { db } from "../db/client";
 import { appendEvent } from "../events/store";
 import { workspaceHasGitDir } from "../git/workspace";
-import { cancelPendingJobs, cancelScheduledCleanup, enqueueJob } from "../jobs/queue";
+import {
+  cancelPendingJobs,
+  cancelScheduledCleanup,
+  enqueueJob,
+  hasActiveJobForTask,
+  hasPendingQuotaWake,
+} from "../jobs/queue";
 import { getSettings } from "../settings/store";
+import { type Cadence, resolveQuotaStatus } from "../usage/quota";
 import {
   type DependencySummary,
   type EditableTaskFields,
@@ -25,6 +33,7 @@ import {
   recordApproval,
   saveArtifact,
   setTaskStage,
+  totalCostForTask,
   updateTask,
   updateTaskFields,
 } from "../tasks/service";
@@ -49,6 +58,7 @@ import {
   type Stage,
   isAgentStage,
   isGate,
+  isTerminalStage,
 } from "./stages";
 
 /**
@@ -116,10 +126,60 @@ function scheduleStage(taskId: string, stage: Stage): void {
   });
 }
 
-/** Persists a transition and schedules whatever comes next. */
-export function applyTransition(taskId: string, transition: Transition): void {
+/**
+ * Refuses to schedule a stage once the task's own spend ceiling
+ * (`tasks.max_cost_usd`) is already met or exceeded — the per-task
+ * counterpart to the per-stage ceiling each provider enforces mid-session
+ * (§5.2). `null` means no ceiling, so this is a no-op for every task that
+ * never set one.
+ *
+ * Checked *before* scheduling, not inside a running session: this is a
+ * between-stage admission check, not the stop-loss a provider applies while
+ * a session is in flight.
+ */
+function ceilingExceededReason(taskId: string): string | null {
+  const task = getTask(taskId);
+  if (!task || task.maxCostUsd === null) return null;
+
+  const spent = totalCostForTask(taskId);
+  if (spent < task.maxCostUsd) return null;
+
+  return (
+    `Spend ceiling of ${formatCost(task.maxCostUsd)} reached ` +
+    `(${formatCost(spent)} spent so far).`
+  );
+}
+
+/**
+ * Persists a transition and schedules whatever comes next.
+ *
+ * Returns the transition actually applied — ordinarily `transition` itself,
+ * except a `"run"` that immediately exceeds the task's spend ceiling, which
+ * is substituted for the terminal `FAILED` transition it produces instead.
+ * Every caller that decides whether to call {@link promoteQueue} from a
+ * transition's `type` (a terminal or gate outcome frees a concurrency slot)
+ * must use this return value, not the transition it passed in — otherwise a
+ * ceiling-triggered substitution frees a slot with nothing to notice.
+ */
+export function applyTransition(taskId: string, transition: Transition): Transition {
   switch (transition.type) {
     case "run": {
+      const overCeiling = ceilingExceededReason(taskId);
+      if (overCeiling) {
+        // Terminal, not a rework signal: the Developer did not produce bad
+        // work, the task ran out of money before the stage even started.
+        // `failedStage` names the stage that was refused, so a retry (after
+        // raising the ceiling) re-runs exactly that one — `RETRY_TARGET`'s
+        // `stage_error` mapping already re-runs `failedStage` itself.
+        return applyTransition(taskId, {
+          type: "terminal",
+          stage: "FAILED",
+          reason: overCeiling,
+          failedStage: transition.stage,
+          failureKind: "stage_error",
+        });
+      }
+
       // Clears any failure the task previously carried, whether or not this
       // is a retry: a run transition always leaves the task actively running,
       // and a stale failure_reason/failed_stage/failure_kind would otherwise
@@ -129,14 +189,28 @@ export function applyTransition(taskId: string, transition: Transition): void {
         failedStage: null,
         failureKind: null,
       });
+
+      // §9.2/9.3: "finish the current stage, then wait" — the transition
+      // still applies (the board shows the real next stage, not a stale
+      // one), only the job that would spend money on it is withheld.
+      // `resumeTask` detects exactly this withheld state and schedules it.
+      if (getTask(taskId)?.paused) {
+        appendEvent(taskId, null, {
+          type: "log",
+          level: "info",
+          message: `${STAGE_LABELS[transition.stage]} withheld: task is paused.`,
+        });
+        return transition;
+      }
+
       scheduleStage(taskId, transition.stage);
-      break;
+      return transition;
     }
 
     case "await_gate": {
       setTaskStage(taskId, transition.gate);
       appendEvent(taskId, null, { type: "gate_opened", gate: transition.gate });
-      break;
+      return transition;
     }
 
     case "terminal": {
@@ -144,6 +218,14 @@ export function applyTransition(taskId: string, transition: Transition): void {
         failureReason: transition.reason ?? null,
         failedStage: transition.failedStage ?? null,
         failureKind: transition.failureKind ?? null,
+        // A terminal task has no next stage left to withhold, so a pause set
+        // before this transition must not survive it: left `true`, it would
+        // silently withhold the very next "run" transition a later retry
+        // produces — which targets the *same* failed stage by name, the one
+        // case `resumeTask`'s withheld detection cannot itself untangle (see
+        // its own comment). Cancel and rejection reach here too; the flag is
+        // equally meaningless once nothing is running to pause.
+        paused: false,
       });
       cancelPendingJobs(taskId);
       appendEvent(taskId, null, {
@@ -152,7 +234,7 @@ export function applyTransition(taskId: string, transition: Transition): void {
         reason: transition.reason,
       });
       scheduleWorkspaceCleanup(taskId);
-      break;
+      return transition;
     }
   }
 }
@@ -170,15 +252,17 @@ export function advanceTask(taskId: string, signal: PipelineSignal): Transition 
   if (!task) throw new TaskNotFoundError(taskId);
 
   const transition = nextTransition(task.currentStage, signal, contextFor(task));
-  applyTransition(taskId, transition);
+  const applied = applyTransition(taskId, transition);
   // A terminal stage or a gate both release the concurrency slot this task
   // held (§8.2), so this is exactly when the next `on_queue` task, if any,
   // can take its place. `promoteQueue` is never itself wrapped in a
-  // transaction here — see the warning on its definition.
-  if (transition.type === "terminal" || transition.type === "await_gate") {
+  // transaction here — see the warning on its definition. Checked against
+  // `applied`, not `transition`: a spend-ceiling substitution (§5.2) can turn
+  // a `"run"` into a terminal outcome that still frees the slot.
+  if (applied.type === "terminal" || applied.type === "await_gate") {
     promoteQueue();
   }
-  return transition;
+  return applied;
 }
 
 /**
@@ -262,20 +346,95 @@ function assertPrerequisitesMet(taskId: string): void {
 }
 
 /**
+ * Raised when starting (or resuming, or retrying) a task would exceed the
+ * configured spend quota under `enforcement: "hold"`.
+ *
+ * Carries what the UI needs to explain itself — the limit, what has been
+ * spent, the cadence and when it resets — rather than just refusing. See
+ * spec §4.3.
+ */
+export class QuotaError extends Error {
+  constructor(
+    readonly limitUsd: number,
+    readonly usedUsd: number,
+    readonly cadence: Cadence,
+    readonly resetAt: number,
+  ) {
+    super(
+      `Spend limit of ${formatCost(limitUsd)} per ${cadence === "daily" ? "day" : "hour"} ` +
+        `reached (${formatCost(usedUsd)} used); resets ${formatDateTime(resetAt)}.`,
+    );
+    this.name = "QuotaError";
+  }
+}
+
+/**
+ * Throws unless admitting this task is within the configured spend quota, or
+ * appends a `quota_warning`/`quota_overridden` event and lets it proceed.
+ *
+ * Must be called inside the same transaction as the transition it guards —
+ * same reasoning as {@link assertSlotAvailable} — and before it: money is a
+ * harder refusal than concurrency, and the two produce different messages
+ * (§4.3).
+ *
+ * Pool-wide: this checks total spend across every provider against the
+ * *Claude* auth mode's configured limit (`resolveQuotaStatus`'s own
+ * documented gap, §4.8) — this spec does not segment quota by provider.
+ */
+function assertWithinQuota(taskId: string, overrideQuota: boolean): void {
+  const settings = getSettings();
+  if (settings.quotaEnforcement === "off") return;
+
+  const status = resolveQuotaStatus();
+  if (status.state !== "exceeded") return;
+
+  if (settings.quotaEnforcement === "warn") {
+    appendEvent(taskId, null, {
+      type: "quota_warning",
+      usedUsd: status.usedUsd,
+      limitUsd: status.limitUsd,
+      cadence: status.cadence,
+    });
+    return;
+  }
+
+  // enforcement === "hold"
+  if (overrideQuota) {
+    appendEvent(taskId, null, {
+      type: "quota_overridden",
+      usedUsd: status.usedUsd,
+      limitUsd: status.limitUsd,
+      cadence: status.cadence,
+    });
+    return;
+  }
+
+  throw new QuotaError(status.limitUsd, status.usedUsd, status.cadence, status.resetAt);
+}
+
+/**
  * Enters the pipeline, subject to admission control.
  *
  * The capacity check and the transition share one transaction so the invariant
  * "at most `MAX_PARALLEL_TASKS` tasks are in flight" cannot be raced. The
  * dependency check runs first: it is a hard, unconditional gate that must
- * win even when a slot happens to be free.
+ * win even when a slot happens to be free; quota runs next, since no amount
+ * of waiting for a slot fixes a spend refusal (§4.3).
  *
+ * @param overrideQuota Skips only {@link assertWithinQuota}'s `"hold"`
+ *   refusal — the "Start anyway" affordance. Has no effect on capacity or
+ *   dependency refusals, which protect invariants rather than the user's
+ *   wallet.
  * @throws {DependencyError} when a prerequisite has not reached `COMPLETED`.
+ * @throws {QuotaError} when `enforcement: "hold"` and usage is over the
+ *   configured limit, unless `overrideQuota` is set.
  * @throws {CapacityError} when no slot is free.
  * @throws {InvalidTransitionError} when the task is not at `CREATED`.
  */
-export function startTask(taskId: string): Transition {
+export function startTask(taskId: string, options: { overrideQuota?: boolean } = {}): Transition {
   return db.transaction(() => {
     assertPrerequisitesMet(taskId);
+    assertWithinQuota(taskId, options.overrideQuota ?? false);
     assertSlotAvailable();
     const transition = advanceTask(taskId, { kind: "start" });
     appendEvent(taskId, null, { type: "task_started" });
@@ -336,10 +495,12 @@ function sortByPriorityThenDifficulty(tasksToSort: TaskRow[]): TaskRow[] {
  * most one task, since one transition frees at most one slot; each
  * subsequent slot-freeing transition calls this again.
  *
- * A `CapacityError` stops the loop outright — every remaining candidate would
- * fail the same admission check, so trying them is wasted work. The
- * per-candidate races — `DependencyError`, `InvalidTransitionError` (the task
- * was started elsewhere in the same instant), `TaskNotFoundError`
+ * A `CapacityError` or a `QuotaError` stops the loop outright — every
+ * remaining candidate would fail the same admission check (a quota refusal
+ * refuses every candidate in the same instant, exactly like capacity), so
+ * trying them is wasted work — one `costSince` call, not one per candidate.
+ * The per-candidate races — `DependencyError`, `InvalidTransitionError` (the
+ * task was started elsewhere in the same instant), `TaskNotFoundError`
  * (cancelled/deleted meanwhile) and `StaleQueueEntryError` (the `gate_queued`
  * equivalent) — say nothing about the rest of the queue, so the loop moves on
  * to the next candidate. Skipping a `DependencyError` candidate is also the
@@ -370,7 +531,7 @@ export function promoteQueue(): void {
       }
       return;
     } catch (error) {
-      if (error instanceof CapacityError) return;
+      if (error instanceof CapacityError || error instanceof QuotaError) return;
 
       const expected =
         error instanceof DependencyError ||
@@ -449,6 +610,23 @@ export function startTasksBatch(taskIds: string[]): BatchStartResult[] {
         // is what re-checks this task once its prerequisites (or a slot)
         // change, rather than requiring a second manual start.
         updateTask(task.id, { status: "on_queue" });
+        results.push({
+          taskId: task.id,
+          title: task.title,
+          started: false,
+          queued: true,
+          reason: error.message,
+        });
+        continue;
+      }
+      if (error instanceof QuotaError) {
+        // Parked exactly like the two refusals above; also schedules the
+        // period-boundary wake-up that re-checks it without waiting for an
+        // unrelated slot-freeing transition — see §4.5.
+        updateTask(task.id, { status: "on_queue" });
+        if (!hasPendingQuotaWake()) {
+          enqueueJob({ taskId: task.id, kind: "quota_wake", runAfter: error.resetAt });
+        }
         results.push({
           taskId: task.id,
           title: task.title,
@@ -689,8 +867,8 @@ export function decideGate(input: {
       return { transition, queued: true };
     }
 
-    applyTransition(input.taskId, transition);
-    return { transition, queued: false };
+    const applied = applyTransition(input.taskId, transition);
+    return { transition: applied, queued: false };
   });
 
   // Outside the transaction: `reject` and an exhausted `request_changes` are
@@ -698,7 +876,9 @@ export function decideGate(input: {
   // queued task — `on_queue` or `gate_queued` — can take it. `promoteQueue`
   // opens its own transaction, so it must run after this one has committed.
   // Queuing itself (the branch above) frees no slot, so it does not call
-  // `promoteQueue`.
+  // `promoteQueue`. Checked against the *applied* transition — a `"run"`
+  // that immediately exceeded the spend ceiling (§5.2) is substituted for a
+  // terminal one and still frees the slot.
   if (transition.type === "terminal") {
     promoteQueue();
   }
@@ -724,10 +904,12 @@ export function decideGate(input: {
  * not bugs.
  * @throws {GateError} when no approval row exists for the gate — a real bug,
  * since a `gate_queued` task can only exist after `decideGate` recorded one.
+ * @throws {QuotaError} when `enforcement: "hold"` and usage is over the
+ * configured limit.
  * @throws {CapacityError} when no slot is free after all.
  */
 export function resumeGatedTask(taskId: string): Transition {
-  return db.transaction(() => {
+  const applied = db.transaction(() => {
     const task = getTask(taskId);
     if (!task) throw new StaleQueueEntryError(taskId, "the task no longer exists");
     if (task.status !== "gate_queued") {
@@ -745,6 +927,7 @@ export function resumeGatedTask(taskId: string): Transition {
       throw new GateError(`Task ${taskId} is gate_queued on ${gate} with no recorded approval.`);
     }
 
+    assertWithinQuota(taskId, false);
     assertSlotAvailable();
 
     const signal: PipelineSignal = {
@@ -754,9 +937,18 @@ export function resumeGatedTask(taskId: string): Transition {
       comment: approval.comment ?? undefined,
     };
     const transition = nextTransition(task.currentStage, signal, contextFor(task));
-    applyTransition(taskId, transition);
-    return transition;
+    return applyTransition(taskId, transition);
   });
+
+  // A `"run"` that immediately exceeded the spend ceiling (§5.2) is
+  // substituted for a terminal one inside `applyTransition` and still frees
+  // the slot this resume just took — `promoteQueue` (this function's only
+  // caller) would otherwise never notice. Ordinarily a no-op: resuming into
+  // `"run"` is the overwhelmingly common case here.
+  if (applied.type === "terminal") {
+    promoteQueue();
+  }
+  return applied;
 }
 
 /** Why a retry was refused — mirrored by `available: false` on {@link RetryAvailability}. */
@@ -899,21 +1091,31 @@ export function retryAvailability(taskId: string): RetryAvailability | null {
  * under the retried run (§8.1).
  *
  * @throws {TaskNotFoundError} when the task does not exist.
+ * @throws {QuotaError} when `enforcement: "hold"` and usage is over the
+ * configured limit — a granted rework cycle is new spend and passes the same
+ * admission check a fresh start would.
  * @throws {NotRetryableError} when the task has not failed, has no recorded
  * cause, or its workspace is gone.
  * @throws {CapacityError} when no slot is free.
  */
 export function retryTask(taskId: string): Transition {
-  return db.transaction(() => {
+  const applied = db.transaction(() => {
     const task = getTask(taskId);
     if (!task) throw new TaskNotFoundError(taskId);
 
     const availability = computeRetryAvailability(task);
-    if (!availability.available) {
-      if (availability.code === "capacity") {
-        throw new CapacityError(getSettings().maxParallelTasks, capacity().blocking);
-      }
+    // Hard, unconditional refusals (not failed / no recorded cause / workspace
+    // gone) win even over quota — same reasoning as `assertPrerequisitesMet`
+    // running before `assertWithinQuota` in `startTask`. Quota runs before
+    // capacity, since no amount of waiting for a slot fixes a spend refusal.
+    if (!availability.available && availability.code !== "capacity") {
       throw new NotRetryableError(availability.code, availability.reason);
+    }
+
+    assertWithinQuota(taskId, false);
+
+    if (!availability.available) {
+      throw new CapacityError(getSettings().maxParallelTasks, capacity().blocking);
     }
 
     cancelScheduledCleanup(taskId);
@@ -939,9 +1141,18 @@ export function retryTask(taskId: string): Transition {
       stage: availability.stage,
       attempt: availability.attempt,
     };
-    applyTransition(taskId, transition);
-    return transition;
+    return applyTransition(taskId, transition);
   });
+
+  // A retry is normally always `"run"` — `RETRY_TARGET` never produces a
+  // terminal outcome on its own. The one exception is a spend ceiling that
+  // was already exceeded when the retry was admitted (§5.2), substituted for
+  // a terminal transition inside `applyTransition`; that still frees the
+  // slot the retry just re-admitted into, so `promoteQueue` must run.
+  if (applied.type === "terminal") {
+    promoteQueue();
+  }
+  return applied;
 }
 
 /**
@@ -992,6 +1203,65 @@ export function cancelTask(taskId: string): Transition | null {
 
   appendEvent(taskId, null, { type: "log", level: "warn", message: "Task cancelled by user." });
   return advanceTask(taskId, { kind: "cancel" });
+}
+
+/**
+ * Sets the "finish the current stage, then wait" flag (§9.2). Does not touch
+ * whatever stage is currently running — that keeps going to completion; only
+ * the *next* `scheduleStage` call (in `applyTransition`'s `"run"` case) is
+ * withheld. Safe to call on an already-paused task (idempotent) or a
+ * finished one (a no-op with nothing left to withhold).
+ *
+ * Restricted to `running`/`awaiting_gate`: those are the only statuses with a
+ * current stage actually in front of the user for this to let finish before
+ * withholding the next one. A task that has not started yet (`queued`,
+ * `on_queue`) or is already parked (`gate_queued`) has nothing in flight to
+ * pause — allowing it there only widened the surface for a stray `paused`
+ * flag to silently withhold a later `startTask`/`resumeGatedTask` transition.
+ */
+export function pauseTask(taskId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (task.paused) return;
+  if (task.status !== "running" && task.status !== "awaiting_gate") return;
+
+  updateTask(taskId, { paused: true });
+  appendEvent(taskId, null, {
+    type: "log",
+    level: "info",
+    message: "Task paused: the current stage will finish, then wait before the next one.",
+  });
+}
+
+/**
+ * Clears the pause flag and, if a stage was actually withheld while paused,
+ * schedules it.
+ *
+ * "Withheld" is detected rather than tracked by a separate column, but not by
+ * comparing the most recently created stage run's stage against
+ * `current_stage`: that comparison looks identical — a "match", meaning "not
+ * withheld" — whenever the withheld stage shares its name with the task's own
+ * most recent run, which is exactly what a rework loop or a retry of a failed
+ * stage produces (the previous attempt's run already carries that same stage
+ * name). Instead this checks {@link hasActiveJobForTask}: `scheduleStage`
+ * always enqueues a job in the same breath it changes `current_stage` to a
+ * schedulable stage (see `applyTransition`'s `"run"` case), so "no
+ * pending/claimed job for this task" is exact evidence that the stage was
+ * withheld rather than scheduled, independent of stage names or attempt
+ * numbers.
+ */
+export function resumeTask(taskId: string): void {
+  const task = getTask(taskId);
+  if (!task) throw new TaskNotFoundError(taskId);
+  if (!task.paused) return;
+
+  updateTask(taskId, { paused: false });
+  appendEvent(taskId, null, { type: "log", level: "info", message: "Task resumed." });
+
+  if (isGate(task.currentStage) || isTerminalStage(task.currentStage)) return;
+
+  const withheld = !hasActiveJobForTask(taskId);
+  if (withheld) scheduleStage(taskId, task.currentStage);
 }
 
 /** Approvals already recorded, newest first — used to render the timeline. */

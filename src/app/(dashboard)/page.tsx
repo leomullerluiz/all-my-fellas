@@ -18,6 +18,7 @@ import { executionStateFor, executionStates } from "@/server/pipeline/execution"
 import { capacity } from "@/server/pipeline/orchestrator";
 import { listDependencies, listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
 import { resolveQuotaStatus, spendToday } from "@/server/usage/quota";
+import { resolveWorkerHealth } from "@/server/worker/health";
 
 // The board reflects worker state that changes between requests, so it must be
 // rendered per request rather than prerendered at build time.
@@ -30,6 +31,23 @@ function SetupNotice() {
   if (auth.mode === "missing") {
     problems.push(
       "No Claude credential found. Set CLAUDE_CODE_OAUTH_TOKEN (subscription) or ANTHROPIC_API_KEY in .env.",
+    );
+  }
+
+  // §7.4: the one failure that stops everything else — a dead or hung
+  // worker leaves every "running" task pulsing forever with no other signal.
+  const health = resolveWorkerHealth();
+  if (health.state === "never_started") {
+    problems.push(
+      "The worker process has never reported in. Start it with npm run dev:worker (or the worker container).",
+    );
+  } else if (health.state === "lagging") {
+    problems.push("The worker hasn't reported in for a bit — it may be busy, or about to become unresponsive.");
+  } else if (health.state === "stale") {
+    problems.push(
+      health.interrupted
+        ? `The worker appears to have died while running task ${health.activeTaskId}. Restart it to resume — the job will pick up where it left off.`
+        : "The worker appears to have died. Restart it to resume processing tasks.",
     );
   }
 
