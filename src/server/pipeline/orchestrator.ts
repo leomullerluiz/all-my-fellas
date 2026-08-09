@@ -83,6 +83,12 @@ function contextFor(task: TaskRow): PipelineContext {
   const planGateRequired = !(
     settings.autoApprovePlanForLowCriticality && task.criticality === "low"
   );
+  // `"auto"` matches the same S/low pair the plan gate already keys on
+  // (spec §7.2); `"never"` skips unconditionally; `"always"` (the default)
+  // reproduces today's behaviour regardless of the estimate.
+  const skipCodeReview =
+    settings.codeReviewEnabled === "never" ||
+    (settings.codeReviewEnabled === "auto" && task.difficulty === "S" && task.criticality === "low");
   return {
     developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
     architectureAttempts: countStageRuns(task.id, "ARCHITECTURE"),
@@ -91,6 +97,7 @@ function contextFor(task: TaskRow): PipelineContext {
     reworkBudgetGrant: task.reworkBudgetGrant,
     planGateRequired,
     humanCodeReviewRequired: task.requireHumanCodeReview,
+    skipCodeReview,
     noApprovalGatesEnabled: settings.noApprovalAutomation,
   };
 }

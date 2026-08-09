@@ -35,6 +35,7 @@ const INITIAL: AppSettings = {
   autoApprovePlanForLowCriticality: false,
   noApprovalAutomation: false,
   humanCodeReviewDefault: false,
+  codeReviewEnabled: "always",
   maxTurns: stageRecord(10),
   workspaceRetentionDays: 7,
   transcriptRetentionDays: null,

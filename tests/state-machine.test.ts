@@ -18,6 +18,7 @@ const base: PipelineContext = {
   reworkBudgetGrant: 0,
   planGateRequired: true,
   humanCodeReviewRequired: false,
+  skipCodeReview: false,
   noApprovalGatesEnabled: false,
 };
 
@@ -80,6 +81,16 @@ describe("verification", () => {
         { ...base, developmentAttempts: 1 },
       ),
     ).toEqual({ type: "run", stage: "CODE_REVIEW", attempt: 1 });
+  });
+
+  it("skips code review straight to QA when the task opted out (stories.md S6)", () => {
+    expect(
+      nextTransition(
+        "VERIFICATION",
+        { kind: "stage_succeeded", stage: "VERIFICATION", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1, skipCodeReview: true },
+      ),
+    ).toEqual({ type: "run", stage: "QA", attempt: 1 });
   });
 
   it("sends a failed verification back to development without touching code review", () => {

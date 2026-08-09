@@ -95,6 +95,13 @@ export type PipelineContext = {
   /** Whether the task opted into a human code review before delivery. */
   humanCodeReviewRequired: boolean;
   /**
+   * Whether `CODE_REVIEW` is skipped for this task — settings.codeReviewEnabled
+   * resolved against the task's own difficulty/criticality estimate. See
+   * stories.md S6; the cheap alternative to a full named-profile system
+   * (spec §7.2).
+   */
+  skipCodeReview: boolean;
+  /**
    * Instance-wide "no-approval automation" switch (`settings.noApprovalAutomation`).
    * When true, `PLAN_GATE` and an accepted `PO_HOMOLOGATION` no longer wait
    * for a human — see the `ARCHITECTURE` and `PO_HOMOLOGATION` branches below.
@@ -312,9 +319,15 @@ export function nextTransition(
     // `skipped` is folded into `approved` at the call site (`executeVerification`)
     // — there is no third value here, matching `state-machine.ts`'s existing
     // rule against a second near-identical field.
-    return signal.reviewVerdict === "approved"
-      ? { type: "run", stage: "CODE_REVIEW", attempt: 1 }
-      : reworkOrFail(context, signal.detail ?? "Verification failed");
+    if (signal.reviewVerdict !== "approved") {
+      return reworkOrFail(context, signal.detail ?? "Verification failed");
+    }
+    // `codeReviewEnabled: "auto"`/`"never"` on a trivial, low-risk task (or
+    // unconditionally, for `"never"`) — see stories.md S6. `QA` and
+    // `PO_HOMOLOGATION` run unaffected either way.
+    return context.skipCodeReview
+      ? { type: "run", stage: "QA", attempt: 1 }
+      : { type: "run", stage: "CODE_REVIEW", attempt: 1 };
   }
 
   if (current === "CODE_REVIEW") {

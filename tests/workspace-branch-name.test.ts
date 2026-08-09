@@ -50,7 +50,7 @@ beforeAll(async () => {
   await seedGit.add(["README.md"]);
   await seedGit.commit("Initial commit");
   await seedGit.push(["origin", "main"]);
-});
+}, 20_000);
 
 afterAll(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -61,6 +61,10 @@ function access() {
 }
 
 describe("prepareWorkspace — custom branch name", () => {
+  // Each case here clones from the real bare origin — fast in isolation, but
+  // observed to exceed vitest's default 5s timeout under full-suite
+  // contention with every other file's git child processes (same fix as
+  // `tests/workspace-fetch.test.ts`).
   it("checks out the exact custom branch name, untouched", async () => {
     const taskId = "task_custom_branch";
     const workspace = await prepareWorkspace({
@@ -77,7 +81,7 @@ describe("prepareWorkspace — custom branch name", () => {
     const branches = await git.branchLocal();
     expect(branches.current).toBe("feature/my-custom-name");
     expect(branches.all).toContain("feature/my-custom-name");
-  });
+  }, 20_000);
 
   it("trims surrounding whitespace before checking out", async () => {
     const taskId = "task_custom_branch_trim";
@@ -92,7 +96,7 @@ describe("prepareWorkspace — custom branch name", () => {
     expect(workspace.branchName).toBe("feature/trimmed");
     const git = simpleGit(workspace.path);
     expect((await git.branchLocal()).current).toBe("feature/trimmed");
-  });
+  }, 20_000);
 
   it("falls back to branchNameFor(...) when omitted", async () => {
     const taskId = "task_no_custom_branch";
@@ -110,7 +114,7 @@ describe("prepareWorkspace — custom branch name", () => {
 
     const git = simpleGit(workspace.path);
     expect((await git.branchLocal()).current).toBe(expected);
-  });
+  }, 20_000);
 
   it("falls back to branchNameFor(...) when the custom name is blank/whitespace-only", async () => {
     const taskId = "task_blank_custom_branch";
@@ -124,5 +128,5 @@ describe("prepareWorkspace — custom branch name", () => {
     });
 
     expect(workspace.branchName).toBe(branchNameFor(taskId, title));
-  });
+  }, 20_000);
 });

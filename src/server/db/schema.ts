@@ -178,6 +178,20 @@ export const stageRuns = sqliteTable(
     userPrompt: text("user_prompt"),
     model: text("model"),
     provider: text("provider").$type<LlmProviderId>(),
+    /**
+     * The commit SHA a reviewing stage (`CODE_REVIEW`/`QA`) reviewed, written
+     * on success. Read back on the next rework attempt to scope the
+     * incremental diff supplement to what changed since — see stories.md S3.
+     * `NULL` for every non-reviewing stage and for rows written before this
+     * column existed.
+     */
+    reviewedHeadSha: text("reviewed_head_sha"),
+    /**
+     * The agent's last output when `validateArtifact` rejected it — kept even
+     * when the one bounded repair attempt (stories.md S4) also fails, so a
+     * paid-for session's text is never simply discarded.
+     */
+    rejectedOutput: text("rejected_output"),
     createdAt: integer("created_at").notNull().default(now),
   },
   (table) => [

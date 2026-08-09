@@ -84,6 +84,14 @@ export type AppSettings = {
   noApprovalAutomation: boolean;
   /** Pre-selected value of "require human code review" on the new-task form. */
   humanCodeReviewDefault: boolean;
+  /**
+   * Whether `CODE_REVIEW` runs at all. `"auto"` skips it when the Architect
+   * rated the task `difficulty: "S"` and `criticality: "low"` — the same two
+   * fields the plan gate already keys on. `"always"` reproduces today's
+   * behaviour and is the default so an install that has never touched this
+   * setting is unaffected.
+   */
+  codeReviewEnabled: "always" | "auto" | "never";
   /** Per-stage turn ceiling; caps the cost of a runaway agent. */
   maxTurns: Record<AgentStage, number>;
   workspaceRetentionDays: number;
@@ -144,6 +152,7 @@ export function defaultSettings(): AppSettings {
     // The pipeline already has two mandatory human gates; a third by default
     // would triple the interaction cost of every task.
     humanCodeReviewDefault: false,
+    codeReviewEnabled: "always",
     // Off by default: skipping both approval gates instance-wide is a
     // deliberate, explicit opt-in, not something a fresh install should do.
     noApprovalAutomation: false,
