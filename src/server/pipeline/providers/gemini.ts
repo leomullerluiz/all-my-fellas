@@ -236,6 +236,9 @@ export async function runGeminiStage(
     finalText,
     costUsd,
     inputTokens,
+    // Gemini reports one prompt-token count, with no cache breakdown.
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens,
     numTurns: turn,
     transcript,

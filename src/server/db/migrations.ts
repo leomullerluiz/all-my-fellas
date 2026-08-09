@@ -162,6 +162,25 @@ const MIGRATIONS: readonly Migration[] = [
       addColumn(sqlite, "tasks", "paused", "INTEGER NOT NULL DEFAULT 0");
     },
   },
+  {
+    name: "cache token accounting for stage runs",
+    up: (sqlite) => {
+      // `input_tokens` already holds the total (§3.2) — these two hold its
+      // cached components, zero for OpenAI/Gemini which report no breakdown.
+      addColumn(sqlite, "stage_runs", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
+      addColumn(sqlite, "stage_runs", "cache_write_tokens", "INTEGER NOT NULL DEFAULT 0");
+
+      // SQLite backfills a `NOT NULL DEFAULT 0` column to 0 on every existing
+      // row, which is indistinguishable from "no cache hit" — so a per-row
+      // NULL sentinel cannot mark which rows predate this fix (open question 1
+      // in the brief). This writes the one honest cutoff available: the
+      // moment this migration ran on this installation. `costPerTask` reads it
+      // back to flag a task whose figures may still be under-reported.
+      sqlite
+        .prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`)
+        .run("cacheTokenFixAppliedAt", String(Date.now()));
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

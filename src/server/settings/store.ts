@@ -17,6 +17,27 @@ import type { QuotaEnforcement } from "../usage/quota";
 
 const SETTINGS_KEY = "app";
 
+/**
+ * Key of the one-time marker its migration writes — see `migrations.ts`'s
+ * "cache token accounting for stage runs" entry. A row-level `settings` key
+ * rather than part of the `AppSettings` blob: it is written once, at migration
+ * time, never through `updateSettings`.
+ */
+const CACHE_TOKEN_FIX_KEY = "cacheTokenFixAppliedAt";
+
+/**
+ * When the cache-token accounting fix (stories.md S1) was applied to this
+ * database. `null` only for a database that has somehow never run that
+ * migration — `costPerTask` treats that the same as "every existing row
+ * predates the fix", the safe default.
+ */
+export function cacheTokenFixAppliedAt(): number | null {
+  const row = db.select().from(settings).where(eq(settings.key, CACHE_TOKEN_FIX_KEY)).get();
+  if (!row) return null;
+  const parsed = Number(row.value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /** `"system"` follows the browser's `prefers-color-scheme`; the other two are explicit. */
 export const THEMES = ["dark", "light", "system"] as const;
 export type Theme = (typeof THEMES)[number];

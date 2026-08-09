@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCost, formatDateTime, formatTokens } from "@/lib/utils";
 import { STAGE_LABELS } from "@/server/pipeline/stages";
@@ -21,7 +22,7 @@ export default async function UsagePage(props: {
   const parsedDays = rawDays ? Number.parseInt(rawDays, 10) : Number.NaN;
   const days = Number.isFinite(parsedDays) ? parsedDays : undefined;
 
-  const byStage = usageByStage();
+  const byStage = usageByStage(undefined, days);
   const byTask = costPerTask(days);
 
   const total = byTask.reduce((sum, row) => sum + row.costUsd, 0);
@@ -64,7 +65,7 @@ export default async function UsagePage(props: {
 
       <Card>
         <CardHeader>
-          <CardTitle>By stage (all time)</CardTitle>
+          <CardTitle>By stage</CardTitle>
         </CardHeader>
         <CardBody>
           {byStage.length === 0 ? (
@@ -127,6 +128,15 @@ export default async function UsagePage(props: {
                         >
                           {row.title}
                         </Link>
+                        {row.hasUnderReportedTokens ? (
+                          <Badge
+                            tone="warning"
+                            className="ml-2"
+                            title="At least one stage run in this task predates the cache-token accounting fix — its input tokens (and this task's total) may be understated."
+                          >
+                            tokens under-reported
+                          </Badge>
+                        ) : null}
                       </td>
                       <td className="px-4 py-2 text-muted">{row.status}</td>
                       <td className="px-4 py-2 text-muted">{formatDateTime(row.createdAt)}</td>

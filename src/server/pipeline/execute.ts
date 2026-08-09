@@ -377,6 +377,8 @@ export async function executeAgentStage(
   // `markStageRunStatus` — the latter would reset `startedAt` mid-run.
   updateStageRun(stageRunId, {
     inputTokens: result.inputTokens,
+    cacheReadTokens: result.cacheReadTokens,
+    cacheWriteTokens: result.cacheWriteTokens,
     outputTokens: result.outputTokens,
     costUsd: result.costUsd,
   });
