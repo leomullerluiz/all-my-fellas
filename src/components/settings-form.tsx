@@ -312,7 +312,8 @@ export function SettingsForm({
                 />
                 <span>
                   Skip the human plan gate when the Architect rates criticality as{" "}
-                  <strong>low</strong>. The final delivery gate always stays manual.
+                  <strong>low</strong>. The final delivery gate stays manual unless{" "}
+                  <strong>No-approval automation</strong> below is enabled.
                 </span>
               </label>
             </div>
@@ -343,7 +344,7 @@ export function SettingsForm({
               <span>
                 Enabling <strong>No-approval automation</strong> skips both plan review (the plan
                 gate) and final PR approval (the stakeholder gate) for every task — the pipeline
-                will implement and open a pull request without anyone approving the plan or the
+                will implement and open a change request without anyone approving the plan or the
                 delivered change along the way. A second homologation rejection (or one with no
                 rework budget left) still stops at the stakeholder gate; every other gate does
                 not. Only enable this if you fully trust the automation to ship unreviewed code.
