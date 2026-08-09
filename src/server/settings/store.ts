@@ -103,11 +103,19 @@ export type AppSettings = {
   /** Dark/Light/System palette for the dashboard UI. */
   theme: Theme;
   /**
-   * User-entered usage quota per Claude auth mode, shown by the dashboard's
-   * usage bar. There is no API to read the real Pro/Max or pay-per-use quota,
-   * so this is always a configured value, never a fetched one.
+   * User-entered usage quota per provider (Claude split further by auth mode,
+   * since that distinction is real for Claude and meaningless for the other
+   * two — see `env.ts`'s `QuotaKey`), shown by the dashboard's usage bar.
+   * There is no API to read the real Pro/Max or pay-per-use quota, so this is
+   * always a configured value, never a fetched one.
    */
   quotaLimits: QuotaConfig;
+  /**
+   * How close usage must get to a limit before the usage bar switches to its
+   * `warning` state — replaces `quota.ts`'s old `WARNING_RATIO` module
+   * constant. See stories.md S4.
+   */
+  warningRatio: number;
   /**
    * How a configured quota limit is enforced when a task tries to enter the
    * pipeline — see `usage/quota.ts`'s `QuotaEnforcement` and
@@ -170,6 +178,7 @@ export function defaultSettings(): AppSettings {
     transcriptRetentionDays: limits.transcriptRetentionDays,
     theme: "system",
     quotaLimits: resolveQuota(),
+    warningRatio: 0.8,
     quotaEnforcement: "off",
     maxCostPerStageUsd: null,
     queueHeld: false,

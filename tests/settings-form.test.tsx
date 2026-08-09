@@ -41,7 +41,10 @@ const INITIAL: AppSettings = {
   quotaLimits: {
     subscription: { limitUsd: null, cadence: "daily" },
     api_key: { limitUsd: null, cadence: "daily" },
+    chatgpt: { limitUsd: null, cadence: "daily" },
+    gemini: { limitUsd: null, cadence: "daily" },
   },
+  warningRatio: 0.8,
   quotaEnforcement: "off",
   maxCostPerStageUsd: null,
   queueHeld: false,

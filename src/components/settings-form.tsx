@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
-import type { Cadence, ProviderAuth } from "@/server/config/env";
+import type { Cadence, ProviderAuth, QuotaKey } from "@/server/config/env";
 import { LLM_PROVIDER_IDS, LLM_PROVIDER_LABELS, type LlmProviderId } from "@/server/config/llm-providers";
 import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/types";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
@@ -19,6 +19,8 @@ import { formatBytes } from "@/lib/utils";
 const QUOTA_MODES = [
   { mode: "subscription" as const, label: "Claude subscription" },
   { mode: "api_key" as const, label: "Anthropic API key" },
+  { mode: "chatgpt" as const, label: "ChatGPT (OpenAI)" },
+  { mode: "gemini" as const, label: "Gemini (Google)" },
 ];
 
 /**
@@ -61,7 +63,7 @@ export function SettingsForm({
   }
 
   function setQuota(
-    mode: "subscription" | "api_key",
+    mode: QuotaKey,
     patch: Partial<{ limitUsd: number | null; cadence: Cadence }>,
   ) {
     setSettings((current) => ({
@@ -401,6 +403,27 @@ export function SettingsForm({
             </Select>
           </Field>
 
+          <Field
+            label="Warning threshold"
+            htmlFor="warningRatio"
+            hint="How close usage must get to a provider's limit before the bar switches to its warning state. 0.8 means 80%."
+          >
+            <Input
+              id="warningRatio"
+              type="number"
+              min={0}
+              max={1}
+              step="0.01"
+              value={settings.warningRatio}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  warningRatio: Number(event.target.value),
+                }))
+              }
+            />
+          </Field>
+
           <div className="grid gap-4 sm:grid-cols-2">
             {QUOTA_MODES.map(({ mode, label }) => (
               <div key={mode} className="flex flex-col gap-3 rounded-md border border-border p-3">
@@ -432,6 +455,7 @@ export function SettingsForm({
                   >
                     <option value="daily">Daily</option>
                     <option value="hourly">Hourly</option>
+                    <option value="monthly">Monthly</option>
                   </Select>
                 </Field>
               </div>

@@ -127,7 +127,8 @@ export default async function DashboardPage(props: {
   // S1/S2/S3's bottom-of-page bar. Recomputed on every request that renders
   // this route, same as everything else here — no separate polling.
   const todaySpend = spendToday();
-  const quota = resolveQuotaStatus();
+  const quotas = resolveQuotaStatus();
+  const claudeAuthMode = resolveProviderAuth().mode;
 
   // A digest of every task's id/stage/status, recomputed on each request
   // that renders this route (full load or `router.refresh()`). Changes
@@ -195,7 +196,7 @@ export default async function DashboardPage(props: {
         <TaskBoard tasks={tasks} capacity={slots} maxJobAttempts={MAX_JOB_ATTEMPTS} />
       )}
 
-      <UsageBar spendToday={todaySpend} quota={quota} />
+      <UsageBar spendToday={todaySpend} authMode={claudeAuthMode} quotas={quotas} />
     </BatchSelectionProvider>
   );
 }

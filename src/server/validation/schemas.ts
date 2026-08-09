@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { QUOTA_KEYS } from "../config/env";
 import { LLM_PROVIDER_IDS } from "../config/llm-providers";
 import { PIPELINE_EVENT_TYPES } from "../events/types";
 import { validateCredentialRef } from "../git/credentials";
@@ -286,10 +287,10 @@ const providersMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.enum(LLM_PROV
 const quotaLimitSchema = z.object({
   /** `null` clears the limit — the bar goes back to "quota not configured". */
   limitUsd: z.number().min(0).nullable(),
-  cadence: z.enum(["daily", "hourly"]),
+  cadence: z.enum(["daily", "hourly", "monthly"]),
 });
 const quotaLimitsSchema = z.partialRecord(
-  z.enum(["subscription", "api_key"]),
+  z.enum(QUOTA_KEYS),
   quotaLimitSchema,
 );
 
@@ -334,6 +335,8 @@ export const updateSettingsSchema = z.object({
   transcriptRetentionDays: z.number().int().min(0).max(3650).nullable().optional(),
   theme: z.enum(THEMES).optional(),
   quotaLimits: quotaLimitsSchema.optional(),
+  /** How close usage must get to a limit before the bar shows "warning". */
+  warningRatio: z.number().min(0).max(1).optional(),
   quotaEnforcement: z.enum(["off", "warn", "hold"]).optional(),
   /** `null` clears the ceiling — no per-stage dollar cap. */
   maxCostPerStageUsd: z.number().min(0).nullable().optional(),
