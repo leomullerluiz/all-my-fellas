@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
-import { type QuotaConfig, resolveLimits, resolveModels, resolveQuota } from "../config/env";
-import type { LlmProviderId } from "../config/llm-providers";
+import { type QuotaConfig, resolveLimits, resolveQuota } from "../config/env";
+import type { LlmProviderId, ModelSelection } from "../config/llm-providers";
 import { db } from "../db/client";
 import { settings } from "../db/schema";
 import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "../events/types";
@@ -76,8 +76,14 @@ function defaultNotificationEvents(): NotificationEventToggles {
 }
 
 export type AppSettings = {
-  /** Model id per agent stage. */
-  models: Record<AgentStage, string>;
+  /**
+   * Model choice per agent stage: a tier (`light`/`default`/`heavy`, resolved
+   * per provider at execution time) or an escape-hatch literal model id. See
+   * `config/llm-providers.ts`'s `ModelSelection`/`resolveModelId` and
+   * stories.md S3. A settings row written before this story stored a bare
+   * string here; `getSettings()`'s normalizer reads that as `{ literal }`.
+   */
+  models: Record<AgentStage, ModelSelection>;
   /**
    * LLM backend per agent stage. Defaults to `"claude"` everywhere, which is
    * what keeps an install that has never touched this field behaving exactly
@@ -136,17 +142,16 @@ export type AppSettings = {
 };
 
 export function defaultSettings(): AppSettings {
-  const models = resolveModels();
   const limits = resolveLimits();
   return {
     models: {
-      STAKEHOLDER_REFINEMENT: models.light,
-      PO_REFINEMENT: models.default,
-      ARCHITECTURE: models.default,
-      DEVELOPMENT: models.default,
-      CODE_REVIEW: models.default,
-      QA: models.default,
-      PO_HOMOLOGATION: models.light,
+      STAKEHOLDER_REFINEMENT: { tier: "light" },
+      PO_REFINEMENT: { tier: "default" },
+      ARCHITECTURE: { tier: "default" },
+      DEVELOPMENT: { tier: "default" },
+      CODE_REVIEW: { tier: "default" },
+      QA: { tier: "default" },
+      PO_HOMOLOGATION: { tier: "light" },
     },
     providers: {
       STAKEHOLDER_REFINEMENT: "claude",
@@ -191,6 +196,25 @@ export function defaultSettings(): AppSettings {
   };
 }
 
+/**
+ * Reads a stage's stored model value in whatever shape it was written — a
+ * bare string from before `{tier}|{literal}` existed (§9/S3), or an
+ * already-normalized `ModelSelection`. Runs before the spread merge below,
+ * not after: a half-migrated map with a stray string in a `ModelSelection`'s
+ * position would otherwise survive into a shape `resolveModelId` cannot
+ * handle, and throw mid-pipeline on the next run rather than at settings-read
+ * time.
+ */
+function normalizeModels(stored: unknown): Partial<Record<AgentStage, ModelSelection>> {
+  if (!stored || typeof stored !== "object") return {};
+  const normalized: Partial<Record<AgentStage, ModelSelection>> = {};
+  for (const [stage, value] of Object.entries(stored as Record<string, unknown>)) {
+    normalized[stage as AgentStage] =
+      typeof value === "string" ? { literal: value } : (value as ModelSelection);
+  }
+  return normalized;
+}
+
 /** Reads the effective settings: env defaults merged with stored overrides. */
 export function getSettings(): AppSettings {
   const base = defaultSettings();
@@ -208,7 +232,7 @@ export function getSettings(): AppSettings {
   return {
     ...base,
     ...stored,
-    models: { ...base.models, ...(stored.models ?? {}) },
+    models: { ...base.models, ...normalizeModels(stored.models) },
     // A settings row saved before `providers` existed has no such key, so the
     // merge falls all the way back to `base` (every stage on `"claude"`) —
     // this is the one line backward compatibility hinges on.
@@ -234,7 +258,7 @@ export function getSettings(): AppSettings {
 export type SettingsPatch = Partial<
   Omit<AppSettings, "models" | "providers" | "maxTurns" | "quotaLimits" | "notifications">
 > & {
-  models?: Partial<Record<AgentStage, string>>;
+  models?: Partial<Record<AgentStage, ModelSelection>>;
   providers?: Partial<Record<AgentStage, LlmProviderId>>;
   maxTurns?: Partial<Record<AgentStage, number>>;
   quotaLimits?: Partial<QuotaConfig>;

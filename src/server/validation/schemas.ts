@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { QUOTA_KEYS } from "../config/env";
-import { LLM_PROVIDER_IDS } from "../config/llm-providers";
+import { LLM_PROVIDER_IDS, MODEL_TIERS } from "../config/llm-providers";
 import { PIPELINE_EVENT_TYPES } from "../events/types";
 import { validateCredentialRef } from "../git/credentials";
 import { PROVIDER_IDS } from "../git/providers/types";
@@ -280,7 +280,12 @@ export const updateVerificationCommandsSchema = z
   .strict();
 export type UpdateVerificationCommandsInput = z.infer<typeof updateVerificationCommandsSchema>;
 
-const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.string().trim().min(1));
+/** A stage's model choice — a tier resolved per provider, or an escape-hatch literal id. See stories.md S3. */
+const modelSelectionSchema = z.union([
+  z.object({ tier: z.enum(MODEL_TIERS) }),
+  z.object({ literal: z.string().trim().min(1) }),
+]);
+const modelMapSchema = z.partialRecord(z.enum(AGENT_STAGES), modelSelectionSchema);
 const turnsMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.number().int().min(1).max(500));
 const providersMapSchema = z.partialRecord(z.enum(AGENT_STAGES), z.enum(LLM_PROVIDER_IDS));
 

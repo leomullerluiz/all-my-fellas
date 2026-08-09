@@ -111,10 +111,14 @@ error naming `GEMINI_API_KEY`/`GOOGLE_API_KEY`, before any API call is made.
   streams partial thinking/tool events as they happen. The ChatGPT/Gemini
   loop only emits an event once each model turn completes, so the event feed
   updates in bigger steps. This is a UX difference, not a defect.
-- **The `models` field is shared and not validated against the provider.**
-  Switching a role's provider without also updating its model id sends an
-  incompatible model string to the new provider and fails at *run* time
-  (with the provider's own error), not at save time.
+- **The model picker stores a tier, not a literal (stories.md S3).** Each
+  role picks `light` / `default` / `heavy` — or a custom literal id, for a
+  model the tier table does not know about yet — and the tier resolves to a
+  provider-specific model id (`src/server/config/llm-providers.ts`'s
+  `tierModels()`) at the moment the stage actually runs. Switching a role's
+  provider therefore keeps it runnable without touching the model field; only
+  a custom literal can still be provider-incompatible, the same way it always
+  could.
 - Neither ChatGPT's nor Gemini's session carries an SDK session id; both
   report `sessionId: null` in the stage's execution record, unlike Claude.
 

@@ -12,9 +12,16 @@
  * Prices are USD per 1M tokens, current as of this file's last edit.
  */
 
-type ModelPricing = { inputPerMillion: number; outputPerMillion: number };
+export type ModelPricing = { inputPerMillion: number; outputPerMillion: number };
 
-const PRICING: Record<string, ModelPricing> = {
+/**
+ * Exported for the Settings screen's model picker (stories.md S3), which
+ * shows the per-million price beside a ChatGPT/Gemini model choice and warns
+ * when a custom literal is absent from this table — the same "$0 forever"
+ * failure mode `estimateCostUsd` below silently allows. Read-only from there;
+ * this file remains the sole place prices are edited.
+ */
+export const PRICING: Record<string, ModelPricing> = {
   // OpenAI
   "gpt-4o": { inputPerMillion: 2.5, outputPerMillion: 10 },
   "gpt-4o-mini": { inputPerMillion: 0.15, outputPerMillion: 0.6 },

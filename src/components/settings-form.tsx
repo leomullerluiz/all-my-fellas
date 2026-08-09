@@ -9,9 +9,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
 import type { Cadence, ProviderAuth, QuotaKey } from "@/server/config/env";
-import { LLM_PROVIDER_IDS, LLM_PROVIDER_LABELS, type LlmProviderId } from "@/server/config/llm-providers";
+import {
+  LLM_PROVIDER_IDS,
+  LLM_PROVIDER_LABELS,
+  MODEL_TIERS,
+  type LlmProviderId,
+  type ModelSelection,
+  type ModelTier,
+} from "@/server/config/llm-providers";
 import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/types";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
+import { PRICING } from "@/server/pipeline/providers/pricing";
 import type { AppSettings } from "@/server/settings/store";
 import type { TranscriptStorageStats } from "@/server/tasks/service";
 import { formatBytes } from "@/lib/utils";
@@ -23,6 +31,15 @@ const QUOTA_MODES = [
   { mode: "gemini" as const, label: "Gemini (Google)" },
 ];
 
+const MODEL_TIER_LABELS: Record<ModelTier, string> = {
+  light: "Light",
+  default: "Default",
+  heavy: "Heavy",
+};
+
+/** `"custom"` is the picker's own sentinel for the `{ literal }` escape hatch — not a stored value. */
+const CUSTOM_MODEL_OPTION = "custom" as const;
+
 /**
  * Editable runtime settings: models, providers, turn ceilings, pipeline limits
  * and usage quota.
@@ -31,20 +48,23 @@ export function SettingsForm({
   initial,
   llmCredentials,
   transcriptStorage,
+  tierModels,
 }: {
   initial: AppSettings;
   llmCredentials: Record<LlmProviderId, ProviderAuth>;
   transcriptStorage: TranscriptStorageStats;
+  /** Per-provider model id for each tier — resolved server-side (§6.2/S3), since Claude's column reads `.env`. */
+  tierModels: Record<LlmProviderId, Record<ModelTier, string>>;
 }) {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings>(initial);
   const [busy, setBusy] = useState(false);
   const [vacuuming, setVacuuming] = useState(false);
 
-  function setModel(stage: AgentStage, value: string) {
+  function setModel(stage: AgentStage, selection: ModelSelection) {
     setSettings((current) => ({
       ...current,
-      models: { ...current.models, [stage]: value },
+      models: { ...current.models, [stage]: selection },
     }));
   }
 
@@ -144,6 +164,17 @@ export function SettingsForm({
             {AGENT_STAGES.map((stage) => {
               const provider = settings.providers[stage];
               const credential = llmCredentials[provider];
+              const selection = settings.models[stage];
+              const isCustom = "literal" in selection;
+              const literalValue = isCustom ? selection.literal : "";
+              const pickerValue = isCustom ? CUSTOM_MODEL_OPTION : selection.tier;
+              const resolvedModelId = isCustom ? selection.literal : tierModels[provider][selection.tier];
+              // Claude's cost comes from the SDK's own `total_cost_usd`, not this
+              // table, so there is no price to show and no "$0 forever" failure
+              // mode to warn about — §5.3/§6.3.
+              const pricing = provider === "claude" ? null : PRICING[resolvedModelId];
+              const showPriceWarning = provider !== "claude" && !pricing;
+
               return (
                 <div key={stage} className="flex flex-col gap-2 rounded-md border border-border p-3">
                   <div className="flex items-center justify-between gap-2">
@@ -167,14 +198,61 @@ export function SettingsForm({
                       ))}
                     </Select>
                   </Field>
-                  <Field label="Model id" htmlFor={`model-${stage}`}>
-                    <Input
-                      id={`model-${stage}`}
-                      value={settings.models[stage]}
-                      onChange={(event) => setModel(stage, event.target.value)}
-                      className="font-mono text-xs"
-                    />
+                  <Field
+                    label="Model"
+                    htmlFor={`model-tier-${stage}`}
+                    hint={
+                      isCustom
+                        ? undefined
+                        : `Resolves to ${resolvedModelId} on ${LLM_PROVIDER_LABELS[provider]}.`
+                    }
+                  >
+                    <Select
+                      id={`model-tier-${stage}`}
+                      value={pickerValue}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setModel(
+                          stage,
+                          value === CUSTOM_MODEL_OPTION
+                            ? { literal: resolvedModelId }
+                            : { tier: value as ModelTier },
+                        );
+                      }}
+                    >
+                      {MODEL_TIERS.map((tier) => (
+                        <option key={tier} value={tier}>
+                          {MODEL_TIER_LABELS[tier]}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_MODEL_OPTION}>Custom model id…</option>
+                    </Select>
                   </Field>
+                  {isCustom ? (
+                    <Field label="Custom model id" htmlFor={`model-literal-${stage}`}>
+                      <Input
+                        id={`model-literal-${stage}`}
+                        value={literalValue}
+                        onChange={(event) => setModel(stage, { literal: event.target.value })}
+                        className="font-mono text-xs"
+                      />
+                    </Field>
+                  ) : null}
+                  {pricing ? (
+                    <p className="text-[11px] text-muted">
+                      ${pricing.inputPerMillion.toFixed(2)}/M in · ${pricing.outputPerMillion.toFixed(2)}/M out
+                      (approximate, edited manually)
+                    </p>
+                  ) : provider === "claude" ? (
+                    <p className="text-[11px] text-muted">
+                      Priced from the SDK&apos;s own reported cost — no table to show here.
+                    </p>
+                  ) : null}
+                  {showPriceWarning ? (
+                    <Badge tone="warning" title="This model id is not in pricing.ts, so its cost will always report $0.">
+                      unpriced model — cost will show $0
+                    </Badge>
+                  ) : null}
                 </div>
               );
             })}

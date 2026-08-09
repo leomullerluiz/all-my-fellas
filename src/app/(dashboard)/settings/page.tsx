@@ -3,7 +3,7 @@ import { SettingsForm } from "@/components/settings-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { resolveProviderAuth } from "@/server/config/env";
-import { LLM_PROVIDER_LABELS, resolveAllLlmCredentials } from "@/server/config/llm-providers";
+import { LLM_PROVIDER_LABELS, resolveAllLlmCredentials, tierModels } from "@/server/config/llm-providers";
 import { configuredCredentialVariables, conventionalEnvVars } from "@/server/git/credentials";
 import { PROVIDERS, providerFor } from "@/server/git/providers";
 import { getSettings } from "@/server/settings/store";
@@ -113,7 +113,12 @@ export default async function SettingsPage() {
         </CardBody>
       </Card>
 
-      <SettingsForm initial={settings} llmCredentials={llmCredentials} transcriptStorage={transcriptStorage} />
+      <SettingsForm
+        initial={settings}
+        llmCredentials={llmCredentials}
+        transcriptStorage={transcriptStorage}
+        tierModels={tierModels()}
+      />
     </div>
   );
 }
