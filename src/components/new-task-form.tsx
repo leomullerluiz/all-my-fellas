@@ -42,6 +42,8 @@ export type TaskFormValues = {
   attachments: AttachmentMeta[];
   /** Ids of tasks that must reach COMPLETED before this one can be started. */
   dependsOn: string[];
+  /** "This whole task is not worth more than this." `null`/undefined means no ceiling. */
+  maxCostPerTaskUsd?: number | null;
 };
 
 export type TaskFormProps = {
@@ -95,6 +97,9 @@ export function NewTaskForm({
     initial?.requireHumanCodeReview ?? false,
   );
   const [dependsOn, setDependsOn] = useState<string[]>(initial?.dependsOn ?? []);
+  const [maxCostPerTaskUsd, setMaxCostPerTaskUsd] = useState<string>(
+    initial?.maxCostPerTaskUsd != null ? String(initial.maxCostPerTaskUsd) : "",
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState<"queue" | "start" | null>(null);
 
@@ -132,6 +137,7 @@ export function NewTaskForm({
       form.set("description", description);
       form.set("priority", priority);
       form.set("requireHumanCodeReview", String(requireHumanCodeReview));
+      if (maxCostPerTaskUsd !== "") form.set("maxCostPerTaskUsd", maxCostPerTaskUsd);
       if (!isEdit) {
         form.set("start", String(start));
         if (branchName) form.set("branchName", branchName);
@@ -152,6 +158,7 @@ export function NewTaskForm({
         priority,
         requireHumanCodeReview,
         dependsOn,
+        maxCostPerTaskUsd: maxCostPerTaskUsd === "" ? null : Number(maxCostPerTaskUsd),
         ...(isEdit
           ? {}
           : {
@@ -438,6 +445,26 @@ export function NewTaskForm({
                 )}
               </Field>
             ) : null}
+
+            <Field
+              label="Spend ceiling (USD)"
+              htmlFor="maxCostPerTaskUsd"
+              hint={
+                "This whole task is not worth more than this. Checked before each stage — a " +
+                "stop-loss, not a hard cap: the stage in flight when this is crossed still " +
+                "finishes. Blank means no ceiling. The Claude figure is the SDK's own estimate, " +
+                "not a bill."
+              }
+            >
+              <Input
+                id="maxCostPerTaskUsd"
+                type="number"
+                min={0}
+                step="0.01"
+                value={maxCostPerTaskUsd}
+                onChange={(event) => setMaxCostPerTaskUsd(event.target.value)}
+              />
+            </Field>
 
             {/* A process choice, so it sits with priority rather than with the
                 description, which is the request itself. */}

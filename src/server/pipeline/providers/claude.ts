@@ -1,10 +1,17 @@
 import { type CanUseTool, type Options, type SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
 
+import { formatCost } from "@/lib/utils";
+
 import { resolveProviderAuth } from "../../config/env";
 import { createPermissionGuard } from "../guardrails";
 import { buildStagePrompt, buildSystemPrompt } from "../prompt";
 import { summarizeToolInput } from "./tool-runtime";
-import { StageExecutionError, type RunStageOptions, type StageExecutionResult } from "./types";
+import {
+  StageAbortedError,
+  StageExecutionError,
+  type RunStageOptions,
+  type StageExecutionResult,
+} from "./types";
 
 /**
  * Executes one pipeline stage as an isolated Claude Agent SDK session.
@@ -42,7 +49,8 @@ function buildGuard(options: RunStageOptions): CanUseTool {
   };
 }
 
-function buildOptions(options: RunStageOptions): Options {
+/** Exported for `tests/claude-budget.test.ts`'s assertion on the built options object. */
+export function buildOptions(options: RunStageOptions): Options {
   const { role, workspacePath } = options;
 
   return {
@@ -54,6 +62,11 @@ function buildOptions(options: RunStageOptions): Options {
     canUseTool: buildGuard(options),
     cwd: workspacePath ?? process.cwd(),
     maxTurns: options.maxTurns,
+    // A stop-loss, not a hard cap (§5.3/§5.7): the SDK stops the session once
+    // this is exceeded, ending it with `error_max_budget_usd` rather than
+    // silently continuing. `undefined` when no ceiling is configured — the
+    // SDK option itself is optional for exactly that case.
+    maxBudgetUsd: options.maxCostUsd,
     abortController: options.abortController,
     // Load the target repository's own CLAUDE.md, but nothing from the host
     // machine's user settings. Text-only roles get no settings at all.
@@ -92,62 +105,103 @@ export async function runClaudeStage(options: RunStageOptions): Promise<StageExe
     options: buildOptions(options),
   });
 
-  for await (const message of stream) {
-    transcript.push(message);
+  try {
+    for await (const message of stream) {
+      transcript.push(message);
 
-    switch (message.type) {
-      case "system": {
-        if (message.subtype === "init") sessionId = message.session_id;
-        break;
-      }
+      switch (message.type) {
+        case "system": {
+          if (message.subtype === "init") sessionId = message.session_id;
+          break;
+        }
 
-      case "assistant": {
-        for (const block of message.message.content) {
-          if (block.type === "text" && block.text.trim() !== "") {
-            options.onEvent({ type: "agent_text", text: block.text });
-          } else if (block.type === "thinking") {
-            options.onEvent({ type: "agent_thinking" });
-          } else if (block.type === "tool_use") {
-            options.onEvent({
-              type: "agent_tool_use",
-              tool: block.name,
-              summary: summarizeToolInput(block.name, block.input),
-            });
+        case "assistant": {
+          for (const block of message.message.content) {
+            if (block.type === "text" && block.text.trim() !== "") {
+              options.onEvent({ type: "agent_text", text: block.text });
+            } else if (block.type === "thinking") {
+              options.onEvent({ type: "agent_thinking" });
+            } else if (block.type === "tool_use") {
+              options.onEvent({
+                type: "agent_tool_use",
+                tool: block.name,
+                summary: summarizeToolInput(block.name, block.input),
+              });
+            }
           }
-        }
-        break;
-      }
-
-      case "result": {
-        costUsd = message.total_cost_usd;
-        inputTokens = message.usage.input_tokens ?? 0;
-        outputTokens = message.usage.output_tokens ?? 0;
-        numTurns = message.num_turns;
-
-        // Each denial was already surfaced with its real reason by `buildGuard`
-        // at the moment `canUseTool` decided it; `permission_denials` here is
-        // just the SDK's own after-the-fact tally and carries no reason string
-        // worth re-emitting.
-
-        if (message.subtype !== "success") {
-          throw new StageExecutionError(
-            `The ${options.role.name} session ended with "${message.subtype}"` +
-              (message.subtype === "error_max_turns"
-                ? ` after ${message.num_turns} turns (limit ${options.maxTurns}).`
-                : `: ${message.errors.join("; ") || "no further detail"}.`),
-            { sessionId, costUsd, inputTokens, outputTokens, numTurns, transcript },
-          );
+          break;
         }
 
-        finalText = message.result;
-        break;
-      }
+        case "result": {
+          costUsd = message.total_cost_usd;
+          inputTokens = message.usage.input_tokens ?? 0;
+          outputTokens = message.usage.output_tokens ?? 0;
+          numTurns = message.num_turns;
 
-      default:
-        // Status, retry, rate-limit and other informational frames are kept in
-        // the transcript for auditing but are not surfaced to the dashboard.
-        break;
+          // Each denial was already surfaced with its real reason by `buildGuard`
+          // at the moment `canUseTool` decided it; `permission_denials` here is
+          // just the SDK's own after-the-fact tally and carries no reason string
+          // worth re-emitting.
+
+          if (message.subtype !== "success") {
+            // A budget stop is a distinct, expected outcome — not a crash, and
+            // not worth the worker's ordinary retry (which would spend up to
+            // the ceiling again, twice more — turning a $5 cap into $15). See
+            // §5.4/§5.7's distinction between a budget stop and `error_max_turns`.
+            const isBudgetStop = message.subtype === "error_max_budget_usd";
+            throw new StageExecutionError(
+              `The ${options.role.name} session ended with "${message.subtype}"` +
+                (message.subtype === "error_max_turns"
+                  ? ` after ${message.num_turns} turns (limit ${options.maxTurns}).`
+                  : isBudgetStop
+                    ? ` — spend ceiling of ${formatCost(options.maxCostUsd ?? 0)} reached after ${message.num_turns} turn(s).`
+                    : `: ${message.errors.join("; ") || "no further detail"}.`),
+              { sessionId, costUsd, inputTokens, outputTokens, numTurns, transcript },
+              !isBudgetStop,
+            );
+          }
+
+          finalText = message.result;
+          break;
+        }
+
+        default:
+          // Status, retry, rate-limit and other informational frames are kept
+          // in the transcript for auditing but are not surfaced to the
+          // dashboard.
+          break;
+      }
     }
+  } catch (error) {
+    // The SDK's own reaction to an aborted `abortController` varies (a thrown
+    // error, or the stream simply ending) — checking the signal directly
+    // rather than sniffing the error shape catches either case. Cancel is not
+    // a crash: the partial accumulated so far is still worth recording (§5.4),
+    // and the worker must not retry it (§6.5).
+    if (options.abortController?.signal.aborted) {
+      throw new StageAbortedError(`The ${options.role.name} session was cancelled.`, {
+        sessionId,
+        costUsd,
+        inputTokens,
+        outputTokens,
+        numTurns,
+        transcript,
+      });
+    }
+    throw error;
+  }
+
+  if (options.abortController?.signal.aborted) {
+    // Covers the silent-end case: the stream finished with no error and no
+    // `"result"` message at all once the signal fired.
+    throw new StageAbortedError(`The ${options.role.name} session was cancelled.`, {
+      sessionId,
+      costUsd,
+      inputTokens,
+      outputTokens,
+      numTurns,
+      transcript,
+    });
   }
 
   if (finalText.trim() === "") {

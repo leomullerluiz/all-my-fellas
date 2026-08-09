@@ -2,6 +2,7 @@ import { and, asc, eq, gt, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { events } from "../db/schema";
+import { dispatchNotification } from "../notifications/dispatch";
 import type { PipelineEvent } from "./types";
 
 /**
@@ -39,25 +40,35 @@ export function appendEvent(
   stageRunId: string | null,
   payload: PipelineEvent,
 ): number {
-  return db.transaction((tx) => {
+  const seq = db.transaction((tx) => {
     const row = tx
       .select({ maxSeq: sql<number | null>`max(${events.seq})` })
       .from(events)
       .where(eq(events.taskId, taskId))
       .get();
 
-    const seq = (row?.maxSeq ?? 0) + 1;
+    const nextSeq = (row?.maxSeq ?? 0) + 1;
     tx.insert(events)
       .values({
         taskId,
         stageRunId,
-        seq,
+        seq: nextSeq,
         type: payload.type,
         payloadJson: JSON.stringify(payload),
       })
       .run();
-    return seq;
+    return nextSeq;
   });
+
+  // Only reached once the transaction above has committed — a rollback
+  // throws out of `db.transaction` and this line never runs (§8.1). Not
+  // awaited: the caller (often mid-pipeline, on the worker's only thread of
+  // control) should not stall on an outbound HTTP call for a notification.
+  dispatchNotification(taskId, payload).catch((error) => {
+    console.error(`[notifications] dispatch threw unexpectedly: ${String(error)}`);
+  });
+
+  return seq;
 }
 
 function toStoredEvent(row: typeof events.$inferSelect): StoredEvent {
@@ -81,4 +92,25 @@ export function readEvents(taskId: string, afterSeq = 0, limit = 500): StoredEve
     .limit(limit)
     .all()
     .map(toStoredEvent);
+}
+
+export type GlobalStoredEvent = StoredEvent & { id: number };
+
+/**
+ * Reads events after `afterId`, oldest first, across every task — the global
+ * counterpart to {@link readEvents}, cursored on `events.id` (a genuinely
+ * global `AUTOINCREMENT` primary key) rather than `seq` (per-task). Backs the
+ * board-wide activity stream (§8.2); reuses the same poll-and-cursor shape
+ * the per-task route already uses, with no separate backpressure design
+ * (§13.6 — an open question this spec set does not resolve).
+ */
+export function readEventsSince(afterId = 0, limit = 500): GlobalStoredEvent[] {
+  return db
+    .select()
+    .from(events)
+    .where(gt(events.id, afterId))
+    .orderBy(asc(events.id))
+    .limit(limit)
+    .all()
+    .map((row) => ({ ...toStoredEvent(row), id: row.id }));
 }

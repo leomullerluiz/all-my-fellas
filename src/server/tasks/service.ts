@@ -220,6 +220,8 @@ export function createTask(input: {
    * corresponding field on `EditableTaskFields`.
    */
   branchName?: string;
+  /** Per-task spend ceiling; `null`/omitted means no ceiling. */
+  maxCostUsd?: number | null;
 }): TaskRow {
   const id = newId("task");
   const task = db.transaction(() => {
@@ -233,6 +235,7 @@ export function createTask(input: {
         priority: input.priority,
         requireHumanCodeReview: input.requireHumanCodeReview ?? false,
         customBranchName: input.branchName ?? null,
+        maxCostUsd: input.maxCostUsd ?? null,
         status: "queued",
         currentStage: "CREATED",
       })
@@ -462,6 +465,7 @@ export type EditableTaskFields = {
   priority: Priority;
   requireHumanCodeReview: boolean;
   dependsOn: string[];
+  maxCostUsd: number | null;
 };
 
 export function updateTaskFields(id: string, fields: EditableTaskFields): TaskRow | null {

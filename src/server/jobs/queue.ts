@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, notInArray, sql } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { newId } from "../db/ids";
@@ -74,18 +74,43 @@ export function enqueueJob({
 type Queryable = Pick<typeof db, "select">;
 
 /**
+ * Job kinds that are claimed and run like any other, but are not the pipeline
+ * work of the task whose id they carry — so reporting either as that task
+ * executing would be exactly the conflation `spec-execution-honesty.md` §6.1
+ * removes:
+ *
+ * - `cleanup_workspace` deletes a workspace after its task has already
+ *   finished.
+ * - `quota_wake`'s effect (`promoteQueue()`) is global; its `taskId` is merely
+ *   whichever park happened to schedule it (see `db/schema.ts`'s `JOB_KINDS`).
+ *
+ * A new kind in this category is excluded from the claimed, eligible and
+ * backoff reads by one edit here.
+ */
+const NON_TASK_JOB_KINDS: JobKind[] = ["cleanup_workspace", "quota_wake"];
+
+/**
+ * `WHERE` fragment keeping only jobs that are a task's own pipeline work.
+ *
+ * Exported as the condition rather than as the list so `../pipeline/execution.ts`
+ * cannot filter on a subset of it by accident — every execution-state read
+ * spells the exclusion the same way, or not at all.
+ */
+export function taskWorkOnly() {
+  return notInArray(jobs.kind, NON_TASK_JOB_KINDS);
+}
+
+/**
  * The kind of claimed job each in-flight task holds right now, keyed by task id.
  *
- * `cleanup_workspace` is excluded: it is claimed like any other job, but a
- * workspace deletion is not an agent (or any other stage) running, and the
- * task it belongs to has already finished — see `spec-execution-honesty.md`
- * §6.1. This replaces the never-called `runningTaskCount`, which counted it.
+ * {@link taskWorkOnly} excludes the non-task kinds. This replaces the
+ * never-called `runningTaskCount`, which counted `cleanup_workspace`.
  */
 export function inFlightTaskIds(executor: Queryable = db): Map<string, JobKind> {
   const rows = executor
     .select({ taskId: jobs.taskId, kind: jobs.kind })
     .from(jobs)
-    .where(and(eq(jobs.status, "claimed"), ne(jobs.kind, "cleanup_workspace")))
+    .where(and(eq(jobs.status, "claimed"), taskWorkOnly()))
     .all();
   return new Map(rows.map((row) => [row.taskId, row.kind]));
 }
@@ -130,6 +155,22 @@ export function claimNextJob(maxParallelTasks: number): JobRow | null {
 
     return claimed ?? null;
   });
+}
+
+/**
+ * {@link claimNextJob}, gated by the global queue-hold switch (§9.2).
+ *
+ * A settings flag rather than job/task state — "stop starting things" is
+ * deliberately the cheapest possible implementation: nothing about a job or
+ * task changes, so a job already claimed before the flag was set is
+ * untouched and runs to completion; only a *new* claim is refused. Split out
+ * from the worker's `tick()` so the exact behaviour is testable without
+ * importing `worker/index.ts`, which starts its real polling loop
+ * unconditionally on import.
+ */
+export function claimNextJobUnlessHeld(maxParallelTasks: number, queueHeld: boolean): JobRow | null {
+  if (queueHeld) return null;
+  return claimNextJob(maxParallelTasks);
 }
 
 export function completeJob(jobId: string): void {
@@ -198,6 +239,47 @@ export function requeueOrphanedJobs(): number {
     .returning({ id: jobs.id })
     .all();
   return result.length;
+}
+
+/**
+ * Whether a `quota_wake` job is already pending, regardless of which task
+ * it is attached to — the job's effect (`promoteQueue()`) is global, so a
+ * second one enqueued while the first is still pending would just call
+ * `promoteQueue` twice for nothing (§4.5).
+ */
+export function hasPendingQuotaWake(): boolean {
+  return (
+    db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.kind, "quota_wake"), eq(jobs.status, "pending")))
+      .get() !== undefined
+  );
+}
+
+/**
+ * Whether `taskId` currently has a job that is pending or claimed, for any
+ * stage.
+ *
+ * `resumeTask` (§9.2) uses this to detect whether a stage was actually
+ * withheld while paused, instead of comparing the most recent stage run's
+ * stage name against `tasks.current_stage`. Name comparison breaks the
+ * instant a withheld stage shares its name with the task's own most recent
+ * run — exactly what happens on a rework loop or a `retryTask` re-run, where
+ * the "same stage again" run that was withheld looks identical, by name, to
+ * the earlier attempt that already completed. `scheduleStage` always creates
+ * its `stage_runs` row and enqueues a job in the same breath (`applyTransition`'s
+ * `"run"` case), so "no active job for this task" is exact evidence that the
+ * stage was withheld rather than scheduled.
+ */
+export function hasActiveJobForTask(taskId: string): boolean {
+  return (
+    db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.taskId, taskId), inArray(jobs.status, ["pending", "claimed"])))
+      .get() !== undefined
+  );
 }
 
 export function parsePayload<T>(job: JobRow): T {

@@ -7,7 +7,13 @@ import {
   serverError,
 } from "@/server/http/respond";
 import { executionStateFor, executionStates } from "@/server/pipeline/execution";
-import { CapacityError, DependencyError, capacity, startTask } from "@/server/pipeline/orchestrator";
+import {
+  CapacityError,
+  DependencyError,
+  QuotaError,
+  capacity,
+  startTask,
+} from "@/server/pipeline/orchestrator";
 import {
   createTask,
   getRepo,
@@ -105,16 +111,22 @@ export async function POST(request: Request) {
     const validatedAttachments = await validateAttachmentFiles(files);
     if (!validatedAttachments.ok) return validatedAttachments.response;
 
+    // Neither key is a column: `duplicateFrom` is consumed right here, and
+    // `maxCostPerTaskUsd` is the API/UI-facing name for `maxCostUsd`.
+    // `createTask` ignores unknown keys, so spreading them would be harmless —
+    // but destructure them out anyway to match the `PATCH` route, which cannot
+    // afford to rely on that.
+    const { duplicateFrom, maxCostPerTaskUsd, ...createFields } = fields;
+
     // A duplicate (`stories.md` S4) copies the source task's attachment bytes
     // into new rows alongside whatever was freshly uploaded on the form. A
     // source that no longer exists is tolerated — the task is still created,
     // just without the extra attachments.
-    const copiedAttachments = fields.duplicateFrom
-      ? listAttachmentsForCopy(fields.duplicateFrom)
-      : [];
+    const copiedAttachments = duplicateFrom ? listAttachmentsForCopy(duplicateFrom) : [];
 
     const created = createTask({
-      ...fields,
+      ...createFields,
+      maxCostUsd: maxCostPerTaskUsd ?? null,
       attachments: [...copiedAttachments, ...validatedAttachments.data],
     });
     if (!fields.start) {
@@ -125,7 +137,7 @@ export async function POST(request: Request) {
       startTask(created.id);
       return json({ task: getTask(created.id) ?? created, started: true }, { status: 201 });
     } catch (error) {
-      if (error instanceof CapacityError || error instanceof DependencyError) {
+      if (error instanceof CapacityError || error instanceof DependencyError || error instanceof QuotaError) {
         // The task is created and safe at `CREATED`; only the optional start
         // was refused. Return 409 with the task so the client can navigate to
         // it instead of losing the input.

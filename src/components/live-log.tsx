@@ -55,6 +55,8 @@ export function toneFor(event: PipelineEvent): string {
     case "agent_tool_denied":
       return "text-danger";
     case "gate_opened":
+    case "quota_warning":
+    case "quota_overridden":
       return "text-warning";
     // Flags a safety checkpoint that was skipped, not just opened — distinct
     // from `gate_opened`'s warning tone.
@@ -142,6 +144,10 @@ function describe(event: PipelineEvent): string {
       } (${Math.round(event.durationMs / 1000)}s)`;
     case "verification_finished":
       return `■ verification ${event.status}${event.reason ? `: ${event.reason}` : ""}`;
+    case "quota_warning":
+      return `⚠ over quota (${event.usedUsd.toFixed(2)} / ${event.limitUsd.toFixed(2)} ${event.cadence}) — started anyway`;
+    case "quota_overridden":
+      return `⚠ quota hold overridden (${event.usedUsd.toFixed(2)} / ${event.limitUsd.toFixed(2)} ${event.cadence})`;
   }
 }
 

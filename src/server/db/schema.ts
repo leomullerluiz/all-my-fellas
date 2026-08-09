@@ -128,6 +128,19 @@ export const tasks = sqliteTable(
      * `spec-retry-recovery.md` §6.
      */
     reworkBudgetGrant: integer("rework_budget_grant").notNull().default(0),
+    /**
+     * Per-task spend ceiling, checked by `scheduleStage` before enqueueing
+     * each stage — `NULL` means no ceiling. See `settings.maxCostPerStageUsd`
+     * for the per-stage counterpart, enforced by the provider instead.
+     */
+    maxCostUsd: real("max_cost_usd"),
+    /**
+     * "Finish the current stage, then wait instead of scheduling the next
+     * one." Checked by `scheduleStage`, cleared by `resumeTask`. Not a
+     * `TaskStatus` — see `stages.ts`'s note on why `on_queue`/`gate_queued`
+     * are already the two exceptions to "status is derived from stage".
+     */
+    paused: integer("paused", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },
@@ -334,7 +347,20 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
-export const JOB_KINDS = ["run_stage", "deliver", "verify", "cleanup_workspace"] as const;
+export const JOB_KINDS = [
+  "run_stage",
+  "deliver",
+  "verify",
+  "cleanup_workspace",
+  /**
+   * Wakes `promoteQueue` at a quota period's `nextReset`, so a task parked at
+   * `on_queue` on a `QuotaError` is re-checked without waiting for an
+   * unrelated slot-freeing transition. Its `taskId` is whichever task's park
+   * triggered it — the job's effect (`promoteQueue()`) is global, not
+   * task-specific, so no two of these are ever enqueued at once (§4.5).
+   */
+  "quota_wake",
+] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
 export const JOB_STATUSES = ["pending", "claimed", "done", "failed"] as const;
@@ -360,6 +386,18 @@ export const jobs = sqliteTable(
   (table) => [index("jobs_status_run_after_idx").on(table.status, table.runAfter)],
 );
 
+/** Always the single row `id = 'worker'` (§7.2). */
+export const workerStatus = sqliteTable("worker_status", {
+  id: text("id").primaryKey(),
+  startedAt: integer("started_at").notNull(),
+  heartbeatAt: integer("heartbeat_at").notNull(),
+  pid: integer("pid"),
+  version: text("version"),
+  /** NULL when the worker is idle between jobs. */
+  activeJobId: text("active_job_id"),
+  activeTaskId: text("active_task_id"),
+});
+
 export type RepoRow = typeof repos.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type StageRunRow = typeof stageRuns.$inferSelect;
@@ -371,3 +409,4 @@ export type ApprovalRow = typeof approvals.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type VerificationRunRow = typeof verificationRuns.$inferSelect;
 export type AgentRunRow = typeof agentRuns.$inferSelect;
+export type WorkerStatusRow = typeof workerStatus.$inferSelect;
