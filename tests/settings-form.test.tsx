@@ -33,6 +33,7 @@ const INITIAL: AppSettings = {
   maxParallelTasks: 1,
   reworkMaxCycles: 2,
   autoApprovePlanForLowCriticality: false,
+  noApprovalAutomation: false,
   humanCodeReviewDefault: false,
   maxTurns: stageRecord(10),
   workspaceRetentionDays: 7,

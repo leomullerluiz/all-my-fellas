@@ -18,6 +18,7 @@ const base: PipelineContext = {
   reworkBudgetGrant: 0,
   planGateRequired: true,
   humanCodeReviewRequired: false,
+  noApprovalGatesEnabled: false,
 };
 
 describe("nextTransition", () => {
@@ -647,6 +648,82 @@ describe("homologation", () => {
         { ...base, developmentAttempts: 1 },
       ),
     ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 2 });
+  });
+});
+
+describe("no-approval automation (S2)", () => {
+  it("bypasses PLAN_GATE straight to DEVELOPMENT when the switch is on", () => {
+    expect(
+      nextTransition(
+        "ARCHITECTURE",
+        { kind: "stage_succeeded", stage: "ARCHITECTURE" },
+        { ...base, noApprovalGatesEnabled: true },
+      ),
+    ).toEqual({
+      type: "run",
+      stage: "DEVELOPMENT",
+      attempt: 1,
+      bypassedGate: "PLAN_GATE",
+    });
+  });
+
+  it("bypasses STAKEHOLDER_GATE straight to DELIVERY on an accepted homologation when the switch is on", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "accepted" },
+        { ...base, developmentAttempts: 1, homologationAttempts: 1, noApprovalGatesEnabled: true },
+      ),
+    ).toEqual({
+      type: "run",
+      stage: "DELIVERY",
+      attempt: 1,
+      bypassedGate: "STAKEHOLDER_GATE",
+    });
+  });
+
+  it("still escalates a second homologation rejection to STAKEHOLDER_GATE even with the switch on", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "rejected" },
+        { ...base, developmentAttempts: 2, homologationAttempts: 2, noApprovalGatesEnabled: true },
+      ),
+    ).toEqual({ type: "await_gate", gate: "STAKEHOLDER_GATE" });
+  });
+
+  it("still escalates a rejection with the rework budget exhausted even with the switch on", () => {
+    expect(
+      nextTransition(
+        "PO_HOMOLOGATION",
+        { kind: "stage_succeeded", stage: "PO_HOMOLOGATION", homologationVerdict: "rejected" },
+        { ...base, developmentAttempts: 3, homologationAttempts: 1, noApprovalGatesEnabled: true },
+      ),
+    ).toEqual({ type: "await_gate", gate: "STAKEHOLDER_GATE" });
+  });
+
+  it("still gates HUMAN_CODE_REVIEW when the task opted in, regardless of the switch", () => {
+    expect(
+      nextTransition(
+        "QA",
+        { kind: "stage_succeeded", stage: "QA", reviewVerdict: "approved" },
+        { ...base, developmentAttempts: 1, humanCodeReviewRequired: true, noApprovalGatesEnabled: true },
+      ),
+    ).toEqual({ type: "await_gate", gate: "HUMAN_CODE_REVIEW" });
+  });
+
+  it("does not set bypassedGate on the silent low-criticality waiver", () => {
+    // `autoApprovePlanForLowCriticality` already skips PLAN_GATE via
+    // `planGateRequired: false`; that stays silent (no bypassedGate) even
+    // with the global switch on — the two skip reasons are audited
+    // differently on purpose.
+    expect(
+      nextTransition(
+        "ARCHITECTURE",
+        { kind: "stage_succeeded", stage: "ARCHITECTURE" },
+        { ...base, planGateRequired: false, noApprovalGatesEnabled: true },
+      ),
+    ).toEqual({ type: "run", stage: "DEVELOPMENT", attempt: 1 });
   });
 });
 

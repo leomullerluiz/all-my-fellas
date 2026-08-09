@@ -329,6 +329,7 @@ export const updateSettingsSchema = z.object({
   /** Pre-selected value of "require human code review" on the new-task form. */
   humanCodeReviewDefault: z.boolean().optional(),
   autoApprovePlanForLowCriticality: z.boolean().optional(),
+  noApprovalAutomation: z.boolean().optional(),
   workspaceRetentionDays: z.number().int().min(0).max(365).optional(),
   /** `null` clears the setting — keep transcripts forever. */
   transcriptRetentionDays: z.number().int().min(0).max(3650).nullable().optional(),

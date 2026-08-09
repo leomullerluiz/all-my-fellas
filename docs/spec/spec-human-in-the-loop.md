@@ -755,3 +755,36 @@ the most speculative item here (§12.1).
    that wants the description but not the 4 MB screenshot. A checkbox on the
    duplicate action is trivial; guessing wrong in either direction is not
    obviously worse than the other.
+
+---
+
+## 13. No-approval automation (implemented)
+
+Unlike the rest of this document, this section describes shipped behaviour:
+an instance-wide `settings.noApprovalAutomation` switch (default `false`) that
+lets a task run from creation to a delivered PR with **zero** human gates.
+
+- **Scope.** A single global boolean, consistent with the rest of `settings`
+  (a one-row blob, no user/team model — see §2's existing "no multi-user
+  attribution" note). There is no per-project or per-task override.
+- **What it bypasses.** With the switch on, `ARCHITECTURE` success runs
+  `DEVELOPMENT` directly instead of parking on `PLAN_GATE`, and an accepted
+  `PO_HOMOLOGATION` verdict runs `DELIVERY` directly instead of parking on
+  `STAKEHOLDER_GATE` — regardless of `criticality`, which otherwise only
+  waives `PLAN_GATE` via `autoApprovePlanForLowCriticality`.
+- **What it does not bypass.** The `PO_HOMOLOGATION` escalation branch
+  (a second rejection, or a rejection with the rework budget exhausted) still
+  parks on `STAKEHOLDER_GATE`: an ambiguous double-rejection needs a human
+  regardless of how much the operator trusts the automation. `HUMAN_CODE_REVIEW`
+  is also untouched — it is a separate, per-task opt-in (`requireHumanCodeReview`)
+  that this global switch does not override.
+- **Audit trail.** Each bypass appends a `gate_bypassed` event (naming the
+  skipped gate) through the same `appendEvent` channel every other pipeline
+  event uses; no row is ever written to `approvals` for a gate that was
+  bypassed rather than decided. The silent `autoApprovePlanForLowCriticality`
+  waiver is unaffected and remains unaudited, as it always has been — the two
+  skip reasons are deliberately distinguishable after the fact.
+- **UI.** Settings renders the toggle next to "Automatic plan gate" in
+  "Pipeline limits", alongside an always-visible red warning (not hidden until
+  the operator opts in) stating that enabling it skips both plan review and
+  final PR approval for every task.

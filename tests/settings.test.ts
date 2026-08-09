@@ -88,6 +88,27 @@ describe("theme setting", () => {
   });
 });
 
+describe("no-approval automation setting (S1)", () => {
+  it("defaults to false", () => {
+    expect(store.defaultSettings().noApprovalAutomation).toBe(false);
+  });
+
+  it("PATCH persists true and GET reflects it afterwards", async () => {
+    const response = await patch({ noApprovalAutomation: true });
+    expect(response.status).toBe(200);
+
+    const getResponse = await settingsRoute.GET();
+    const payload = (await getResponse.json()) as { settings: { noApprovalAutomation: boolean } };
+    expect(payload.settings.noApprovalAutomation).toBe(true);
+
+    // Round-trip back to false, mirroring the unchanged-default path every
+    // other settings field is exercised by.
+    const back = await patch({ noApprovalAutomation: false });
+    expect(back.status).toBe(200);
+    expect(store.getSettings().noApprovalAutomation).toBe(false);
+  });
+});
+
 describe("LLM provider per role (S3)", () => {
   it("defaults every stage to claude", () => {
     const defaults = store.defaultSettings();

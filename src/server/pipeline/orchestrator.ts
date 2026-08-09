@@ -91,6 +91,7 @@ function contextFor(task: TaskRow): PipelineContext {
     reworkBudgetGrant: task.reworkBudgetGrant,
     planGateRequired,
     humanCodeReviewRequired: task.requireHumanCodeReview,
+    noApprovalGatesEnabled: settings.noApprovalAutomation,
   };
 }
 
@@ -189,6 +190,13 @@ export function applyTransition(taskId: string, transition: Transition): Transit
         failedStage: null,
         failureKind: null,
       });
+      // Audited before the pause check below: the gate really was skipped as
+      // part of applying this transition, whether or not the job it would
+      // schedule is then withheld. Deferring it would leave a paused task's
+      // timeline claiming the gate is still ahead of it.
+      if (transition.bypassedGate) {
+        appendEvent(taskId, null, { type: "gate_bypassed", gate: transition.bypassedGate });
+      }
 
       // §9.2/9.3: "finish the current stage, then wait" — the transition
       // still applies (the board shows the real next stage, not a stale
