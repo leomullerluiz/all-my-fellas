@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsForm } from "@/components/settings-form";
 import { LLM_PROVIDER_IDS, type LlmProviderId } from "@/server/config/llm-providers";
@@ -83,5 +83,72 @@ describe("SettingsForm — quota enforcement copy (S2)", () => {
     const select = screen.getByLabelText("Enforcement") as HTMLSelectElement;
     const values = Array.from(select.options).map((option) => option.value);
     expect(values).toEqual(["off", "warn", "hold"]);
+  });
+});
+
+/**
+ * S2 — enabling the "Desktop notifications" checkbox must go through
+ * `Notification.requestPermission()` when permission hasn't been decided
+ * yet, and must not persist the setting as enabled unless that resolves to
+ * `"granted"`.
+ */
+describe("SettingsForm — desktop notification permission (S2)", () => {
+  let requestPermission: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    requestPermission = vi.fn();
+    class FakeNotification {
+      static permission: NotificationPermission = "default";
+      static requestPermission = requestPermission;
+    }
+    vi.stubGlobal("Notification", FakeNotification);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function renderForm(browser = false) {
+    render(
+      <SettingsForm
+        initial={{ ...INITIAL, notifications: { ...INITIAL.notifications, browser } }}
+        llmCredentials={LLM_CREDENTIALS as never}
+        transcriptStorage={{ count: 0, totalBytes: 0 }}
+      />,
+    );
+    return screen.getByRole("checkbox", {
+      name: /show a desktop notification the instant any task enters an approval gate/i,
+    }) as HTMLInputElement;
+  }
+
+  it("calls requestPermission when enabling while permission is default", async () => {
+    requestPermission.mockResolvedValue("granted");
+    const checkbox = renderForm(false);
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(checkbox.checked).toBe(true));
+  });
+
+  it("does not enable the setting when requestPermission resolves denied", async () => {
+    requestPermission.mockResolvedValue("denied");
+    const checkbox = renderForm(false);
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+    // Give the resolved promise's continuation a tick to run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it("does not call requestPermission when disabling the checkbox", async () => {
+    const checkbox = renderForm(true);
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(checkbox.checked).toBe(false));
+    expect(requestPermission).not.toHaveBeenCalled();
   });
 });
