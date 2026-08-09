@@ -417,3 +417,34 @@ describe("NewTaskForm duplicateFrom (S4)", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("NewTaskForm spend at the decision point (S4)", () => {
+  it("renders nothing when no provider has a configured quota", () => {
+    render(<NewTaskForm repos={REPOS} spend={{ spendToday: 5, authMode: "missing", quotas: [] }} />);
+    expect(screen.queryByText(/used of/)).toBeNull();
+  });
+
+  it("renders the usage bar beside Start now when a provider has a configured quota", () => {
+    render(
+      <NewTaskForm
+        repos={REPOS}
+        spend={{
+          spendToday: 5,
+          authMode: "api_key",
+          quotas: [
+            {
+              provider: "chatgpt",
+              state: "normal",
+              cadence: "daily",
+              limitUsd: 10,
+              usedUsd: 5,
+              remainingUsd: 5,
+              resetAt: Date.now(),
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText(/\$5\.00 used of \$10\.00/)).toBeTruthy();
+  });
+});
