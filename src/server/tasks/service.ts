@@ -1116,3 +1116,101 @@ export function costPerTask(windowDays?: number): TaskCostSummary[] {
 
   return rows.map((row) => ({ ...row, hasUnderReportedTokens: Boolean(row.hasUnderReportedTokens) }));
 }
+
+/** Optional filter shared by `stageRunExport` and `dailySpend` — see stories.md S5. */
+export type UsageExportFilter = { days?: number; taskId?: string };
+
+/** Resolves `filter.days` into the same cutoff `costPerTask` computes, or `undefined` for "all time". */
+function windowCutoff(days?: number): number | undefined {
+  return days && Number.isFinite(days) ? Date.now() - days * 86_400_000 : undefined;
+}
+
+export type StageRunExportRow = {
+  taskId: string;
+  taskTitle: string;
+  repo: string;
+  stage: Stage;
+  attempt: number;
+  provider: LlmProviderId | null;
+  model: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  status: StageRunStatus;
+};
+
+/**
+ * One row per `stage_runs` row — including `failed` and `cancelled` ones —
+ * for the CSV export. The grain someone reconciling against a provider
+ * invoice actually needs, unlike the by-stage/by-task aggregates above.
+ *
+ * Filtered by the task's `createdAt`, the same column `costPerTask` filters
+ * on, so a given `days` produces the same task set the Costs page's by-task
+ * table shows — the export and the page must not silently disagree about
+ * what "the last N days" means (see stories.md S1's whole point).
+ */
+export function stageRunExport(filter: UsageExportFilter = {}): StageRunExportRow[] {
+  const since = windowCutoff(filter.days);
+  const conditions = [
+    filter.taskId ? eq(stageRuns.taskId, filter.taskId) : undefined,
+    since ? sql`${tasks.createdAt} >= ${since}` : undefined,
+  ].filter((condition) => condition !== undefined);
+
+  return db
+    .select({
+      taskId: tasks.id,
+      taskTitle: tasks.title,
+      repo: repos.name,
+      stage: stageRuns.stage,
+      attempt: stageRuns.attempt,
+      provider: stageRuns.provider,
+      model: stageRuns.model,
+      startedAt: stageRuns.startedAt,
+      finishedAt: stageRuns.finishedAt,
+      inputTokens: stageRuns.inputTokens,
+      cacheReadTokens: stageRuns.cacheReadTokens,
+      cacheWriteTokens: stageRuns.cacheWriteTokens,
+      outputTokens: stageRuns.outputTokens,
+      costUsd: stageRuns.costUsd,
+      status: stageRuns.status,
+    })
+    .from(stageRuns)
+    .innerJoin(tasks, eq(stageRuns.taskId, tasks.id))
+    .innerJoin(repos, eq(tasks.repoId, repos.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(stageRuns.createdAt)
+    .all();
+}
+
+export type DailySpend = { date: string; costUsd: number };
+
+/**
+ * Spend bucketed by local calendar day — the daily series above the Costs
+ * page's tables (stories.md S8.2/S5). `date(...)`'s `'localtime'` modifier
+ * matters and mirrors `quota.ts`'s deliberate choice of local midnight: a
+ * chart bucketed by UTC beside a quota bar reset at local midnight would
+ * disagree by up to a day at the boundary.
+ */
+export function dailySpend(filter: UsageExportFilter = {}): DailySpend[] {
+  const since = windowCutoff(filter.days);
+  const bucket = sql<string>`date(coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) / 1000, 'unixepoch', 'localtime')`;
+  const conditions = [
+    filter.taskId ? eq(stageRuns.taskId, filter.taskId) : undefined,
+    since ? sql`coalesce(${stageRuns.startedAt}, ${stageRuns.createdAt}) >= ${since}` : undefined,
+  ].filter((condition) => condition !== undefined);
+
+  return db
+    .select({
+      date: bucket.as("date"),
+      costUsd: sql<number>`coalesce(sum(${stageRuns.costUsd}), 0)`,
+    })
+    .from(stageRuns)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .groupBy(bucket)
+    .orderBy(bucket)
+    .all();
+}
