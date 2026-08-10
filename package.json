@@ -13,6 +13,8 @@
     "start:worker": "node dist/worker/index.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "db:backup": "tsx scripts/backup.ts",
+    "token:create": "tsx scripts/create-api-token.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

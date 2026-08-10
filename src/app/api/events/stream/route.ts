@@ -61,6 +61,7 @@ export async function GET(request: Request) {
                 stageRunId: event.stageRunId,
                 createdAt: event.createdAt,
                 payload: event.payload,
+                actor: event.actor,
               })}\n\n`,
             );
           }

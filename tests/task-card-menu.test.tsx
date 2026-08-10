@@ -301,13 +301,21 @@ describe("TaskCardMenu arrow-key navigation", () => {
       expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Edit" })),
     );
 
+    // S7 §8.3 — "Run this next" is the on_queue-only item just above Cancel.
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Run this next" }));
+
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Cancel" }));
+
+    // S3 §5 — Archive, then Delete.
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Archive" }));
 
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Delete" }));
 
     await user.keyboard("{ArrowUp}");
-    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Cancel" }));
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Archive" }));
   });
 });

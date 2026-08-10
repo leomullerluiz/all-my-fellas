@@ -89,7 +89,8 @@ export function toneFor(event: PipelineEvent): string {
   }
 }
 
-function describe(event: PipelineEvent): string {
+/** Exported for `activity-feed.tsx` (S6 §6.3), which reuses this rather than a second description table. */
+export function describe(event: PipelineEvent): string {
   switch (event.type) {
     case "task_created":
       return `Task created: ${event.title}`;

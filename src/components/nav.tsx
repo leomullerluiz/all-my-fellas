@@ -11,7 +11,9 @@ import type { WorkerHealth } from "@/server/worker/health";
 
 const LINKS = [
   { href: "/", label: "Dashboard" },
+  { href: "/tasks", label: "Tasks" },
   { href: "/tasks/new", label: "New task" },
+  { href: "/activity", label: "Activity" },
   { href: "/repos", label: "Repositories" },
   { href: "/usage", label: "Costs" },
   { href: "/settings", label: "Settings" },

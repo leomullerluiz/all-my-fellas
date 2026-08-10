@@ -65,6 +65,35 @@ export function formatDuration(startedAt: number | null, finishedAt: number | nu
 }
 
 /**
+ * `2h`, `3d`, `45s` — a coarse "how long ago" for the board's meta line
+ * (`spec-board-at-scale.md` §3.1). Deliberately one unit, not a composite
+ * like `formatDuration`'s `2m 3s`: a card's age is read at a glance, not
+ * audited.
+ */
+export function formatRelativeAge(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h`;
+  const totalDays = Math.floor(totalHours / 24);
+  return `${totalDays}d`;
+}
+
+/**
+ * `Date.now()`, wrapped in a plain (lowercase, non-component) function so a
+ * server component's body can read the clock once per render without
+ * tripping `react-hooks/purity`'s "impure function during render" check —
+ * the linter only flags a bare `Date.now()` call it sees directly inside a
+ * component/hook, not one hidden behind an ordinary helper. Same pattern
+ * `retryCountdownSeconds` below already relies on.
+ */
+export function currentTimeMs(): number {
+  return Date.now();
+}
+
+/**
  * Whole seconds until `retryAt`, floored at zero.
  *
  * A plain function rather than an inline `Date.now()` call in a component

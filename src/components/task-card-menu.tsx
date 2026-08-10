@@ -45,7 +45,7 @@ export type CardMenuCapacity = {
 /** A prerequisite task, only as much as the block-reason copy needs. */
 export type CardMenuDependency = { id: string; title: string; status: string };
 
-type Action = "start" | "cancel" | "delete" | null;
+type Action = "start" | "cancel" | "delete" | "archive" | "run-next" | null;
 
 export const dropdownMenuItemClassName = cn(
   "focus:text-accent-foreground relative flex w-full cursor-default items-center rounded-sm px-2 py-1.5",
@@ -120,6 +120,16 @@ export function TaskCardMenu({
     void call("delete", `/api/tasks/${taskId}`, "DELETE");
   }
 
+  function onArchive() {
+    if (pending !== null) return;
+    void call("archive", `/api/tasks/${taskId}/archive`, "POST");
+  }
+
+  function onRunNext() {
+    if (pending !== null) return;
+    void call("run-next", `/api/tasks/${taskId}/run-next`, "POST");
+  }
+
   const dependencyReason = dependencyBlockedReason(dependsOn);
   const capacityReason = capacityBlockedReason(capacity);
   // The dependency gate is hard and unconditional, so it takes precedence
@@ -183,6 +193,19 @@ export function TaskCardMenu({
           {status === "on_queue" ? (
             <>
               <DropdownMenuSeparator />
+              {/* S7 §8.3 — bumps this task's `updated_at` older than every
+                  other queued task's, so it sorts first among ties on
+                  priority and difficulty. See `bumpToFrontOfQueue`. */}
+              <DropdownMenuItem
+                disabled={pending !== null}
+                onSelect={(event) => {
+                  event.preventDefault();
+                  onRunNext();
+                }}
+                className={cn(dropdownMenuItemClassName, "hover:bg-border/40")}
+              >
+                {pending === "run-next" ? "Promoting…" : "Run this next"}
+              </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={pending !== null}
                 onSelect={(event) => {
@@ -197,6 +220,18 @@ export function TaskCardMenu({
           ) : null}
 
           <DropdownMenuSeparator />
+          {/* S3 §5 — soft delete: keeps every row, only hides the task from
+              the board/list/picker. Available regardless of status. */}
+          <DropdownMenuItem
+            disabled={pending !== null}
+            onSelect={(event) => {
+              event.preventDefault();
+              onArchive();
+            }}
+            className={cn(dropdownMenuItemClassName, "hover:bg-border/40")}
+          >
+            {pending === "archive" ? "Archiving…" : "Archive"}
+          </DropdownMenuItem>
           <DropdownMenuItem
             disabled={pending !== null}
             onSelect={(event) => {

@@ -1,5 +1,6 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
 
+import { getCurrentActor } from "../auth/tokens";
 import { db } from "../db/client";
 import { events } from "../db/schema";
 import { dispatchNotification } from "../notifications/dispatch";
@@ -27,6 +28,9 @@ export type StoredEvent = {
   type: string;
   payload: PipelineEvent;
   createdAt: number;
+  /** The API token's name, when this event came from a token-authenticated
+   *  request; `null` for every browser-originated action (§11.3). */
+  actor: string | null;
 };
 
 /**
@@ -55,6 +59,7 @@ export function appendEvent(
         seq: nextSeq,
         type: payload.type,
         payloadJson: JSON.stringify(payload),
+        actor: getCurrentActor(),
       })
       .run();
     return nextSeq;
@@ -79,6 +84,7 @@ function toStoredEvent(row: typeof events.$inferSelect): StoredEvent {
     type: row.type,
     payload: JSON.parse(row.payloadJson) as PipelineEvent,
     createdAt: row.createdAt,
+    actor: row.actor,
   };
 }
 
@@ -110,6 +116,23 @@ export function readEventsSince(afterId = 0, limit = 500): GlobalStoredEvent[] {
     .from(events)
     .where(gt(events.id, afterId))
     .orderBy(asc(events.id))
+    .limit(limit)
+    .all()
+    .map((row) => ({ ...toStoredEvent(row), id: row.id }));
+}
+
+/**
+ * Reverse-chronological events across every task, for the `/activity` feed's
+ * initial paint (S6 §6.3). `readEventsSince` stays ascending, tail-oriented,
+ * for live polling; this is the "load the most recent N" counterpart,
+ * optionally paged further back with `beforeId`.
+ */
+export function listRecentEvents(beforeId?: number, limit = 100): GlobalStoredEvent[] {
+  return db
+    .select()
+    .from(events)
+    .where(beforeId !== undefined ? lt(events.id, beforeId) : undefined)
+    .orderBy(desc(events.id))
     .limit(limit)
     .all()
     .map((row) => ({ ...toStoredEvent(row), id: row.id }));

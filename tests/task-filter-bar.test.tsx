@@ -47,7 +47,7 @@ function findDayButton(day: number): HTMLElement {
 
 describe("default (no applied range)", () => {
   it("shows the default-view label and no Reset control", () => {
-    render(<TaskFilterBar />);
+    render(<TaskFilterBar repos={[]} />);
 
     expect(screen.getByText("Showing today's and open tasks")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
@@ -57,7 +57,7 @@ describe("default (no applied range)", () => {
 describe("applying a valid range", () => {
   it("navigates to /?start=...&end=... once both dates are picked and Apply is clicked", async () => {
     const user = userEvent.setup();
-    render(<TaskFilterBar />);
+    render(<TaskFilterBar repos={[]} />);
 
     await user.click(screen.getByRole("button", { name: "Start date" }));
     await user.click(findDayButton(5));
@@ -76,7 +76,7 @@ describe("applying a valid range", () => {
 describe("invalid range", () => {
   it("rejects an end date before the start date without navigating", async () => {
     const user = userEvent.setup();
-    render(<TaskFilterBar />);
+    render(<TaskFilterBar repos={[]} />);
 
     await user.click(screen.getByRole("button", { name: "Start date" }));
     await user.click(findDayButton(20));
@@ -94,13 +94,15 @@ describe("invalid range", () => {
 describe("Reset", () => {
   it("is shown only while a custom range is applied and clears it back to the default", async () => {
     const user = userEvent.setup();
-    render(<TaskFilterBar initialStart="2026-01-03" initialEnd="2026-01-07" />);
+    render(<TaskFilterBar initialStart="2026-01-03" initialEnd="2026-01-07" repos={[]} />);
 
     expect(screen.getByText(/Jan 3.*Jan 7, 2026/)).toBeTruthy();
     const reset = screen.getByRole("button", { name: "Reset" });
 
     await user.click(reset);
 
-    expect(push).toHaveBeenCalledWith("/");
+    // S2 §4.1 — Reset means "everything" (`?range=all`), not the no-params
+    // default (today + open tasks) — see `lib/task-filter.ts`'s `DateRangeFilter`.
+    expect(push).toHaveBeenCalledWith("/?range=all");
   });
 });

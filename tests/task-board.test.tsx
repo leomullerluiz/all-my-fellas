@@ -63,6 +63,7 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     failureKind: null,
     reworkBudgetGrant: 0,
     maxCostUsd: null,
+    archivedAt: null,
     paused: false,
     createdAt: 0,
     updatedAt: 0,
@@ -73,6 +74,8 @@ function makeTask(overrides: Partial<BoardTask> = {}): BoardTask {
     // delivered" and column-split behaviour. Tests that do care (S1's pulse
     // regression, below) override it explicitly.
     execution: { kind: "idle" },
+    runningStageStartedAt: null,
+    queuePosition: null,
     ...overrides,
   };
 }
@@ -81,8 +84,8 @@ const CAPACITY = { slotAvailable: true, limit: 5, blocking: [] };
 
 function renderBoard(tasks: BoardTask[]) {
   return render(
-    <BatchSelectionProvider>
-      <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} />
+    <BatchSelectionProvider tasks={tasks.map((t) => ({ id: t.id, status: t.status, archivedAt: t.archivedAt }))}>
+      <TaskBoard tasks={tasks} capacity={CAPACITY} maxJobAttempts={3} now={0} />
     </BatchSelectionProvider>,
   );
 }
@@ -174,15 +177,13 @@ describe("TaskBoard column split", () => {
     expect(countIn("On Queue")).toBe("1");
   });
 
-  it("shows no checkbox on an on_queue card, but keeps its 'On Queue' count and actions menu", () => {
+  it("shows a checkbox on an on_queue card (S4), alongside its 'On Queue' count and actions menu", () => {
     renderBoard([
       makeTask({ id: "task_queued", title: "Waiting its turn", status: "on_queue" }),
     ]);
 
     const onQueueColumn = column("On Queue");
-    expect(
-      within(onQueueColumn).queryByRole("checkbox", { name: /Waiting its turn/ }),
-    ).toBeNull();
+    expect(within(onQueueColumn).getByRole("checkbox", { name: /Waiting its turn/ })).toBeTruthy();
     expect(within(onQueueColumn).getByRole("link", { name: "Waiting its turn" })).toBeTruthy();
     expect(within(onQueueColumn).getByRole("button", { name: "Task actions" })).toBeTruthy();
     expect(countIn("On Queue")).toBe("1");
@@ -269,14 +270,12 @@ describe("TaskBoard threads quotas into each card's menu (S4)", () => {
       },
     ];
 
+    const task = makeTask({ id: "task_a", title: "Task A" });
     render(
-      <BatchSelectionProvider>
-        <TaskBoard
-          tasks={[makeTask({ id: "task_a", title: "Task A" })]}
-          capacity={CAPACITY}
-          maxJobAttempts={3}
-          quotas={quotas}
-        />
+      <BatchSelectionProvider
+        tasks={[{ id: task.id, status: task.status, archivedAt: task.archivedAt }]}
+      >
+        <TaskBoard tasks={[task]} capacity={CAPACITY} maxJobAttempts={3} now={0} quotas={quotas} />
       </BatchSelectionProvider>,
     );
 
@@ -351,23 +350,51 @@ describe("TaskBoard execution indicator", () => {
   });
 
   it("suppresses queue-position wording entirely when maxParallelTasks is 1", () => {
+    const waitingTask = runningTask({
+      id: "task_wait",
+      title: "Momentarily waiting",
+      execution: { kind: "waiting_for_worker", position: 1, depth: 1 },
+    });
     render(
-      <BatchSelectionProvider>
+      <BatchSelectionProvider tasks={[{ id: waitingTask.id, status: waitingTask.status, archivedAt: null }]}>
         <TaskBoard
-          tasks={[
-            runningTask({
-              id: "task_wait",
-              title: "Momentarily waiting",
-              execution: { kind: "waiting_for_worker", position: 1, depth: 1 },
-            }),
-          ]}
+          tasks={[waitingTask]}
           capacity={{ slotAvailable: false, limit: 1, blocking: [] }}
           maxJobAttempts={3}
+          now={0}
         />
       </BatchSelectionProvider>,
     );
 
     expect(screen.queryByText(/Queued for the worker/)).toBeNull();
     expect(screen.queryByTitle("An agent is running")).toBeNull();
+  });
+});
+
+// S9 §4.4 — a column past `COLUMN_CARD_LIMIT` (20) caps what it renders and
+// links out to the filtered list view instead of growing forever.
+describe("TaskBoard column overflow", () => {
+  it("caps a column at 20 cards and links to the filtered list view for the rest", () => {
+    const tasks = Array.from({ length: 25 }, (_, i) =>
+      makeTask({
+        id: `task_${i}`,
+        title: `Task ${i}`,
+        currentStage: "CREATED",
+        status: "queued",
+      }),
+    );
+    renderBoard(tasks);
+
+    const created = column("Created");
+    expect(within(created).getAllByRole("heading", { level: 3 })).toHaveLength(20);
+
+    const seeAll = within(created).getByRole("link", { name: /showing 20 of 25/ });
+    expect(seeAll.getAttribute("href")).toBe("/tasks?status=queued");
+  });
+
+  it("does not show a 'see all' link when a column is within the limit", () => {
+    renderBoard([makeTask({ id: "task_a", title: "Solo", status: "queued" })]);
+
+    expect(screen.queryByRole("link", { name: /see all/ })).toBeNull();
   });
 });

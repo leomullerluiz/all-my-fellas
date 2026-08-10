@@ -4,6 +4,7 @@ import {
   defaultDateRange,
   filterBoardTasks,
   parseDateRangeParams,
+  parseListFilters,
   type FilterableTask,
 } from "@/lib/task-filter";
 
@@ -138,5 +139,51 @@ describe("filterBoardTasks", () => {
     expect(
       filterBoardTasks([task({ status: "completed", createdAt: range.endMs })], range),
     ).toHaveLength(1);
+  });
+
+  /**
+   * S2 §4.1 — Reset means "everything", provably distinct from the no-params
+   * default: an 8-day-old `completed` task is absent from the default
+   * ("today") state and present once `range === "all"`.
+   */
+  it("'all' returns every task regardless of status or date; the default excludes an old completed one", () => {
+    const now = new Date(2026, 7, 5, 12, 0, 0).getTime();
+    const eightDaysAgo = now - 8 * 24 * 60 * 60 * 1000;
+    const oldCompleted = task({ status: "completed", createdAt: eightDaysAgo });
+
+    expect(filterBoardTasks([oldCompleted], defaultDateRange(now))).toHaveLength(0);
+    expect(filterBoardTasks([oldCompleted], "all")).toHaveLength(1);
+  });
+});
+
+describe("parseListFilters", () => {
+  it("extracts q/repo/priority/status, trimming q", () => {
+    const filters = parseListFilters({
+      q: "  billing  ",
+      repo: "repo_1",
+      priority: "high",
+      status: "awaiting_gate",
+    });
+    expect(filters).toEqual({
+      q: "billing",
+      repoId: "repo_1",
+      priority: "high",
+      status: "awaiting_gate",
+    });
+  });
+
+  it("silently drops an invalid priority/status rather than throwing", () => {
+    const filters = parseListFilters({ priority: "urgentish", status: "not-a-status" });
+    expect(filters.priority).toBeUndefined();
+    expect(filters.status).toBeUndefined();
+  });
+
+  it("returns an empty object for no params", () => {
+    expect(parseListFilters({})).toEqual({});
+  });
+
+  it("takes the first value when a param repeats (array form)", () => {
+    const filters = parseListFilters({ q: ["first", "second"] });
+    expect(filters.q).toBe("first");
   });
 });

@@ -141,12 +141,21 @@ export const tasks = sqliteTable(
      * are already the two exceptions to "status is derived from stage".
      */
     paused: integer("paused", { mode: "boolean" }).notNull().default(false),
+    /**
+     * Soft-delete timestamp — `NULL` means visible everywhere. Set by
+     * `archiveTask`/cleared by `unarchiveTask`; see `spec-board-at-scale.md`
+     * §5. Every row and every `/usage` total survives archiving: only the
+     * board, the list view and the dependency picker hide the task.
+     */
+    archivedAt: integer("archived_at"),
     createdAt: integer("created_at").notNull().default(now),
     updatedAt: integer("updated_at").notNull().default(now),
   },
   (table) => [
     index("tasks_status_idx").on(table.status),
     index("tasks_stage_idx").on(table.currentStage),
+    index("tasks_archived_idx").on(table.archivedAt),
+    index("tasks_repo_idx").on(table.repoId),
   ],
 );
 
@@ -290,6 +299,14 @@ export const events = sqliteTable(
     seq: integer("seq").notNull(),
     type: text("type").notNull(),
     payloadJson: text("payload_json").notNull(),
+    /**
+     * Name of the API token that authenticated the request this event
+     * resulted from, e.g. `"CI"`. `NULL` for every browser-originated action
+     * — see `spec-board-at-scale.md` §11.3 and `server/auth/tokens.ts`'s
+     * `AsyncLocalStorage` context, which is how this gets set without
+     * threading an `actor` parameter through every orchestrator function.
+     */
+    actor: text("actor"),
     createdAt: integer("created_at").notNull().default(now),
   },
   (table) => [uniqueIndex("events_task_seq_idx").on(table.taskId, table.seq)],
@@ -375,6 +392,21 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+/**
+ * Optional bearer tokens for `/api/*` — `spec-board-at-scale.md` §11.
+ *
+ * `tokenHash` only: the raw secret is never persisted anywhere, by any
+ * caller (see `createApiToken` in `server/auth/tokens.ts`, the only writer).
+ * A label (`name`), not an identity — see §11.3.
+ */
+export const apiTokens = sqliteTable("api_tokens", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: integer("created_at").notNull().default(now),
+  lastUsedAt: integer("last_used_at"),
+});
+
 export const JOB_KINDS = [
   "run_stage",
   "deliver",
@@ -438,3 +470,4 @@ export type JobRow = typeof jobs.$inferSelect;
 export type VerificationRunRow = typeof verificationRuns.$inferSelect;
 export type AgentRunRow = typeof agentRuns.$inferSelect;
 export type WorkerStatusRow = typeof workerStatus.$inferSelect;
+export type ApiTokenRow = typeof apiTokens.$inferSelect;

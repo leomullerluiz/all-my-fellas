@@ -194,6 +194,27 @@ const MIGRATIONS: readonly Migration[] = [
         .run("cacheTokenFixAppliedAt", String(Date.now()));
     },
   },
+  {
+    name: "task archiving",
+    up: (sqlite) => {
+      // `NULL` means visible everywhere — see `schema.ts`'s `tasks.archivedAt`
+      // comment. `spec-board-at-scale.md` §5/§12.
+      addColumn(sqlite, "tasks", "archived_at", "INTEGER");
+      sqlite.exec(`CREATE INDEX IF NOT EXISTS tasks_archived_idx ON tasks(archived_at)`);
+      // Added alongside archiving since both land with §4's query-side
+      // filtering, which narrows by repository as often as by date.
+      sqlite.exec(`CREATE INDEX IF NOT EXISTS tasks_repo_idx ON tasks(repo_id)`);
+    },
+  },
+  {
+    name: "event actor attribution for token-authenticated requests",
+    up: (sqlite) => {
+      // `NULL` for every event this database already holds, and for every
+      // browser-originated action from here on — see `schema.ts`'s
+      // `events.actor` comment. `spec-board-at-scale.md` §11.3.
+      addColumn(sqlite, "events", "actor", "TEXT");
+    },
+  },
 ];
 
 export type MigrationResult = { from: number; to: number; applied: string[] };

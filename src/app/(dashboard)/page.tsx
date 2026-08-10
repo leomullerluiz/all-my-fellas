@@ -2,27 +2,50 @@ import Link from "next/link";
 
 import { AutoRefresh } from "@/components/auto-refresh";
 import { BatchSelectionProvider, BatchStartButton } from "@/components/batch-start";
+import { NeedsMePanel, type NeedsMeTask } from "@/components/needs-me-panel";
+import { SavedViews, type SavedViewKey } from "@/components/saved-views";
 import { TaskBoard, type BoardTask } from "@/components/task-board";
 import { TaskFilterBar } from "@/components/task-filter-bar";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { UsageBar } from "@/components/usage-bar";
+import {
+  defaultDateRange,
+  filterBoardTasks,
+  isOpenStatus,
+  parseDateRangeParams,
+  parseListFilters,
+  type DateRangeFilter,
+} from "@/lib/task-filter";
 import { changeRequestNounFor } from "@/lib/provider-copy";
-import { defaultDateRange, filterBoardTasks, parseDateRangeParams } from "@/lib/task-filter";
-import { formatCost } from "@/lib/utils";
+import { currentTimeMs, formatCost } from "@/lib/utils";
 import { resolveProviderAuth } from "@/server/config/env";
 import { credentialSource } from "@/server/git/credentials";
 import { providerFor, supportedProviderNames } from "@/server/git/providers";
 import { MAX_JOB_ATTEMPTS } from "@/server/jobs/queue";
 import { executionStateFor, executionStates } from "@/server/pipeline/execution";
 import { capacity } from "@/server/pipeline/orchestrator";
-import { listDependencies, listRepos, listTasks, totalCostForTask } from "@/server/tasks/service";
+import { sortByPriorityThenDifficulty } from "@/server/pipeline/task-ranking";
+import { type Gate, isGate } from "@/server/pipeline/stages";
+import { getSettings } from "@/server/settings/store";
+import {
+  activeStageRunStarts,
+  costByTaskId,
+  dependenciesByTaskId,
+  listRepos,
+  listTasks,
+  queuedTasks,
+} from "@/server/tasks/service";
 import { resolveQuotaStatus, spendToday } from "@/server/usage/quota";
 import { resolveWorkerHealth } from "@/server/worker/health";
 
 // The board reflects worker state that changes between requests, so it must be
 // rendered per request rather than prerendered at build time.
 export const dynamic = "force-dynamic";
+
+function first(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 function SetupNotice() {
   const auth = resolveProviderAuth();
@@ -86,29 +109,64 @@ export default async function DashboardPage(props: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const search = await props.searchParams;
-  const rawStart = Array.isArray(search.start) ? search.start[0] : search.start;
-  const rawEnd = Array.isArray(search.end) ? search.end[0] : search.end;
-  // An invalid or missing range falls back to S1's default ("today" —
+  const rawStart = first(search.start);
+  const rawEnd = first(search.end);
+  // An invalid or missing range falls back to the default ("today" —
   // see `defaultDateRange`) rather than 400ing: this filter is a view
   // convenience, not an API contract worth failing a page load over.
   const customRange = parseDateRangeParams(rawStart, rawEnd);
-  const range = customRange ?? defaultDateRange();
+  // S2 §4.1 — `?range=all` (what Reset now navigates to) is the explicit
+  // "everything" state, distinct from the no-params default.
+  const range: DateRangeFilter = search.range === "all" ? "all" : (customRange ?? defaultDateRange());
+  const includeArchived = first(search.archived) === "1";
+  // "Active" saved view: every open-status task, regardless of date — a
+  // narrower read than the default's "open + today", applied client-side
+  // (JS) against the already-fetched set rather than a fifth SQL filter for
+  // a chip that exists purely as a bookmark (§4.3).
+  const activeOnly = first(search.view) === "active";
 
+  const listFilters = parseListFilters(search);
   const repos = listRepos();
+
   // One derivation, read once per render — see `execution.ts`. `idle` is the
   // default for every task this map has no entry for (everything not
   // admitted), which is most of them.
   const execution = executionStates();
-  const allTasks: BoardTask[] = listTasks().map((task) => ({
+  // S9.1 — one query each for cost and dependencies, not one per task.
+  const costs = costByTaskId();
+  const dependencies = dependenciesByTaskId();
+  const runningStarts = activeStageRunStarts();
+
+  // S7 §8.1/§8.2 — the real promotion order, computed over *every* `on_queue`
+  // task (not just whatever the date/search filters below let through), so a
+  // card's "#N in queue" position stays honest even when the board is
+  // filtered to a subset.
+  const queuePositionById = new Map<string, number>();
+  sortByPriorityThenDifficulty([...queuedTasks()].sort((a, b) => a.updatedAt - b.updatedAt)).forEach(
+    (task, index) => queuePositionById.set(task.id, index + 1),
+  );
+
+  const now = currentTimeMs();
+  const allTasks: BoardTask[] = listTasks({
+    status: listFilters.status,
+    repoId: listFilters.repoId,
+    priority: listFilters.priority,
+    q: listFilters.q,
+    includeArchived,
+  }).map((task) => ({
     ...task,
-    costUsd: totalCostForTask(task.id),
-    dependsOn: listDependencies(task.id),
+    costUsd: costs.get(task.id) ?? 0,
+    dependsOn: dependencies.get(task.id) ?? [],
     execution: executionStateFor(task.id, execution),
+    runningStageStartedAt: runningStarts.get(task.id) ?? null,
+    queuePosition: queuePositionById.get(task.id) ?? null,
   }));
-  // S1/S2: today's tasks (or the applied custom range) plus every open/active
-  // task regardless of date — see `filterBoardTasks`. The header counters
-  // below are derived from this filtered set, not `allTasks`, per S1's AC.
-  const tasks = filterBoardTasks(allTasks, range);
+  // S1/S2: today's tasks (or the applied custom range, or "everything") plus
+  // every open/active task regardless of date — see `filterBoardTasks`. The
+  // header counters below are derived from this filtered set, not
+  // `allTasks`, per S1's AC.
+  let tasks = filterBoardTasks(allTasks, range);
+  if (activeOnly) tasks = tasks.filter((task) => isOpenStatus(task.status));
 
   const slots = capacity();
   const notStarted = tasks.filter((task) => task.currentStage === "CREATED").length;
@@ -130,16 +188,44 @@ export default async function DashboardPage(props: {
   const quotas = resolveQuotaStatus();
   const claudeAuthMode = resolveProviderAuth().mode;
 
-  // A digest of every task's id/stage/status, recomputed on each request
-  // that renders this route (full load or `router.refresh()`). Changes
-  // whenever a task's state actually moves — which is what makes a
-  // previously checked task's selection stale — so `BatchSelectionProvider`
-  // can reset it (S1) without needing an impure, always-different value.
-  const boardVersion = tasks.map((task) => `${task.id}:${task.currentStage}:${task.status}`).join("|");
+  // S6 §6.2 — every task waiting on a human decision, cross-task. A plain
+  // `listTasks` call, independent of the board's own date/search filters:
+  // what needs you does not stop needing you because it's outside today's
+  // window.
+  const needsMe: NeedsMeTask[] = listTasks({ status: "awaiting_gate" })
+    .filter((task): task is typeof task & { currentStage: Gate } => isGate(task.currentStage))
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      currentStage: task.currentStage,
+      updatedAt: task.updatedAt,
+    }));
+
+  // S5 §9.2 — back off the refresh interval once nothing on the board is
+  // live, derived from data already rendered (no extra fetch). `~7.5x` the
+  // fast interval lands on 30s at the 4000ms default.
+  const settings = getSettings();
+  const hasLiveTask = tasks.some((task) => task.status === "running" || task.status === "awaiting_gate");
+  const refreshIntervalMs = hasLiveTask ? settings.boardRefreshMs : Math.round(settings.boardRefreshMs * 7.5);
+
+  const savedView: SavedViewKey | null =
+    search.status === "awaiting_gate" && search.range === "all" && !search.view
+      ? "needs-me"
+      : activeOnly
+        ? "active"
+        : search.range === "all" &&
+            !listFilters.status &&
+            !listFilters.repoId &&
+            !listFilters.priority &&
+            !listFilters.q
+          ? "everything"
+          : null;
 
   return (
-    <BatchSelectionProvider boardVersion={boardVersion}>
-      <AutoRefresh />
+    <BatchSelectionProvider
+      tasks={tasks.map((task) => ({ id: task.id, status: task.status, archivedAt: task.archivedAt }))}
+    >
+      <AutoRefresh intervalMs={refreshIntervalMs} />
 
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -163,12 +249,21 @@ export default async function DashboardPage(props: {
         </div>
       </div>
 
+      <SavedViews active={savedView} />
+
       <TaskFilterBar
         initialStart={customRange ? rawStart : undefined}
         initialEnd={customRange ? rawEnd : undefined}
+        initialQ={listFilters.q}
+        initialRepo={listFilters.repoId}
+        initialPriority={listFilters.priority}
+        initialStatus={listFilters.status}
+        repos={repos}
       />
 
       <SetupNotice />
+
+      <NeedsMePanel tasks={needsMe} now={now} />
 
       {repos.length === 0 ? (
         <EmptyState
@@ -197,6 +292,7 @@ export default async function DashboardPage(props: {
           tasks={tasks}
           capacity={slots}
           maxJobAttempts={MAX_JOB_ATTEMPTS}
+          now={now}
           quotas={quotas}
         />
       )}

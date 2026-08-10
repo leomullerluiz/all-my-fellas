@@ -5,7 +5,7 @@ import { ArtifactTabs } from "@/components/artifact-tabs";
 import { ExecutionDot } from "@/components/execution-dot";
 import { LiveLog } from "@/components/live-log";
 import { RunStatusBadge, StageBadge, StatusBadge } from "@/components/stage-badge";
-import { DeliveryOutcomeBanner, GatePanel, TaskControls } from "@/components/task-actions";
+import { ArchivedBanner, DeliveryOutcomeBanner, GatePanel, TaskControls } from "@/components/task-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { UsageBar } from "@/components/usage-bar";
@@ -116,8 +116,11 @@ export default async function TaskDetailPage(props: {
             dependsOn={dependsOn}
             retry={retry}
             paused={task.paused}
+            archived={task.archivedAt !== null}
           />
         </div>
+
+        {task.archivedAt !== null ? <ArchivedBanner taskId={task.id} /> : null}
 
         {notStarted && quotas.length > 0 ? (
           <UsageBar
