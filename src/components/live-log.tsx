@@ -29,6 +29,7 @@ const REFRESH_TRIGGERS = new Set([
   "artifact_saved",
   "gate_opened",
   "gate_decided",
+  "gate_bypassed",
   "pr_opened",
   "task_finished",
   // Changes the timeline (a new stage run) and the gate badge computed from
@@ -57,6 +58,10 @@ export function toneFor(event: PipelineEvent): string {
     case "quota_warning":
     case "quota_overridden":
       return "text-warning";
+    // Flags a safety checkpoint that was skipped, not just opened — distinct
+    // from `gate_opened`'s warning tone.
+    case "gate_bypassed":
+      return "text-danger";
     case "agent_tool_use":
       return "text-info";
     case "log":
@@ -113,6 +118,8 @@ export function describe(event: PipelineEvent): string {
       return `📄 saved ${event.artifactType}`;
     case "gate_opened":
       return `⏸ waiting for approval at ${event.gate}`;
+    case "gate_bypassed":
+      return `⚠ ${event.gate} bypassed — no-approval automation is enabled`;
     case "gate_decided":
       return `${event.decision === "approve" ? "✔" : "✖"} ${event.gate}: ${event.decision}${
         event.comment ? ` — ${event.comment}` : ""

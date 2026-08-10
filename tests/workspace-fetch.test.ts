@@ -48,7 +48,7 @@ beforeAll(async () => {
   await seedGit.add(["README.md"]);
   await seedGit.commit("Initial commit");
   await seedGit.push(["origin", "main"]);
-});
+}, 20_000);
 
 afterAll(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -94,6 +94,9 @@ describe("prepareWorkspace — fetches the base on every call", () => {
     expect(after).toBe(advanced);
   }, 20_000);
 
+  // Same contention as above: a clone plus a fetch attempt is fast in
+  // isolation but can exceed the default 5s under the full suite's parallel
+  // git-heavy files.
   it("does not throw when the fetch fails, and records why on the workspace", async () => {
     const taskId = "task_fetch_failure";
     // First call clones from the real origin, so the workspace exists.
@@ -118,7 +121,7 @@ describe("prepareWorkspace — fetches the base on every call", () => {
     // The workspace is still usable: the branch is still checked out.
     const branches = await simpleGit(second.path).branchLocal();
     expect(branches.current).toBe(second.branchName);
-  });
+  }, 20_000);
 
   it("never leaves a credential in .git/config, fetch included", async () => {
     const taskId = "task_fetch_no_credential_leak";
@@ -142,7 +145,7 @@ describe("prepareWorkspace — fetches the base on every call", () => {
     expect(config).not.toContain(secret);
     expect(config).not.toContain("extraHeader");
     expect(config).not.toContain("Authorization");
-  });
+  }, 20_000);
 });
 
 describe("diff helpers distinguish a missing ref from a real command failure", () => {
@@ -160,7 +163,7 @@ describe("diff helpers distinguish a missing ref from a real command failure", (
     await expect(hasCommitsAheadOfBase(workspace.path, "totally-not-a-branch")).resolves.toBe(
       false,
     );
-  });
+  }, 20_000);
 
   it("surfaces a real git command failure instead of reporting it as no diff", async () => {
     // Not a git repository at all — every command genuinely fails, which is

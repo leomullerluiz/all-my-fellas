@@ -15,8 +15,10 @@ import {
 import { ErrorMessage } from "@/components/error-message";
 import { capacityBlockedReason } from "@/lib/capacity";
 import { dependencyBlockedReason } from "@/lib/dependencies";
+import { worstQuotaWarning } from "@/lib/quota-warning";
 import { cn } from "@/lib/utils";
 import type { TaskStatus } from "@/server/pipeline/stages";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 /**
  * Start / Edit / Delete menu on a not-yet-started card, with a Cancel item
@@ -57,6 +59,7 @@ export function TaskCardMenu({
   status,
   capacity,
   dependsOn = [],
+  quotas = [],
 }: {
   taskId: string;
   taskTitle: string;
@@ -65,6 +68,13 @@ export function TaskCardMenu({
   capacity: CardMenuCapacity;
   /** This task's prerequisites, so Start can be disabled independently of capacity. */
   dependsOn?: CardMenuDependency[];
+  /**
+   * Every provider with a configured limit, so the Start item can carry a
+   * one-line quota warning — this menu is a Start affordance in its own
+   * right (stories.md S4), and the only one too small to host the full
+   * `UsageBar` shown on the new-task form and the task-detail page.
+   */
+  quotas?: QuotaStatus[];
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -126,6 +136,9 @@ export function TaskCardMenu({
   // when both are true — see `stories.md` S2.
   const blockedReason = dependencyReason ?? capacityReason;
   const startDisabled = dependencyReason !== null || !capacity.slotAvailable;
+  // Informational only — S4 shows spend where it's about to be committed, it
+  // does not gate Start on it (enforcement is out of scope; see stories.md).
+  const quotaWarning = worstQuotaWarning(quotas);
 
   return (
     <div className="relative shrink-0">
@@ -233,6 +246,17 @@ export function TaskCardMenu({
           {blockedReason ? (
             <p className="border-t border-border px-2 py-2 text-[10px] leading-snug text-muted">
               {blockedReason}
+            </p>
+          ) : null}
+
+          {quotaWarning ? (
+            <p
+              className={cn(
+                "border-t border-border px-2 py-2 text-[10px] leading-snug",
+                quotaWarning.state === "exceeded" ? "text-danger" : "text-warning",
+              )}
+            >
+              {quotaWarning.message}
             </p>
           ) : null}
         </DropdownMenuContent>

@@ -94,11 +94,33 @@ export type PipelineContext = {
   planGateRequired: boolean;
   /** Whether the task opted into a human code review before delivery. */
   humanCodeReviewRequired: boolean;
+  /**
+   * Whether `CODE_REVIEW` is skipped for this task — settings.codeReviewEnabled
+   * resolved against the task's own difficulty/criticality estimate. See
+   * stories.md S6; the cheap alternative to a full named-profile system
+   * (spec §7.2).
+   */
+  skipCodeReview: boolean;
+  /**
+   * Instance-wide "no-approval automation" switch (`settings.noApprovalAutomation`).
+   * When true, `PLAN_GATE` and an accepted `PO_HOMOLOGATION` no longer wait
+   * for a human — see the `ARCHITECTURE` and `PO_HOMOLOGATION` branches below.
+   * The `PO_HOMOLOGATION` escalation branch and `HUMAN_CODE_REVIEW` are
+   * deliberately unaffected — see their own comments.
+   */
+  noApprovalGatesEnabled: boolean;
 };
 
 export type Transition =
-  /** Move to `stage` and enqueue a run for it. */
-  | { type: "run"; stage: Stage; attempt: number }
+  /**
+   * Move to `stage` and enqueue a run for it. `bypassedGate`, when present,
+   * names a gate that would otherwise have applied here but was skipped
+   * because `noApprovalGatesEnabled` is on — `applyTransition` reads it to
+   * append the `gate_bypassed` audit event (§S3). Never set for the silent
+   * `autoApprovePlanForLowCriticality` waiver, which stays unaudited exactly
+   * as it always has.
+   */
+  | { type: "run"; stage: Stage; attempt: number; bypassedGate?: Gate }
   /** Park the task on a gate and wait for a human. */
   | { type: "await_gate"; gate: Gate }
   /**
@@ -276,18 +298,36 @@ export function nextTransition(
   if (signal.stage !== current) throw new InvalidTransitionError(current, signal);
 
   if (current === "ARCHITECTURE") {
-    return context.planGateRequired
-      ? { type: "await_gate", gate: "PLAN_GATE" }
-      : { type: "run", stage: "DEVELOPMENT", attempt: context.developmentAttempts + 1 };
+    if (!context.planGateRequired) {
+      return { type: "run", stage: "DEVELOPMENT", attempt: context.developmentAttempts + 1 };
+    }
+    // `planGateRequired` is true (not waived by `autoApprovePlanForLowCriticality`),
+    // but the global switch skips it anyway — audited via `bypassedGate`,
+    // unlike the silent low-criticality waiver above.
+    if (context.noApprovalGatesEnabled) {
+      return {
+        type: "run",
+        stage: "DEVELOPMENT",
+        attempt: context.developmentAttempts + 1,
+        bypassedGate: "PLAN_GATE",
+      };
+    }
+    return { type: "await_gate", gate: "PLAN_GATE" };
   }
 
   if (current === "VERIFICATION") {
     // `skipped` is folded into `approved` at the call site (`executeVerification`)
     // — there is no third value here, matching `state-machine.ts`'s existing
     // rule against a second near-identical field.
-    return signal.reviewVerdict === "approved"
-      ? { type: "run", stage: "CODE_REVIEW", attempt: 1 }
-      : reworkOrFail(context, signal.detail ?? "Verification failed");
+    if (signal.reviewVerdict !== "approved") {
+      return reworkOrFail(context, signal.detail ?? "Verification failed");
+    }
+    // `codeReviewEnabled: "auto"`/`"never"` on a trivial, low-risk task (or
+    // unconditionally, for `"never"`) — see stories.md S6. `QA` and
+    // `PO_HOMOLOGATION` run unaffected either way.
+    return context.skipCodeReview
+      ? { type: "run", stage: "QA", attempt: 1 }
+      : { type: "run", stage: "CODE_REVIEW", attempt: 1 };
   }
 
   if (current === "CODE_REVIEW") {
@@ -307,6 +347,12 @@ export function nextTransition(
 
   if (current === "PO_HOMOLOGATION") {
     if (signal.homologationVerdict === "accepted") {
+      // Same bypass as PLAN_GATE above, audited the same way. The escalation
+      // branch below (second rejection / budget exhausted) is deliberately
+      // NOT covered by this flag — see its own comment.
+      if (context.noApprovalGatesEnabled) {
+        return { type: "run", stage: "DELIVERY", attempt: 1, bypassedGate: "STAKEHOLDER_GATE" };
+      }
       return { type: "await_gate", gate: "STAKEHOLDER_GATE" };
     }
     // Fail closed: a missing verdict (a caller that forgot to extract one) is
@@ -321,6 +367,11 @@ export function nextTransition(
     // Second rejection, or no budget left. Escalate rather than fail: the
     // branch passed code review and QA, and only a human can decide whether
     // "not what we asked for" means ship it, rework it, or drop it.
+    //
+    // `noApprovalGatesEnabled` deliberately does NOT reach this branch: an
+    // ambiguous double-rejection (or one with no rework budget left) still
+    // needs a human regardless of how much the operator trusts the
+    // automation — the one case the setting leaves gated.
     return { type: "await_gate", gate: "STAKEHOLDER_GATE" };
   }
 

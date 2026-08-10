@@ -7,8 +7,11 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
+import { UsageBar } from "@/components/usage-bar";
 import { formatBytes } from "@/lib/utils";
+import type { AuthMode } from "@/server/config/env";
 import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 export type RepoOption = {
   id: string;
@@ -65,6 +68,13 @@ export type TaskFormProps = {
    * Create-mode only.
    */
   duplicateFrom?: string;
+  /**
+   * Spend at the moment this form is about to commit new spend — the same
+   * figures the dashboard's bar renders, shown here too so a user sees them
+   * before clicking "Start now" rather than after. See stories.md S4.
+   * Omitted (or an empty `quotas` array) renders nothing.
+   */
+  spend?: { spendToday: number; authMode: AuthMode; quotas: QuotaStatus[] };
 };
 
 /**
@@ -82,6 +92,7 @@ export function NewTaskForm({
   capacity = { slotAvailable: true, limit: 1, blocking: [] },
   dependencyOptions = [],
   duplicateFrom,
+  spend,
 }: TaskFormProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -496,6 +507,13 @@ export function NewTaskForm({
               </div>
             ) : (
               <div className="flex flex-col gap-2">
+                {spend && spend.quotas.length > 0 ? (
+                  <UsageBar
+                    spendToday={spend.spendToday}
+                    authMode={spend.authMode}
+                    quotas={spend.quotas}
+                  />
+                ) : null}
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Queueing is the default and the primary action: a task left
                       sitting costs nothing, a task started by accident costs

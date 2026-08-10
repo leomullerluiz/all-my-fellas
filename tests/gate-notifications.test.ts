@@ -35,6 +35,7 @@ const SAMPLE_PAYLOAD_BY_TYPE: Record<PipelineEvent["type"], PipelineEvent> = {
   artifact_saved: { type: "artifact_saved", artifactType: "plan" },
   gate_opened: { type: "gate_opened", gate: "PLAN_GATE" },
   gate_decided: { type: "gate_decided", gate: "PLAN_GATE", decision: "approve" },
+  gate_bypassed: { type: "gate_bypassed", gate: "PLAN_GATE" },
   git: { type: "git", message: "pushed" },
   pr_opened: { type: "pr_opened", url: "https://example.com/pr/1" },
   task_finished: { type: "task_finished", stage: "COMPLETED" },

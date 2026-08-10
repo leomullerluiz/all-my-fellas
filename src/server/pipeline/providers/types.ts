@@ -14,7 +14,16 @@ export type StageExecutionResult = {
   /** Final assistant text; this is the artifact body. */
   finalText: string;
   costUsd: number;
+  /** Total input tokens, including any served from or written to a cache. */
   inputTokens: number;
+  /**
+   * The `inputTokens` subset served from a cache. Only Claude's `result`
+   * message reports this breakdown; OpenAI and Gemini always report `0` here,
+   * with the full amount folded into `inputTokens` instead. See stories.md S1.
+   */
+  cacheReadTokens: number;
+  /** The `inputTokens` subset spent creating a new cache entry. `0` outside Claude. */
+  cacheWriteTokens: number;
   outputTokens: number;
   numTurns: number;
   /**

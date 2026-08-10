@@ -17,6 +17,9 @@ import {
   type BatchEligibilityTask,
   type BatchVerb,
 } from "@/lib/batch-eligibility";
+import { worstQuotaWarning } from "@/lib/quota-warning";
+import { cn } from "@/lib/utils";
+import type { QuotaStatus } from "@/server/usage/quota";
 
 /**
  * Multi-select state shared by the checkbox on every card (`task-board.tsx`)
@@ -157,8 +160,20 @@ const VERB_LABEL: Record<BatchVerb, string> = { start: "Start", archive: "Archiv
  * §7.2/§7.3). Batch Delete is deliberately not offered anywhere — deletion
  * stays `CREATED`-only and single-task; archiving is what covers the "get
  * this off my board" need at scale.
+ *
+ * Each verb runs its batch, then shows a summary of what succeeded and what
+ * did not — the reason text is whatever the server sent, which for a capacity
+ * refusal is the same string `TaskCardMenu`'s `blockedReason` shows (both
+ * derive from `capacityBlockedReason`). Queued tasks start automatically as
+ * slots free up (see `orchestrator.promoteQueue`), so they are not reported
+ * as failures.
+ *
+ * `quotas` (stories.md S4) is the same array `page.tsx` already computes for
+ * the bottom-of-dashboard `UsageBar` — Start is a spend affordance in its own
+ * right, but the header row has no room for the full bar, so it shows
+ * `lib/quota-warning.ts`'s one-line reduction instead.
  */
-export function BatchStartButton() {
+export function BatchStartButton({ quotas = [] }: { quotas?: QuotaStatus[] }) {
   const router = useRouter();
   const { selected, clear, tasksById } = useBatchSelection();
   const [pending, setPending] = useState<BatchVerb | null>(null);
@@ -223,6 +238,10 @@ export function BatchStartButton() {
   const cancelledCount = cancelSummary?.filter((r) => r.cancelled).length ?? 0;
   const cancelFailed = cancelSummary?.filter((r) => !r.cancelled) ?? [];
 
+  // Informational only, same as `TaskCardMenu`'s — batch start is not gated
+  // on quota (enforcement is out of scope; see stories.md).
+  const quotaWarning = worstQuotaWarning(quotas);
+
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-2">
@@ -266,6 +285,17 @@ export function BatchStartButton() {
           {pending === "cancel" ? "Cancelling…" : `${VERB_LABEL.cancel}${count > 0 ? ` (${eligibleFor("cancel").length})` : ""}`}
         </Button>
       </div>
+
+      {quotaWarning ? (
+        <p
+          className={cn(
+            "max-w-xs text-right text-xs",
+            quotaWarning.state === "exceeded" ? "text-danger" : "text-warning",
+          )}
+        >
+          {quotaWarning.message}
+        </p>
+      ) : null}
 
       {error ? <p className="max-w-xs text-right text-xs text-danger">{error}</p> : null}
 

@@ -38,6 +38,13 @@ describe("toneFor — verification_finished", () => {
   });
 });
 
+describe("toneFor — gate_bypassed", () => {
+  it("returns a danger tone, distinct from gate_opened's warning tone", () => {
+    const event: PipelineEvent = { type: "gate_bypassed", gate: "PLAN_GATE" };
+    expect(toneFor(event)).toBe("text-danger");
+  });
+});
+
 describe("toneFor — verification_output", () => {
   it("tints stderr output with the warning tone", () => {
     const event: PipelineEvent = {

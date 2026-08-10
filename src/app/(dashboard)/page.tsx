@@ -185,7 +185,8 @@ export default async function DashboardPage(props: {
   // S1/S2/S3's bottom-of-page bar. Recomputed on every request that renders
   // this route, same as everything else here — no separate polling.
   const todaySpend = spendToday();
-  const quota = resolveQuotaStatus();
+  const quotas = resolveQuotaStatus();
+  const claudeAuthMode = resolveProviderAuth().mode;
 
   // S6 §6.2 — every task waiting on a human decision, cross-task. A plain
   // `listTasks` call, independent of the board's own date/search filters:
@@ -241,7 +242,7 @@ export default async function DashboardPage(props: {
           </p>
         </div>
         <div className="flex items-start gap-2">
-          <BatchStartButton />
+          <BatchStartButton quotas={quotas} />
           <Link href="/tasks/new">
             <Button>New task</Button>
           </Link>
@@ -287,10 +288,16 @@ export default async function DashboardPage(props: {
           }
         />
       ) : (
-        <TaskBoard tasks={tasks} capacity={slots} maxJobAttempts={MAX_JOB_ATTEMPTS} now={now} />
+        <TaskBoard
+          tasks={tasks}
+          capacity={slots}
+          maxJobAttempts={MAX_JOB_ATTEMPTS}
+          now={now}
+          quotas={quotas}
+        />
       )}
 
-      <UsageBar spendToday={todaySpend} quota={quota} />
+      <UsageBar spendToday={todaySpend} authMode={claudeAuthMode} quotas={quotas} />
     </BatchSelectionProvider>
   );
 }

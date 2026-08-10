@@ -174,11 +174,18 @@ export function resolveLimits(): RuntimeLimits {
   };
 }
 
-/** How often a configured quota limit is expected to reset. */
-export type Cadence = "daily" | "hourly";
+/**
+ * How often a configured quota limit is expected to reset. `"monthly"` is
+ * what an API bill actually uses — see stories.md S4; `"hourly"` exists for
+ * rate-limit windows, not for planning spend.
+ */
+export type Cadence = "daily" | "hourly" | "monthly";
+
+const CADENCES: readonly Cadence[] = ["daily", "hourly", "monthly"];
 
 function cadence(name: string): Cadence {
-  return str(name, "daily") === "hourly" ? "hourly" : "daily";
+  const raw = str(name, "daily");
+  return (CADENCES as readonly string[]).includes(raw) ? (raw as Cadence) : "daily";
 }
 
 export type QuotaLimit = {
@@ -187,7 +194,16 @@ export type QuotaLimit = {
   cadence: Cadence;
 };
 
-export type QuotaConfig = Record<"subscription" | "api_key", QuotaLimit>;
+/**
+ * A quota pool's key. Claude keeps its historical `subscription`/`api_key`
+ * split — that distinction is real for Claude (a Pro/Max allowance versus a
+ * metered bill) and meaningless for ChatGPT/Gemini, which only ever bill
+ * per-token. See stories.md S2.
+ */
+export const QUOTA_KEYS = ["subscription", "api_key", "chatgpt", "gemini"] as const;
+export type QuotaKey = (typeof QUOTA_KEYS)[number];
+
+export type QuotaConfig = Record<QuotaKey, QuotaLimit>;
 
 /**
  * Default quota limits, seeded from `.env` and used as the base that
@@ -207,6 +223,14 @@ export function resolveQuota(): QuotaConfig {
     api_key: {
       limitUsd: floatOrNull("QUOTA_API_KEY_LIMIT_USD"),
       cadence: cadence("QUOTA_API_KEY_CADENCE"),
+    },
+    chatgpt: {
+      limitUsd: floatOrNull("QUOTA_CHATGPT_LIMIT_USD"),
+      cadence: cadence("QUOTA_CHATGPT_CADENCE"),
+    },
+    gemini: {
+      limitUsd: floatOrNull("QUOTA_GEMINI_LIMIT_USD"),
+      cadence: cadence("QUOTA_GEMINI_CADENCE"),
     },
   };
 }

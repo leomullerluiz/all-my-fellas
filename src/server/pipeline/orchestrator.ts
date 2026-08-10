@@ -12,7 +12,7 @@ import {
   hasPendingQuotaWake,
 } from "../jobs/queue";
 import { getSettings } from "../settings/store";
-import { type Cadence, resolveQuotaStatus } from "../usage/quota";
+import { type Cadence, resolveEnforcementQuotaStatus } from "../usage/quota";
 import {
   type DependencySummary,
   type EditableTaskFields,
@@ -87,6 +87,12 @@ function contextFor(task: TaskRow): PipelineContext {
   const planGateRequired = !(
     settings.autoApprovePlanForLowCriticality && task.criticality === "low"
   );
+  // `"auto"` matches the same S/low pair the plan gate already keys on
+  // (spec §7.2); `"never"` skips unconditionally; `"always"` (the default)
+  // reproduces today's behaviour regardless of the estimate.
+  const skipCodeReview =
+    settings.codeReviewEnabled === "never" ||
+    (settings.codeReviewEnabled === "auto" && task.difficulty === "S" && task.criticality === "low");
   return {
     developmentAttempts: countStageRuns(task.id, "DEVELOPMENT"),
     architectureAttempts: countStageRuns(task.id, "ARCHITECTURE"),
@@ -95,6 +101,8 @@ function contextFor(task: TaskRow): PipelineContext {
     reworkBudgetGrant: task.reworkBudgetGrant,
     planGateRequired,
     humanCodeReviewRequired: task.requireHumanCodeReview,
+    skipCodeReview,
+    noApprovalGatesEnabled: settings.noApprovalAutomation,
   };
 }
 
@@ -193,6 +201,13 @@ export function applyTransition(taskId: string, transition: Transition): Transit
         failedStage: null,
         failureKind: null,
       });
+      // Audited before the pause check below: the gate really was skipped as
+      // part of applying this transition, whether or not the job it would
+      // schedule is then withheld. Deferring it would leave a paused task's
+      // timeline claiming the gate is still ahead of it.
+      if (transition.bypassedGate) {
+        appendEvent(taskId, null, { type: "gate_bypassed", gate: transition.bypassedGate });
+      }
 
       // §9.2/9.3: "finish the current stage, then wait" — the transition
       // still applies (the board shows the real next stage, not a stale
@@ -382,14 +397,18 @@ export class QuotaError extends Error {
  * (§4.3).
  *
  * Pool-wide: this checks total spend across every provider against the
- * *Claude* auth mode's configured limit (`resolveQuotaStatus`'s own
- * documented gap, §4.8) — this spec does not segment quota by provider.
+ * *Claude* auth mode's configured limit, via `resolveEnforcementQuotaStatus`
+ * — deliberately not the per-provider `resolveQuotaStatus` the dashboard bar
+ * uses (stories.md S2 segments *display* by provider; it does not segment
+ * *enforcement*, which stays out of scope for this delivery — see §4.8's
+ * documented gap in the brief, and `spec-spend-and-operational-control.md` §4
+ * for where per-provider enforcement would land).
  */
 function assertWithinQuota(taskId: string, overrideQuota: boolean): void {
   const settings = getSettings();
   if (settings.quotaEnforcement === "off") return;
 
-  const status = resolveQuotaStatus();
+  const status = resolveEnforcementQuotaStatus();
   if (status.state !== "exceeded") return;
 
   if (settings.quotaEnforcement === "warn") {

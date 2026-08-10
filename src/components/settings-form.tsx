@@ -8,10 +8,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
-import type { Cadence, ProviderAuth } from "@/server/config/env";
-import { LLM_PROVIDER_IDS, LLM_PROVIDER_LABELS, type LlmProviderId } from "@/server/config/llm-providers";
+import type { Cadence, ProviderAuth, QuotaKey } from "@/server/config/env";
+import {
+  LLM_PROVIDER_IDS,
+  LLM_PROVIDER_LABELS,
+  MODEL_TIERS,
+  type LlmProviderId,
+  type ModelSelection,
+  type ModelTier,
+} from "@/server/config/llm-providers";
 import { PIPELINE_EVENT_TYPES, type PipelineEvent } from "@/server/events/types";
 import { AGENT_STAGES, STAGE_LABELS, type AgentStage } from "@/server/pipeline/stages";
+import { PRICING } from "@/server/pipeline/providers/pricing";
 import type { AppSettings } from "@/server/settings/store";
 import type { TranscriptStorageStats } from "@/server/tasks/service";
 import { formatBytes } from "@/lib/utils";
@@ -19,7 +27,18 @@ import { formatBytes } from "@/lib/utils";
 const QUOTA_MODES = [
   { mode: "subscription" as const, label: "Claude subscription" },
   { mode: "api_key" as const, label: "Anthropic API key" },
+  { mode: "chatgpt" as const, label: "ChatGPT (OpenAI)" },
+  { mode: "gemini" as const, label: "Gemini (Google)" },
 ];
+
+const MODEL_TIER_LABELS: Record<ModelTier, string> = {
+  light: "Light",
+  default: "Default",
+  heavy: "Heavy",
+};
+
+/** `"custom"` is the picker's own sentinel for the `{ literal }` escape hatch — not a stored value. */
+const CUSTOM_MODEL_OPTION = "custom" as const;
 
 /**
  * Editable runtime settings: models, providers, turn ceilings, pipeline limits
@@ -29,10 +48,13 @@ export function SettingsForm({
   initial,
   llmCredentials,
   transcriptStorage,
+  tierModels,
 }: {
   initial: AppSettings;
   llmCredentials: Record<LlmProviderId, ProviderAuth>;
   transcriptStorage: TranscriptStorageStats;
+  /** Per-provider model id for each tier — resolved server-side (§6.2/S3), since Claude's column reads `.env`. */
+  tierModels: Record<LlmProviderId, Record<ModelTier, string>>;
 }) {
   const router = useRouter();
   const [settings, setSettings] = useState<AppSettings>(initial);
@@ -61,10 +83,10 @@ export function SettingsForm({
     });
   }, []);
 
-  function setModel(stage: AgentStage, value: string) {
+  function setModel(stage: AgentStage, selection: ModelSelection) {
     setSettings((current) => ({
       ...current,
-      models: { ...current.models, [stage]: value },
+      models: { ...current.models, [stage]: selection },
     }));
   }
 
@@ -83,7 +105,7 @@ export function SettingsForm({
   }
 
   function setQuota(
-    mode: "subscription" | "api_key",
+    mode: QuotaKey,
     patch: Partial<{ limitUsd: number | null; cadence: Cadence }>,
   ) {
     setSettings((current) => ({
@@ -180,8 +202,10 @@ export function SettingsForm({
           <CardTitle>Provider and model per role</CardTitle>
           <CardDescription>
             Claude stays the default for every role — switching a role to ChatGPT or Gemini is
-            opt-in. The model id must match whichever provider is selected for that role; see{" "}
-            <code className="font-mono">docs/llm-providers.md</code> for accepted ids.
+            opt-in. Pick a tier (light / default / heavy) and it resolves to a valid model for
+            whichever provider is selected, even after you switch providers. A custom model id is
+            still available for anything not yet in that table; see{" "}
+            <code className="font-mono">docs/llm-providers.md</code> for details.
           </CardDescription>
         </CardHeader>
         <CardBody>
@@ -189,6 +213,17 @@ export function SettingsForm({
             {AGENT_STAGES.map((stage) => {
               const provider = settings.providers[stage];
               const credential = llmCredentials[provider];
+              const selection = settings.models[stage];
+              const isCustom = "literal" in selection;
+              const literalValue = isCustom ? selection.literal : "";
+              const pickerValue = isCustom ? CUSTOM_MODEL_OPTION : selection.tier;
+              const resolvedModelId = isCustom ? selection.literal : tierModels[provider][selection.tier];
+              // Claude's cost comes from the SDK's own `total_cost_usd`, not this
+              // table, so there is no price to show and no "$0 forever" failure
+              // mode to warn about — §5.3/§6.3.
+              const pricing = provider === "claude" ? null : PRICING[resolvedModelId];
+              const showPriceWarning = provider !== "claude" && !pricing;
+
               return (
                 <div key={stage} className="flex flex-col gap-2 rounded-md border border-border p-3">
                   <div className="flex items-center justify-between gap-2">
@@ -212,14 +247,61 @@ export function SettingsForm({
                       ))}
                     </Select>
                   </Field>
-                  <Field label="Model id" htmlFor={`model-${stage}`}>
-                    <Input
-                      id={`model-${stage}`}
-                      value={settings.models[stage]}
-                      onChange={(event) => setModel(stage, event.target.value)}
-                      className="font-mono text-xs"
-                    />
+                  <Field
+                    label="Model"
+                    htmlFor={`model-tier-${stage}`}
+                    hint={
+                      isCustom
+                        ? undefined
+                        : `Resolves to ${resolvedModelId} on ${LLM_PROVIDER_LABELS[provider]}.`
+                    }
+                  >
+                    <Select
+                      id={`model-tier-${stage}`}
+                      value={pickerValue}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setModel(
+                          stage,
+                          value === CUSTOM_MODEL_OPTION
+                            ? { literal: resolvedModelId }
+                            : { tier: value as ModelTier },
+                        );
+                      }}
+                    >
+                      {MODEL_TIERS.map((tier) => (
+                        <option key={tier} value={tier}>
+                          {MODEL_TIER_LABELS[tier]}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_MODEL_OPTION}>Custom model id…</option>
+                    </Select>
                   </Field>
+                  {isCustom ? (
+                    <Field label="Custom model id" htmlFor={`model-literal-${stage}`}>
+                      <Input
+                        id={`model-literal-${stage}`}
+                        value={literalValue}
+                        onChange={(event) => setModel(stage, { literal: event.target.value })}
+                        className="font-mono text-xs"
+                      />
+                    </Field>
+                  ) : null}
+                  {pricing ? (
+                    <p className="text-[11px] text-muted">
+                      ${pricing.inputPerMillion.toFixed(2)}/M in · ${pricing.outputPerMillion.toFixed(2)}/M out
+                      (approximate, edited manually)
+                    </p>
+                  ) : provider === "claude" ? (
+                    <p className="text-[11px] text-muted">
+                      Priced from the SDK&apos;s own reported cost — no table to show here.
+                    </p>
+                  ) : null}
+                  {showPriceWarning ? (
+                    <Badge tone="warning" title="This model id is not in pricing.ts, so its cost will always report $0.">
+                      unpriced model — cost will show $0
+                    </Badge>
+                  ) : null}
                 </div>
               );
             })}
@@ -403,9 +485,43 @@ export function SettingsForm({
                 />
                 <span>
                   Skip the human plan gate when the Architect rates criticality as{" "}
-                  <strong>low</strong>. The final delivery gate always stays manual.
+                  <strong>low</strong>. The final delivery gate stays manual unless{" "}
+                  <strong>No-approval automation</strong> below is enabled.
                 </span>
               </label>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted">No-approval automation</span>
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={settings.noApprovalAutomation}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      noApprovalAutomation: event.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  Let tasks run through to a PR with <strong>no human gates at all</strong> — see
+                  the warning below.
+                </span>
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-1.5 rounded-md border border-danger/40 bg-danger/10 p-3 text-xs text-danger sm:col-span-2">
+              <span className="font-semibold">⚠ Security warning</span>
+              <span>
+                Enabling <strong>No-approval automation</strong> skips both plan review (the plan
+                gate) and final PR approval (the stakeholder gate) for every task — the pipeline
+                will implement and open a change request without anyone approving the plan or the
+                delivered change along the way. A second homologation rejection (or one with no
+                rework budget left) still stops at the stakeholder gate; every other gate does
+                not. Only enable this if you fully trust the automation to ship unreviewed code.
+              </span>
             </div>
           </div>
         </CardBody>
@@ -448,6 +564,27 @@ export function SettingsForm({
             </Select>
           </Field>
 
+          <Field
+            label="Warning threshold"
+            htmlFor="warningRatio"
+            hint="How close usage must get to a provider's limit before the bar switches to its warning state. 0.8 means 80%."
+          >
+            <Input
+              id="warningRatio"
+              type="number"
+              min={0}
+              max={1}
+              step="0.01"
+              value={settings.warningRatio}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  warningRatio: Number(event.target.value),
+                }))
+              }
+            />
+          </Field>
+
           <div className="grid gap-4 sm:grid-cols-2">
             {QUOTA_MODES.map(({ mode, label }) => (
               <div key={mode} className="flex flex-col gap-3 rounded-md border border-border p-3">
@@ -479,6 +616,7 @@ export function SettingsForm({
                   >
                     <option value="daily">Daily</option>
                     <option value="hourly">Hourly</option>
+                    <option value="monthly">Monthly</option>
                   </Select>
                 </Field>
               </div>

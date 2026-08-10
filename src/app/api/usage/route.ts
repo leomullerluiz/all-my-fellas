@@ -12,13 +12,11 @@ export async function GET(request: Request) {
     });
     if (!parsed.success) return badRequest("Invalid usage query.");
 
-    const since = parsed.data.days
-      ? Date.now() - parsed.data.days * 24 * 60 * 60 * 1000
-      : undefined;
-
-    const perTask = costPerTask(since);
+    // Passed by name, not by a millisecond cutoff computed here — `costPerTask`
+    // takes a day count and computes its own cutoff. See stories.md S1.
+    const perTask = costPerTask(parsed.data.days);
     return json({
-      byStage: usageByStage(parsed.data.taskId),
+      byStage: usageByStage(parsed.data.taskId, parsed.data.days),
       byTask: perTask,
       totals: {
         costUsd: perTask.reduce((sum, row) => sum + row.costUsd, 0),

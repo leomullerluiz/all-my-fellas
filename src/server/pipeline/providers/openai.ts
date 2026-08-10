@@ -221,6 +221,10 @@ export async function runOpenAiStage(
     finalText,
     costUsd,
     inputTokens,
+    // The chat-completions API reports one prompt-token count, with no cache
+    // breakdown — see `pricing.ts`'s comment on why this stays a flat table.
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens,
     numTurns: turn,
     transcript,
