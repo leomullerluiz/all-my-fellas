@@ -63,8 +63,9 @@ for a role (this is already the default for every role).
 [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
 
 **How to select it:** Settings → pick **ChatGPT (OpenAI)** as the provider for
-a role, and set that role's model id to an OpenAI chat model (for example
-`gpt-4o` or `gpt-4o-mini`).
+a role. The role's model tier resolves to `gpt-4.1-mini` (light), `gpt-4.1`
+(default) or `o3` (heavy); a custom literal id is accepted for anything the
+tier table does not cover.
 
 **Running with the credential missing** fails the stage immediately with an
 error naming `OPENAI_API_KEY`, before any API call is made.
@@ -81,8 +82,9 @@ name works; if both are set, `GOOGLE_API_KEY` wins, matching the underlying
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
 **How to select it:** Settings → pick **Gemini (Google)** as the provider for
-a role, and set that role's model id to a Gemini model (for example
-`gemini-2.5-flash` or `gemini-2.5-pro`).
+a role. The role's model tier resolves to `gemini-2.5-flash` (light) or
+`gemini-2.5-pro` (default and heavy); a custom literal id is accepted for
+anything the tier table does not cover.
 
 **Running with the credential missing** fails the stage immediately with an
 error naming `GEMINI_API_KEY`/`GOOGLE_API_KEY`, before any API call is made.
@@ -121,6 +123,14 @@ error naming `GEMINI_API_KEY`/`GOOGLE_API_KEY`, before any API call is made.
   could.
 - Neither ChatGPT's nor Gemini's session carries an SDK session id; both
   report `sessionId: null` in the stage's execution record, unlike Claude.
+
+## Per-provider spend
+
+Each provider has its own quota pool — Claude is split further by auth mode,
+since a Pro/Max allowance and a metered bill are genuinely different things,
+while ChatGPT and Gemini only ever bill per token. Limits, cadence and whether
+exceeding one refuses a start are covered in
+[`operations.md`](operations.md#spend).
 
 ## Files touched by a credential change
 

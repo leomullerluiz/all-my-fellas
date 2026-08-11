@@ -1,4 +1,4 @@
-import { Eye, Hand, Layers, Lock, Shield, type LucideIcon } from "lucide-react";
+import { Eye, Hand, History, Layers, Lock, Shield, type LucideIcon } from "lucide-react";
 
 import { Reveal } from "@/components/reveal";
 import { GUARDRAILS, type Guardrail } from "@/lib/content";
@@ -9,6 +9,7 @@ const ICONS: Record<Guardrail["icon"], LucideIcon> = {
   hand: Hand,
   shield: Shield,
   layers: Layers,
+  history: History,
 };
 
 export function Guardrails() {

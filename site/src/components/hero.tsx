@@ -24,8 +24,9 @@ const TICKER = [
   "architect · reading the repository",
   "plan gate · waiting on you",
   "developer · committing to the task branch",
+  "verification · npm test exited 0",
   "code review · never saw the developer's transcript",
-  "qa · running the suite, the linter and the build",
+  "qa · checking the acceptance criteria",
   "delivery · opening the pull request",
 ];
 
@@ -80,10 +81,10 @@ export function Hero() {
 
         <Reveal inView={false} delay={780}>
           <p className="mt-6 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
-            A local delivery pipeline staffed entirely by Claude agents — stakeholder, product
-            owner, architect, developer, code review, QA and homologation. The brief, the stories
-            and the technical plan are written for you. Your job is to read the plan and say yes
-            or no.
+            A local delivery pipeline staffed by LLM agents — stakeholder, product owner,
+            architect, developer, code review, QA and homologation — with the test suite run by
+            the pipeline itself in between. The brief, the stories and the technical plan are
+            written for you. Your job is to read the plan and say yes or no.
           </p>
         </Reveal>
 

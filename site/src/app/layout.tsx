@@ -27,7 +27,7 @@ export const metadata: Metadata = {
    */
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "All My Fellas — a delivery pipeline staffed by Claude agents",
+    default: "All My Fellas — a delivery pipeline staffed by LLM agents",
     // Used if the site ever grows a second page.
     template: `%s — ${SITE_NAME}`,
   },

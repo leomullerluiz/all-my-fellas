@@ -1,3 +1,4 @@
+import { Controls } from "@/components/controls";
 import { FaqSection } from "@/components/faq-section";
 import { Guardrails } from "@/components/guardrails";
 import { Hero } from "@/components/hero";
@@ -45,6 +46,15 @@ export default function Home() {
           lede="Least privilege per role, enforced at the tool call rather than in the prompt. Every call — including the Developer's edits — passes a guard that confines paths to the task workspace and blocks destructive or credential-touching commands."
         >
           <Guardrails />
+        </Section>
+
+        <Section
+          id="control"
+          eyebrow="Running it unattended"
+          title="Start it, close the tab"
+          lede="The thesis is write the task and walk away, which only holds if walking away is safe. Everything here exists so that leaving is a decision rather than a gamble."
+        >
+          <Controls />
         </Section>
 
         <Section

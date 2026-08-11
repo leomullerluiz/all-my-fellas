@@ -13,6 +13,7 @@ const LINKS = [
   { href: "#pipeline", label: "Pipeline" },
   { href: "#why", label: "Why" },
   { href: "#guardrails", label: "Guardrails" },
+  { href: "#control", label: "Control" },
   { href: "#repositories", label: "Repositories" },
   { href: "#start", label: "Get started" },
 ];

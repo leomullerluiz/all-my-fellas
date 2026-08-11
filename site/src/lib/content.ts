@@ -22,7 +22,7 @@ export const SITE_URL = (
 export const SITE_NAME = "All My Fellas";
 
 export const SITE_DESCRIPTION =
-  "A local software delivery pipeline staffed entirely by Claude agents. Describe a feature; get back a branch and an open pull request on GitHub, GitLab, Bitbucket or Azure DevOps.";
+  "A local software delivery pipeline staffed by LLM agents — Claude, ChatGPT or Gemini, picked per role. Describe a feature; get back a branch and an open pull request on GitHub, GitLab, Bitbucket or Azure DevOps.";
 
 export type StageKind = "agent" | "human" | "worker";
 
@@ -74,9 +74,9 @@ export const STAGES: Stage[] = [
     kind: "human",
     state: "PLAN_GATE",
     produces: null,
-    tools: "Approve or reject",
+    tools: "Approve · request changes · reject",
     blurb:
-      "You read the technical plan and say yes or no. Reading a plan is cheaper than writing one — and far cheaper than finding out the approach was wrong on a finished branch.",
+      "You read the technical plan and say yes, no, or redo this part — a request for changes re-runs the Architect and is not charged to the rework budget. Reading a plan is cheaper than writing one, and far cheaper than finding out the approach was wrong on a finished branch.",
   },
   {
     id: "developer",
@@ -126,7 +126,7 @@ export const STAGES: Stage[] = [
     produces: "human-review.md",
     tools: "Optional, chosen per task",
     blurb:
-      "Opt in at creation and the task parks after QA until you read the diff. Your comment is persisted so it actually reaches the Developer's next prompt.",
+      "Opt in at creation and the task parks after QA until you read the diff. Your comment is persisted so it actually reaches the Developer's next prompt — or fix one line by hand and commit it from that screen, instead of spending a whole rework cycle.",
   },
   {
     id: "homologation",
@@ -136,7 +136,7 @@ export const STAGES: Stage[] = [
     produces: "homolog-report.md",
     tools: "Read",
     blurb:
-      "The Product Owner's last pass: does the delivered work answer the stories it was written from?",
+      "The Product Owner's last pass: does the delivered work answer the stories it was written from? A rejection returns the work once, then escalates to a human — a repeated no is usually a problem with the acceptance criteria, and no agent here can rewrite those.",
   },
   {
     id: "stakeholder-gate",
@@ -144,9 +144,9 @@ export const STAGES: Stage[] = [
     kind: "human",
     state: "STAKEHOLDER_GATE",
     produces: null,
-    tools: "Always manual",
+    tools: "Approve · request changes · reject",
     blurb:
-      "The second decision that is always yours. The plan gate can be waived for low-criticality work; this one cannot.",
+      "The second decision that is yours. A homologation escalation always lands here, whatever else has been automated away.",
   },
   {
     id: "delivery",
@@ -185,21 +185,31 @@ export const PILLARS: Pillar[] = [
   {
     title: "A wrong turn costs one stage, not the run",
     lede: "Every stage leaves a validated artifact.",
-    body: "A retry re-runs that stage as a new attempt recorded beside the failure. The brief, stories and plan you already paid for survive — and so do the clone and the branch.",
+    body: "A retry re-runs that stage as a new attempt recorded beside the failure. The task remembers why it failed, so the retry knows what to re-run rather than guessing — and the brief, stories, plan, clone and branch you already paid for all survive.",
+  },
+  {
+    title: "Nothing claims a check it did not run",
+    lede: "Exit codes, not adjectives.",
+    body: "Install, build, test and lint are run by the pipeline itself between Development and Code Review. A red suite goes straight back to the Developer without paying for a reviewer or a QA session, and QA receives the real result as an input instead of describing one.",
+  },
+  {
+    title: "Walking away is the feature",
+    lede: "So it has to be safe.",
+    body: "A configured quota can refuse a start rather than colour a bar red. A task can carry a spend ceiling that stops it. Cancel aborts the session in flight. The worker proves it is alive, and a desktop notification or a webhook tells you the moment a gate needs you.",
   },
 ];
 
 export type Guardrail = {
   title: string;
   body: string;
-  icon: "lock" | "eye" | "hand" | "shield" | "layers";
+  icon: "lock" | "eye" | "hand" | "shield" | "layers" | "history";
 };
 
 export const GUARDRAILS: Guardrail[] = [
   {
     icon: "layers",
     title: "Minimum-context handoff",
-    body: "Each stage is a brand-new session with no resume. A prompt is assembled from three things only: the role's system prompt, the task metadata, and the Markdown artifacts the previous stages produced. No agent ever sees another agent's transcript.",
+    body: "Each stage is a brand-new session with no resume. A prompt is assembled from a fixed, auditable list: the role's system prompt, the task metadata, the Markdown artifacts the previous stages produced, and a few declared supplements — the diff for reviewers, the verification result, the task's attachments, the repository's own conventions file. No agent ever sees another agent's transcript.",
   },
   {
     icon: "lock",
@@ -214,12 +224,54 @@ export const GUARDRAILS: Guardrail[] = [
   {
     icon: "hand",
     title: "Nothing starts on its own",
-    body: "A new task sits in the Created column until you start it, and admission control is enforced when you press Start — not deep inside the worker. A card that says an agent is running means exactly that.",
+    body: "A new task sits in the Created column until you start it, and admission control is enforced when you press Start — not deep inside the worker. The board separates admitted from in flight, so a card that says an agent is running means exactly that; the rest say what they are waiting for.",
   },
   {
     icon: "eye",
     title: "Mechanical verification runs before any reviewer",
     body: "The pipeline — not an agent — runs this repository's configured install/build/test/lint commands right after Development and routes on the real exit codes. A failure goes straight back to the Developer with no reviewer or QA session paid for, and QA receives the real results as an input instead of claiming to have run the checks itself.",
+  },
+  {
+    icon: "history",
+    title: "Everything it did is readable afterwards",
+    body: "Every run keeps the exact prompt it was sent, the model and provider that answered, and the full transcript with secrets redacted — every tool call, with its real input. Artifacts keep every version, not just the newest, and one task exports as a single JSON file.",
+  },
+];
+
+export type Control = {
+  title: string;
+  body: string;
+};
+
+/**
+ * The operational surface — what exists so a task can be started and left
+ * alone. Ordered as the questions arrive: what stops it, how do I know it is
+ * alive, how do I hear about it, and how do I find anything a week later.
+ */
+export const CONTROLS: Control[] = [
+  {
+    title: "Spend has a valve",
+    body: "A quota is per provider pool, with a daily, hourly or monthly cadence, and you choose what it does: read out, warn, or refuse the start with an explicit override. Separately, a per-stage ceiling stops a session from inside and a per-task ceiling stops the next stage being scheduled at all.",
+  },
+  {
+    title: "Stop means stop",
+    body: "Cancel aborts the running session rather than only marking rows. Pause lets the current stage finish and then waits. A global hold stops the worker claiming anything new without touching what is already running.",
+  },
+  {
+    title: "The worker proves it is alive",
+    body: "It writes a heartbeat; the nav shows healthy, lagging or stale, and a health endpoint returns a non-2xx status for anything worse — which is what the Docker healthcheck reads. A worker that died mid-stage is reported as interrupted, and its claimed job returns to the queue on restart.",
+  },
+  {
+    title: "It tells you when it needs you",
+    body: "Desktop notifications, once you have granted permission, and an outbound webhook with an optional HMAC signature — Slack, ntfy, n8n, your own script. Per event type, with only the moments that block a human enabled by default.",
+  },
+  {
+    title: "A board that survives a hundred tasks",
+    body: "Search, filters by repository, priority and status, a sortable list view for finding last week's work, archiving for anything finished, and a cross-task activity feed. Cards say how long they have been where they are, and undelivered ones say whether they failed, were rejected or were cancelled.",
+  },
+  {
+    title: "Unattended access, if you want it",
+    body: "The API is open on localhost by default. Mint a bearer token and it closes for every request — enough for a CI job to file a task, or for you to approve a gate from a phone. Actions taken with a token are recorded under its name.",
   },
 ];
 
@@ -289,11 +341,16 @@ cp .env.example .env    # then fill it in`,
   {
     value: "credentials",
     label: "Credentials",
-    caption: "Subscription by default; an API key is an env-var swap.",
+    caption:
+      "Subscription by default; an API key is an env-var swap. ChatGPT and Gemini are optional — set one only to point a role at it.",
     code: `npm i -g @anthropic-ai/claude-code
 claude setup-token       # authenticate in the browser
 # paste it into .env as CLAUDE_CODE_OAUTH_TOKEN
-# or set ANTHROPIC_API_KEY instead — the SDK picks up whichever is present`,
+# or set ANTHROPIC_API_KEY instead — the SDK picks up whichever is present
+
+# optional, per role, from Settings:
+# OPENAI_API_KEY=...      ChatGPT
+# GEMINI_API_KEY=...      Gemini`,
   },
   {
     value: "run",
@@ -314,6 +371,17 @@ npm start         # next start + node dist/worker/index.js
 
 # or self-hosted
 docker compose up -d`,
+  },
+  {
+    value: "unattended",
+    label: "Unattended",
+    caption:
+      "The API is open on localhost until the first token exists; from then on every request needs one. Restore is deliberately manual: stop both processes and copy the file back.",
+    code: `npm run token:create -- --name=CI    # printed once, stored as a hash
+curl -H "Authorization: Bearer $TOKEN" localhost:3000/api/tasks
+
+npm run db:backup                    # → data/backups/pipeline-<timestamp>.db
+curl localhost:3000/api/health       # 503 when the worker is stale`,
   },
 ];
 
@@ -346,7 +414,19 @@ export const FAQ: Faq[] = [
     value: "auth",
     question: "Is it multi-user?",
     answer:
-      "No — single user, no authentication. Do not expose the port publicly. This design assumes personal use with your own Claude subscription.",
+      "No — single user, and the dashboard has no authentication. An optional bearer token can gate the API for a CI job or a phone, but it is a label rather than an identity: it grants everything, and what its name buys you is attribution in the audit log. Do not expose the port publicly. This design assumes personal use with your own subscription.",
+  },
+  {
+    value: "providers",
+    question: "Does it have to be Claude?",
+    answer:
+      "No. Every role runs on Claude, ChatGPT or Gemini, chosen per role in Settings, and a role stores a tier rather than a model id — so switching its provider does not strand it on a model the new one has never heard of. Claude is the default everywhere and needs no configuration change. The differences are documented: only Claude reports a real dollar figure, and the tool-execution path for the other two is younger.",
+  },
+  {
+    value: "away",
+    question: "What happens while I am not watching?",
+    answer:
+      "Whatever you configured. A quota can refuse a start instead of warning about it, a spend ceiling can stop a task mid-run, a gate can reach you by desktop notification or webhook, and the worker's heartbeat says whether anything is running at all. Nothing merges, and nothing starts on its own.",
   },
   {
     value: "self-hosted",
@@ -358,7 +438,13 @@ export const FAQ: Faq[] = [
     value: "prompts",
     question: "Can I change what the agents do?",
     answer:
-      "The role system prompts are plain Markdown in prompts/. Each file is read once and cached for the life of the process, so restart the worker after editing one. Models per role, turn ceilings and limits are on the Settings screen, re-read at the start of every job.",
+      "The role system prompts are plain Markdown in prompts/. Each file is read once and cached for the life of the process, so restart the worker after editing one. Provider and model tier per role, turn ceilings and limits are on the Settings screen, re-read at the start of every job.",
+  },
+  {
+    value: "audit",
+    question: "Can I see what an agent actually did?",
+    answer:
+      "Yes. Every run keeps the exact prompt it was sent, the model and provider that answered, its token counts and cost, and the full transcript — every tool call with its real input, and denials with the real reason — normalised across providers and scrubbed of anything credential-shaped. Artifacts keep every version, and a whole task exports as one JSON file.",
   },
 ];
 

@@ -82,7 +82,7 @@ export function GET() {
             Get back a pull request.
           </div>
           <div style={{ marginTop: 28, fontSize: 30, lineHeight: 1.4, color: "#99a1b3" }}>
-            A delivery pipeline staffed entirely by Claude agents.
+            A delivery pipeline staffed by LLM agents.
           </div>
         </div>
 

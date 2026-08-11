@@ -26,7 +26,7 @@ function softwareApplication() {
     },
     softwareRequirements: "Node.js >= 20.9, git, a Claude credential",
     keywords:
-      "Claude Agent SDK, multi-agent pipeline, AI code review, autonomous software delivery",
+      "Claude Agent SDK, OpenAI, Gemini, multi-agent pipeline, AI code review, autonomous software delivery",
   };
 }
 

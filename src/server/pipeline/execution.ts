@@ -8,7 +8,8 @@ import { DIFFICULTY_RANK, PRIORITY_RANK } from "./task-ranking";
 /**
  * What the worker is doing with a task right now, derived at render time from
  * `tasks.status` plus `jobs` — never persisted, never fed back into the state
- * machine. See `docs/spec/spec-execution-honesty.md` §4.
+ * machine. See `spec-execution-honesty.md` §4 (retired — `docs/README.md`
+ * explains how to read it out of git history).
  *
  * Two facts the UI used to conflate: *admitted* (`tasks.status === "running"`,
  * a concurrency slot held) and *in flight* (the worker has this task's job
