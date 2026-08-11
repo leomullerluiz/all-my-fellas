@@ -27,7 +27,6 @@ export type NewTaskDraft = {
   description?: string;
   priority?: Priority;
   requireHumanCodeReview?: boolean;
-  dependsOn?: string[];
   /** Stored as the raw input string (including ""), matching the form's own state. */
   maxCostPerTaskUsd?: string;
 };
@@ -54,9 +53,6 @@ export function parseNewTaskDraft(value: unknown): NewTaskDraft {
   if (isPriority(raw.priority)) draft.priority = raw.priority;
   if (typeof raw.requireHumanCodeReview === "boolean") {
     draft.requireHumanCodeReview = raw.requireHumanCodeReview;
-  }
-  if (Array.isArray(raw.dependsOn) && raw.dependsOn.every((id) => typeof id === "string")) {
-    draft.dependsOn = raw.dependsOn;
   }
   if (typeof raw.maxCostPerTaskUsd === "string") draft.maxCostPerTaskUsd = raw.maxCostPerTaskUsd;
 

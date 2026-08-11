@@ -152,7 +152,6 @@ export function NewTaskForm({
           if (draft.requireHumanCodeReview !== undefined) {
             setRequireHumanCodeReview(draft.requireHumanCodeReview);
           }
-          if (draft.dependsOn !== undefined) setDependsOn(draft.dependsOn);
           if (draft.maxCostPerTaskUsd !== undefined) {
             setMaxCostPerTaskUsd(draft.maxCostPerTaskUsd);
           }
@@ -177,7 +176,6 @@ export function NewTaskForm({
       description,
       priority,
       requireHumanCodeReview,
-      dependsOn,
       maxCostPerTaskUsd,
     });
   }, [
@@ -189,7 +187,6 @@ export function NewTaskForm({
     description,
     priority,
     requireHumanCodeReview,
-    dependsOn,
     maxCostPerTaskUsd,
   ]);
 
