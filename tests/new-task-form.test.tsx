@@ -510,7 +510,7 @@ describe("NewTaskForm autosave (S1)", () => {
     });
   });
 
-  it("persists the depends-on selection", async () => {
+  it("does not persist the depends-on selection", async () => {
     render(
       <NewTaskForm
         repos={REPOS}
@@ -523,7 +523,7 @@ describe("NewTaskForm autosave (S1)", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: /Set up the schema/ }));
 
-    expect(readDraft()).toMatchObject({ dependsOn: ["task_a"] });
+    expect(readDraft()).not.toHaveProperty("dependsOn");
   });
 
   it("writes nothing in edit mode", async () => {
@@ -644,6 +644,26 @@ describe("NewTaskForm draft restore (S2)", () => {
     expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe(
       "The original description, long enough to pass validation.",
     );
+  });
+
+  it("leaves the depends-on checkboxes unchecked, even for a legacy draft containing dependsOn", () => {
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({ title: "Restored title", dependsOn: ["task_a"] }),
+    );
+
+    render(
+      <NewTaskForm
+        repos={REPOS}
+        dependencyOptions={[
+          { id: "task_a", title: "Set up the schema", repoId: "repo_1", repoName: "acme/app" },
+        ]}
+      />,
+    );
+
+    expect(
+      (screen.getByRole("checkbox", { name: /Set up the schema/ }) as HTMLInputElement).checked,
+    ).toBe(false);
   });
 
   it("renders unchanged defaults when there is no stored draft", () => {

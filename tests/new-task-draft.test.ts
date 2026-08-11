@@ -27,7 +27,6 @@ describe("parseNewTaskDraft", () => {
       description: "A description",
       priority: "high",
       requireHumanCodeReview: true,
-      dependsOn: ["task_a", "task_b"],
       maxCostPerTaskUsd: "12.5",
     };
     expect(parseNewTaskDraft(input)).toEqual(input);
@@ -42,10 +41,15 @@ describe("parseNewTaskDraft", () => {
       title: 123,
       description: "Kept",
       requireHumanCodeReview: "yes",
-      dependsOn: ["ok", 5],
       maxCostPerTaskUsd: 12,
     };
     expect(parseNewTaskDraft(input)).toEqual({ description: "Kept" });
+  });
+
+  it("drops dependsOn unconditionally, regardless of its shape", () => {
+    expect(parseNewTaskDraft({ dependsOn: ["task_a"], title: "x" })).toEqual({ title: "x" });
+    expect(parseNewTaskDraft({ dependsOn: "not-an-array", title: "x" })).toEqual({ title: "x" });
+    expect(parseNewTaskDraft({ dependsOn: null, title: "x" })).toEqual({ title: "x" });
   });
 
   it("returns an empty draft for null, arrays, and other non-object input", () => {
@@ -59,9 +63,19 @@ describe("parseNewTaskDraft", () => {
 
 describe("readNewTaskDraft / writeNewTaskDraft", () => {
   it("round-trips a written draft", () => {
-    const draft = { repoId: "repo_1", title: "Hello", dependsOn: ["task_a"] };
+    const draft = { repoId: "repo_1", title: "Hello" };
     writeNewTaskDraft(draft);
     expect(readNewTaskDraft()).toEqual(draft);
+  });
+
+  it("drops dependsOn from a legacy stored draft written before this field was removed", () => {
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({ repoId: "repo_1", title: "Hello", dependsOn: ["task_a"] }),
+    );
+    const result = readNewTaskDraft();
+    expect(result).toEqual({ repoId: "repo_1", title: "Hello" });
+    expect(result).not.toHaveProperty("dependsOn");
   });
 
   it("writes under a dedicated storage key, not a shared namespace", () => {
