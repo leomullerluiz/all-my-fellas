@@ -1,14 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { UsageBar } from "@/components/usage-bar";
-import { clearNewTaskDraft, readNewTaskDraft, writeNewTaskDraft } from "@/lib/new-task-draft";
 import { formatBytes } from "@/lib/utils";
 import type { AuthMode } from "@/server/config/env";
 import { PRIORITIES, type Priority } from "@/server/pipeline/stages";
@@ -123,72 +122,8 @@ export function NewTaskForm({
   );
   const [removingId, setRemovingId] = useState<string | null>(null);
 
-  // Guards the autosave-write effect below until the restore effect below it
-  // has had its own chance to run and set state first — otherwise the write
-  // effect could fire once with the pre-restore defaults and clobber a real
-  // stored draft before the restored values are back in state.
-  const [hydrated, setHydrated] = useState(false);
-
   const selectedRepo = repos.find((repo) => repo.id === repoId);
   const isEdit = mode === "edit";
-
-  // Restore a saved draft on mount (`stories.md` S2). Skipped in edit mode
-  // and whenever `initial` was supplied (the duplicate-from flow), so
-  // `initial` always wins over a leftover draft. Deferred to a microtask
-  // (rather than direct calls in the effect body, which
-  // `react-hooks/set-state-in-effect` flags — see the same shape in
-  // `settings-form.tsx`): `localStorage` has no reactive dependency to
-  // subscribe to, so there is nothing else here to synchronize against.
-  useEffect(() => {
-    queueMicrotask(() => {
-      if (mode !== "edit" && !initial) {
-        const draft = readNewTaskDraft();
-        if (draft) {
-          if (draft.repoId !== undefined) setRepoId(draft.repoId);
-          if (draft.title !== undefined) setTitle(draft.title);
-          if (draft.branchName !== undefined) setBranchName(draft.branchName);
-          if (draft.description !== undefined) setDescription(draft.description);
-          if (draft.priority !== undefined) setPriority(draft.priority);
-          if (draft.requireHumanCodeReview !== undefined) {
-            setRequireHumanCodeReview(draft.requireHumanCodeReview);
-          }
-          if (draft.maxCostPerTaskUsd !== undefined) {
-            setMaxCostPerTaskUsd(draft.maxCostPerTaskUsd);
-          }
-        }
-      }
-      setHydrated(true);
-    });
-    // Mount-only — a later `initial`/`mode` change should not re-run this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Autosave every tracked field as it changes (`stories.md` S1). Create-mode
-  // only, and gated on `hydrated` so this never fires with pre-restore
-  // defaults before the effect above has run. Attachments are never included
-  // — see `new-task-draft.ts`.
-  useEffect(() => {
-    if (isEdit || !hydrated) return;
-    writeNewTaskDraft({
-      repoId,
-      title,
-      branchName,
-      description,
-      priority,
-      requireHumanCodeReview,
-      maxCostPerTaskUsd,
-    });
-  }, [
-    isEdit,
-    hydrated,
-    repoId,
-    title,
-    branchName,
-    description,
-    priority,
-    requireHumanCodeReview,
-    maxCostPerTaskUsd,
-  ]);
 
   // A prerequisite only makes sense against the same codebase, so the picker
   // follows the "Repository" select rather than listing every open task.
@@ -275,7 +210,6 @@ export function NewTaskForm({
     }
 
     toast.success(isEdit ? "Task saved." : start ? "Task created." : "Task queued.");
-    if (!isEdit) clearNewTaskDraft();
     const destination =
       isEdit || start ? `/tasks/${taskId ?? payload.task!.id}` : "/";
     startTransition(() => {
